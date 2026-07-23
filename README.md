@@ -4,6 +4,17 @@ Runs the same Linear ticket through two Codex workers at once — one against a
 control checkout, one against a Greptile checkout — and saves everything each
 one did.
 
+Each arm's Codex runs in its own Docker container, so neither arm can read the
+other's checkout, the harness, or the host. The harness itself runs on the host
+and drives both containers over MCP.
+
+## Prerequisites
+
+- [Bun](https://bun.sh)
+- Docker
+- An authenticated Codex CLI (`~/.codex/auth.json`; mounted read-only into each
+  container)
+
 ## Setup
 
 ```bash
@@ -18,7 +29,21 @@ CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
 ```
 
-Requires Bun and an authenticated Codex CLI.
+Build the arm image once, then start one container per arm (each mounts only its
+own checkout at `/workspace`; the third argument is that arm's GitHub token):
+
+```bash
+docker build -t terrarium-arm .
+scripts/arm-run.sh terrarium-control /absolute/path/to/control-checkout <gh-token>
+scripts/arm-run.sh terrarium-greptile /absolute/path/to/greptile-checkout <gh-token>
+```
+
+`.env.example` already points the harness at these container names:
+
+```dotenv
+CONTROL_CONTAINER=terrarium-control
+GREPTILE_CONTAINER=terrarium-greptile
+```
 
 ## Run
 
@@ -46,25 +71,15 @@ Other env vars, all optional:
 
 - `RESULTS_DIR` — where artifacts go (default `results`)
 - `CODEX_HOME` — where to find Codex sessions, if not `~/.codex`
+- `CODEX_IDLE_TIMEOUT_MS` — abort an arm after this much event silence
+  (default `600000`, 10m)
 
-## Container isolation (optional)
+## Running without containers
 
-By default both arms run on your host, and either one could technically read
-the other's checkout. To actually isolate them, run each arm's Codex in its
-own container:
-
-```bash
-docker build -t terrarium-arm .
-scripts/arm-run.sh terrarium-control /abs/path/to/control-checkout <gh-token>
-scripts/arm-run.sh terrarium-greptile /abs/path/to/greptile-checkout <gh-token>
-```
-
-Then point the harness at them in `.env`:
-
-```dotenv
-CONTROL_CONTAINER=terrarium-control
-GREPTILE_CONTAINER=terrarium-greptile
-```
+Leaving `CONTROL_CONTAINER` / `GREPTILE_CONTAINER` unset runs both arms directly
+on the host, where either arm can read the other's checkout. This has no
+isolation and is only for a throwaway local smoke test — use containers for any
+real run.
 
 ## Verify
 

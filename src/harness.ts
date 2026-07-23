@@ -71,6 +71,15 @@ export async function runArm(
   let previousError = "The previous attempt did not complete.";
   let finalResult: ArmResult | undefined;
 
+  // In container mode the arm's codex runs via `docker exec` and sees its
+  // checkout at the in-container workspace path; otherwise it runs on the host
+  // against the checkout directly.
+  const containerized = arm.container !== undefined;
+  const workspace = containerized ? arm.workspace ?? "/workspace" : arm.repo;
+  const exec = containerized
+    ? ["docker", "exec", "-i", "-w", workspace, arm.container as string]
+    : undefined;
+
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     const startedAt = new Date();
     const recovery = retryPrompt(
@@ -89,7 +98,11 @@ export async function runArm(
           : `${prompt}\n\n${recovery}`;
     const request = continuing
       ? { tool: "codex-reply", threadId, prompt: attemptPrompt }
-      : { tool: "codex", ...codexArguments(attemptPrompt, arm.repo, config.sandbox) };
+      : {
+          tool: "codex",
+          ...(arm.container ? { container: arm.container } : {}),
+          ...codexArguments(attemptPrompt, workspace, config.sandbox),
+        };
     const artifactDir = await artifacts.startAttempt(
       arm,
       request,
@@ -111,11 +124,12 @@ export async function runArm(
         {
           arm: arm.name,
           prompt: attemptPrompt,
-          cwd: arm.repo,
+          cwd: workspace,
           sandbox: config.sandbox,
           codexHome: config.codexHome,
           idleTimeoutMs: config.idleTimeoutMs,
           threadId,
+          exec,
         },
         (msg) => onEvent(arm.name, msg),
       );

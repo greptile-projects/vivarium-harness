@@ -20,9 +20,15 @@ export type EventSink = (msg: CodexMsg, meta: CodexEventMeta) => void;
 export interface StreamParams {
   arm: string;
   prompt: string;
+  // The cwd Codex runs in — a host path locally, or the in-container workspace
+  // (e.g. /workspace) when exec wraps the launch in `docker exec`.
   cwd: string;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   codexHome?: string;
+  // Command prefix that launches `codex mcp-server` somewhere other than the
+  // host — e.g. ["docker", "exec", "-i", "<container>"] for per-arm container
+  // isolation. Empty/undefined runs codex directly on the host.
+  exec?: string[];
   // Hard ceiling on a single arm's run (default 24h).
   timeoutMs?: number;
   // Abort the run if no `codex/event` arrives for this long (activity
@@ -79,11 +85,15 @@ export async function runArmStreaming(
   params: StreamParams,
   onEvent: EventSink,
 ): Promise<StreamResult> {
+  const exec = params.exec ?? [];
+  const [command, ...prefixArgs] = exec.length > 0 ? exec : ["codex"];
   const transport = new StdioClientTransport({
-    command: "codex",
-    args: ["mcp-server"],
+    command,
+    args: [...prefixArgs, ...(exec.length > 0 ? ["codex"] : []), "mcp-server"],
     env: cleanEnv(params.codexHome),
-    cwd: params.cwd,
+    // Only anchor the host spawn dir when running locally; under `docker exec`
+    // params.cwd is an in-container path that need not exist on the host.
+    cwd: exec.length > 0 ? undefined : params.cwd,
   });
   const client = new Client({
     name: `terrarium-${params.arm}`,
