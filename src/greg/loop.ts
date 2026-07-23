@@ -9,7 +9,7 @@ import {
   readLadder,
   type Rung,
 } from "./ladder.js";
-import { NORTH_STAR, proposeRung, type RungOutcome } from "./planner.js";
+import { NORTH_STAR, proposeRung, type PlannedRung } from "./planner.js";
 
 // The one shared ladder, mounted into both checkouts.
 export const LADDER_PATH = resolve("LADDER.md");
@@ -26,19 +26,22 @@ export interface GregDeps {
     ladderPath: string,
     ladder: string,
     index: number,
-  ) => Promise<RungOutcome>;
+  ) => Promise<PlannedRung>;
   harness: (config: HarnessConfig) => Promise<HarnessRunResult>;
   log: (message: string) => void;
 }
 
 // The whole of Greg Tile: a mechanical loop, not an agent that decides. Greg
 // (the agent) only plans one rung; the loop appends it to the ladder and then
-// runs the harness on it directly — never as one of Greg's tool calls. It keeps
-// climbing until Greg reports the North Star is reached.
+// runs the harness on it directly — never as one of Greg's tool calls. The
+// North Star is a direction, not a destination, so the loop never terminates on
+// its own — it climbs until the process is stopped. `rungLimit` is an internal
+// seam for tests only; production leaves it Infinity.
 export async function runGreg(
   base: HarnessConfig,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
+  rungLimit: number = Infinity,
 ): Promise<GregIteration[]> {
   const propose = deps.propose ?? proposeRung;
   const harness = deps.harness ?? runHarness;
@@ -51,17 +54,11 @@ export async function runGreg(
   }
 
   const iterations: GregIteration[] = [];
-  for (let index = 1; ; index += 1) {
+  for (let index = 1; index <= rungLimit; index += 1) {
     log(`\n=== Rung ${index}: planning ===`);
     const ladder = await readLadder(ladderPath);
-    const outcome = await propose(base, ladderPath, ladder, index);
+    const rung: Rung = { index, ...(await propose(base, ladderPath, ladder, index)) };
 
-    if (outcome.kind === "north-star-reached") {
-      log("Greg reports the North Star is reached. Stopping the climb.");
-      break;
-    }
-
-    const rung: Rung = { index, ...outcome.rung };
     await appendRungPlan(ladderPath, rung);
     log(`Rung ${index}: ${rung.title}${rung.ticket ? ` (${rung.ticket})` : ""}`);
 

@@ -4,22 +4,16 @@ import type { AttemptRunner } from "../harness.js";
 import { runArmStreaming } from "../live/stream.js";
 import type { Rung } from "./ladder.js";
 
-// The one fixed goal of the experiment. Greg plans every rung toward this.
+// The one fixed goal of the experiment. Greg plans every rung toward this. It is
+// a direction, not a milestone that gets reached — the climb never ends.
 export const NORTH_STAR =
   "Build a working clone of GitHub: a web application where users can host git repositories, browse code, open and review pull requests, and manage issues.";
-
-// Greg emits this on its own when the North Star is reached, ending the loop.
-export const NORTH_STAR_SENTINEL = "<<<NORTH_STAR_REACHED>>>";
 
 const RUNG_OPEN = "<<<RUNG>>>";
 const RUNG_CLOSE = "<<<RUNG_END>>>";
 
 // A rung without its loop-assigned index — the shape Greg actually returns.
 export type PlannedRung = Omit<Rung, "index">;
-
-export type RungOutcome =
-  | { kind: "rung"; rung: PlannedRung }
-  | { kind: "north-star-reached" };
 
 // The full instruction handed to a fresh, stateless Greg. Everything Greg knows
 // is in here: the goal, the ladder built so far, and a strict output contract.
@@ -33,6 +27,8 @@ export function plannerPrompt(ladder: string, index: number): string {
 
 # North Star
 ${NORTH_STAR}
+
+The North Star is a direction, not a finish line. You will not complete it this turn, and the climb continues indefinitely — always propose the next rung.
 
 # The ladder so far
 The ladder is the ordered list of rungs already planned and built toward the North Star. It is written to a markdown file mounted into both build checkouts, so whatever you plan becomes visible to the builders.
@@ -53,19 +49,13 @@ ${RUNG_OPEN}
 {"title": "...", "ticket": "ENG-123 or empty string", "summary": "one-line summary", "description": "full standalone ticket body"}
 ${RUNG_CLOSE}
 
-The block must be the last thing in your reply, and the lines between the markers must be valid JSON and nothing else. If — and only if — the North Star is fully achieved and no further rung is needed, reply with just this single line instead:
-
-${NORTH_STAR_SENTINEL}`;
+The block must be the last thing in your reply, and the lines between the markers must be valid JSON and nothing else.`;
 }
 
-// Extract the rung (or the stop signal) from Greg's final message. Tolerant of
-// surrounding prose and tool chatter: we take the LAST rung block, since any
-// earlier occurrence would be Greg quoting the contract back at itself.
-export function parseRungOutput(output: string): RungOutcome {
-  if (output.includes(NORTH_STAR_SENTINEL)) {
-    return { kind: "north-star-reached" };
-  }
-
+// Extract the rung from Greg's final message. Tolerant of surrounding prose and
+// tool chatter: we take the LAST rung block, since any earlier occurrence would
+// be Greg quoting the contract back at itself.
+export function parseRung(output: string): PlannedRung {
   const start = output.lastIndexOf(RUNG_OPEN);
   const end = output.lastIndexOf(RUNG_CLOSE);
   if (start === -1 || end === -1 || end < start) {
@@ -92,13 +82,10 @@ export function parseRungOutput(output: string): RungOutcome {
   }
 
   return {
-    kind: "rung",
-    rung: {
-      title,
-      description,
-      ticket: asText(record.ticket) || undefined,
-      summary: asText(record.summary) || undefined,
-    },
+    title,
+    description,
+    ticket: asText(record.ticket) || undefined,
+    summary: asText(record.summary) || undefined,
   };
 }
 
@@ -111,7 +98,7 @@ export async function proposeRung(
   ladder: string,
   index: number,
   runner: AttemptRunner = runArmStreaming,
-): Promise<RungOutcome> {
+): Promise<PlannedRung> {
   const result = await runner(
     {
       arm: "greg",
@@ -130,7 +117,7 @@ export async function proposeRung(
     );
   }
 
-  return parseRungOutput(result.output);
+  return parseRung(result.output);
 }
 
 function asText(value: unknown): string {

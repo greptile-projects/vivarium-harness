@@ -54,7 +54,8 @@ bun run greg
 Same setup as the harness — `CONTROL_REPO` and `GREPTILE_REPO` — and nothing
 else to configure. Each turn Greg plans the next rung, files a Linear ticket
 for it, appends it to `LADDER.md`, then mechanically runs the two-arm harness on
-it. He keeps climbing until he reports the North Star is reached.
+it. The North Star is a direction, not a destination: Greg keeps climbing until
+you stop the process.
 
 Greg has no memory across rungs — his only state is `LADDER.md`, which lists the
 North Star and every rung planned and built so far. That file is symlinked into

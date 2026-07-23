@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { HarnessConfig } from "../src/config.js";
 import type { HarnessRunResult } from "../src/harness.js";
 import { runGreg } from "../src/greg/loop.js";
-import type { RungOutcome } from "../src/greg/planner.js";
+import type { PlannedRung } from "../src/greg/planner.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -52,28 +52,22 @@ function fakeRun(runId: string): HarnessRunResult {
 }
 
 describe("runGreg", () => {
-  it("plans, links, appends, and mechanically runs each rung until the North Star", async () => {
+  it("plans, links, appends, and mechanically runs each rung in order", async () => {
     const { base, ladderPath } = await makeSetup();
-    const outcomes: RungOutcome[] = [
-      {
-        kind: "rung",
-        rung: { title: "Rung one", ticket: "ENG-1", description: "do first" },
-      },
-      {
-        kind: "rung",
-        rung: { title: "Rung two", description: "do second" },
-      },
-      { kind: "north-star-reached" },
+    const rungs: PlannedRung[] = [
+      { title: "Rung one", ticket: "ENG-1", description: "do first" },
+      { title: "Rung two", description: "do second" },
     ];
     const seenLadders: string[] = [];
     const harnessTickets: string[] = [];
 
+    // rungLimit stops the otherwise-endless loop after the two scripted rungs.
     const iterations = await runGreg(
       base,
       {
-        propose: async (_base, _ladderPath, ladder) => {
+        propose: async (_base, _ladderPath, ladder, index) => {
           seenLadders.push(ladder);
-          return outcomes.shift() as RungOutcome;
+          return rungs[index - 1];
         },
         harness: async (harnessConfig) => {
           harnessTickets.push(harnessConfig.ticket);
@@ -82,9 +76,9 @@ describe("runGreg", () => {
         log: () => {},
       },
       ladderPath,
+      2,
     );
 
-    // Two rungs built, then stopped on the north-star signal.
     expect(iterations).toHaveLength(2);
     expect(iterations[0].rung.index).toBe(1);
     expect(iterations[1].rung.index).toBe(2);
