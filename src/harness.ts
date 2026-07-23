@@ -30,10 +30,10 @@ export function codexArguments(
 
 export function retryPrompt(
   previousError: string,
-  attempt: number,
-  maxAttempts: number,
+  recovery: number,
+  totalRecoveries: number,
 ): string {
-  return `Autonomous recovery attempt ${attempt} of ${maxAttempts}.
+  return `Autonomous recovery attempt ${recovery} of ${totalRecoveries}.
 
 The previous attempt failed with:
 ${previousError}
@@ -90,7 +90,11 @@ export async function runArm(
 
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     const startedAt = new Date();
-    const recovery = retryPrompt(previousError, attempt, config.maxAttempts);
+    const recovery = retryPrompt(
+      previousError,
+      attempt - 1,
+      config.maxAttempts - 1,
+    );
     const toolName = threadId ? "codex-reply" : "codex";
     const request = threadId
       ? { prompt: recovery, threadId }
@@ -164,28 +168,40 @@ export async function runArm(
   return finalResult;
 }
 
+async function runArmIsolated(
+  arm: ArmConfig,
+  prompt: string,
+  config: HarnessConfig,
+  artifacts: RunArtifacts,
+): Promise<ArmResult> {
+  // Each arm gets its own codex mcp-server process so the two arms never share
+  // an in-flight connection or per-process state (e.g. the active cwd). This
+  // keeps them genuinely parallel and independent, as the experiment requires.
+  const server = new MCPServerStdio({
+    name: `Codex CLI (${arm.name})`,
+    fullCommand: "codex mcp-server",
+    clientSessionTimeoutSeconds: 3_600,
+  });
+  await server.connect();
+  try {
+    return await runArm(server, arm, prompt, config, artifacts);
+  } finally {
+    await server.close();
+  }
+}
+
 export async function runHarness(
   config: HarnessConfig,
 ): Promise<HarnessRunResult> {
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
-  const server = new MCPServerStdio({
-    name: "Codex CLI",
-    fullCommand: "codex mcp-server",
-    clientSessionTimeoutSeconds: 3_600,
-  });
-  let connected = false;
 
   try {
-    await server.connect();
-    connected = true;
     const results = await Promise.all(
       config.arms.map((arm) =>
-        runArm(server, arm, prompt, config, artifacts),
+        runArmIsolated(arm, prompt, config, artifacts),
       ),
     );
-    await server.close();
-    connected = false;
     await artifacts.complete(results);
     const status = results.some((result) => result.status === "failed")
       ? "completed_with_failures"
@@ -199,9 +215,5 @@ export async function runHarness(
   } catch (error) {
     await artifacts.fail(error);
     throw error;
-  } finally {
-    if (connected) {
-      await server.close();
-    }
   }
 }

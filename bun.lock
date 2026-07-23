@@ -6,7 +6,6 @@
       "name": "terrarium-harness",
       "dependencies": {
         "@openai/agents": "^0.13.5",
-        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@types/bun": "latest",
