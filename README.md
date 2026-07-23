@@ -81,12 +81,12 @@ Other env vars, all optional:
 - `CODEX_IDLE_TIMEOUT_MS` — abort an arm after this much event silence
   (default `600000`, 10m)
 
-## Running without containers
+Then point the harness at them in `.env`:
 
-Leaving `CONTROL_CONTAINER` / `GREPTILE_CONTAINER` unset runs both arms directly
-on the host, where either arm can read the other's checkout. This has no
-isolation and is only for a throwaway local smoke test — use containers for any
-real run.
+```dotenv
+CONTROL_CONTAINER=vivarium-control
+GREPTILE_CONTAINER=vivarium-greptile
+```
 
 ## Verify
 

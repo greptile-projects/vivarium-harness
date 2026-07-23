@@ -160,13 +160,14 @@ export class LiveStore {
     if (!state) return;
     state.endedAt = Date.now();
     state.threadId = result.threadId ?? state.threadId;
+    // Leave `activity` on the last real thing the arm was doing — the status
+    // word is already shown in the panel title/status, and the error/answer
+    // lines carry the outcome.
     if (result.error) {
       state.status = "failed";
       state.error = result.error;
-      state.activity = "failed";
     } else {
       state.status = "done";
-      state.activity = "done";
     }
     this.emit();
   }
