@@ -1,12 +1,25 @@
-import { MCPServerStdio } from "@openai/agents";
 import {
   RunArtifacts,
   type PersistedArmResult,
 } from "./artifacts.js";
 import type { ArmConfig, HarnessConfig } from "./config.js";
 import { workerPrompt } from "./prompt.js";
+import {
+  runArmStreaming,
+  type CodexMsg,
+  type StreamParams,
+  type StreamResult,
+} from "./live/stream.js";
 
 export type ArmResult = PersistedArmResult;
+
+export type ArmEventSink = (arm: string, msg: CodexMsg) => void;
+
+// Injectable so tests can simulate arms without spawning a real Codex process.
+export type AttemptRunner = (
+  params: StreamParams,
+  onEvent: (msg: CodexMsg) => void,
+) => Promise<StreamResult>;
 
 export interface HarnessRunResult {
   runId: string;
@@ -41,48 +54,13 @@ ${previousError}
 Diagnose the root cause, inspect the current repository state, and continue the original task from where it stopped. Resolve blockers yourself, retry with a different approach when necessary, and use the available tools and repository context. Do not ask for human help or wait for instructions.`;
 }
 
-function resultText(result: Awaited<ReturnType<MCPServerStdio["callToolResult"]>>): string {
-  const structured = result.structuredContent as
-    | { content?: unknown }
-    | undefined;
-  if (typeof structured?.content === "string") {
-    return structured.content;
-  }
-
-  const content = result.content as Array<{
-    type?: string;
-    text?: unknown;
-  }>;
-  const text = content
-    .filter((item) => item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text as string)
-    .join("\n");
-  return text || JSON.stringify(result.structuredContent ?? result.content);
-}
-
-function resultThreadId(
-  result: Awaited<ReturnType<MCPServerStdio["callToolResult"]>>,
-): string | undefined {
-  const structured = result.structuredContent as
-    | { threadId?: unknown }
-    | undefined;
-  if (typeof structured?.threadId === "string") {
-    return structured.threadId;
-  }
-
-  const content = result.content as Array<{
-    _meta?: { threadId?: unknown };
-  }>;
-  return content.find((item) => typeof item._meta?.threadId === "string")?._meta
-    ?.threadId as string | undefined;
-}
-
 export async function runArm(
-  server: Pick<MCPServerStdio, "callToolResult">,
   arm: ArmConfig,
   prompt: string,
   config: HarnessConfig,
   artifacts: RunArtifacts,
+  runner: AttemptRunner = runArmStreaming,
+  onEvent: ArmEventSink = () => {},
 ): Promise<ArmResult> {
   let threadId: string | undefined;
   let previousError = "The previous attempt did not complete.";
@@ -95,14 +73,18 @@ export async function runArm(
       attempt - 1,
       config.maxAttempts - 1,
     );
-    const toolName = threadId ? "codex-reply" : "codex";
-    const request = threadId
-      ? { prompt: recovery, threadId }
-      : codexArguments(
-          attempt === 1 ? prompt : `${prompt}\n\n${recovery}`,
-          arm.repo,
-          config.sandbox,
-        );
+    // Continue the same Codex thread across retries when one exists; otherwise
+    // restart fresh, prepending the recovery context to the original task.
+    const continuing = threadId !== undefined;
+    const attemptPrompt =
+      attempt === 1
+        ? prompt
+        : continuing
+          ? recovery
+          : `${prompt}\n\n${recovery}`;
+    const request = continuing
+      ? { tool: "codex-reply", threadId, prompt: attemptPrompt }
+      : { tool: "codex", ...codexArguments(attemptPrompt, arm.repo, config.sandbox) };
     const artifactDir = await artifacts.startAttempt(
       arm,
       request,
@@ -110,54 +92,66 @@ export async function runArm(
       attempt,
     );
 
+    const base = {
+      arm: arm.name,
+      repo: arm.repo,
+      attempt,
+      maxAttempts: config.maxAttempts,
+      startedAt: startedAt.toISOString(),
+      artifactDir,
+    };
+
     try {
-      const response = await server.callToolResult(toolName, request);
-      threadId = resultThreadId(response) ?? threadId;
-      if (response.isError) {
-        previousError = resultText(response);
-        finalResult = await artifacts.finishArm({
+      const result = await runner(
+        {
           arm: arm.name,
-          repo: arm.repo,
-          attempt,
-          maxAttempts: config.maxAttempts,
-          status: "failed",
-          startedAt: startedAt.toISOString(),
-          completedAt: new Date().toISOString(),
-          durationMs: Date.now() - startedAt.getTime(),
+          prompt: attemptPrompt,
+          cwd: arm.repo,
+          sandbox: config.sandbox,
+          codexHome: config.codexHome,
+          idleTimeoutMs: config.idleTimeoutMs,
           threadId,
-          error: previousError,
-          artifactDir,
-        }, response);
+        },
+        (msg) => onEvent(arm.name, msg),
+      );
+      threadId = result.threadId ?? threadId;
+
+      if (result.isError) {
+        previousError = result.output || "arm reported an error";
+        finalResult = await artifacts.finishArm(
+          {
+            ...base,
+            status: "failed",
+            completedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedAt.getTime(),
+            threadId,
+            error: previousError,
+          },
+          result.raw,
+        );
         continue;
       }
 
-      return await artifacts.finishArm({
-        arm: arm.name,
-        repo: arm.repo,
-        attempt,
-        maxAttempts: config.maxAttempts,
-        status: "succeeded",
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt.getTime(),
-        threadId,
-        output: resultText(response),
-        artifactDir,
-      }, response);
+      return await artifacts.finishArm(
+        {
+          ...base,
+          status: "succeeded",
+          completedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt.getTime(),
+          threadId,
+          output: result.output,
+        },
+        result.raw,
+      );
     } catch (error) {
       previousError = error instanceof Error ? error.message : String(error);
       finalResult = await artifacts.finishArm({
-        arm: arm.name,
-        repo: arm.repo,
-        attempt,
-        maxAttempts: config.maxAttempts,
+        ...base,
         status: "failed",
-        startedAt: startedAt.toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt.getTime(),
         threadId,
         error: previousError,
-        artifactDir,
       });
     }
   }
@@ -168,30 +162,9 @@ export async function runArm(
   return finalResult;
 }
 
-async function runArmIsolated(
-  arm: ArmConfig,
-  prompt: string,
-  config: HarnessConfig,
-  artifacts: RunArtifacts,
-): Promise<ArmResult> {
-  // Each arm gets its own codex mcp-server process so the two arms never share
-  // an in-flight connection or per-process state (e.g. the active cwd). This
-  // keeps them genuinely parallel and independent, as the experiment requires.
-  const server = new MCPServerStdio({
-    name: `Codex CLI (${arm.name})`,
-    fullCommand: "codex mcp-server",
-    clientSessionTimeoutSeconds: 86_400,
-  });
-  await server.connect();
-  try {
-    return await runArm(server, arm, prompt, config, artifacts);
-  } finally {
-    await server.close();
-  }
-}
-
 export async function runHarness(
   config: HarnessConfig,
+  onEvent: ArmEventSink = () => {},
 ): Promise<HarnessRunResult> {
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
@@ -199,7 +172,7 @@ export async function runHarness(
   try {
     const results = await Promise.all(
       config.arms.map((arm) =>
-        runArmIsolated(arm, prompt, config, artifacts),
+        runArm(arm, prompt, config, artifacts, runArmStreaming, onEvent),
       ),
     );
     await artifacts.complete(results);

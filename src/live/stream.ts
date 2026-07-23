@@ -23,13 +23,22 @@ export interface StreamParams {
   cwd: string;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   codexHome?: string;
+  // Hard ceiling on a single arm's run (default 24h).
   timeoutMs?: number;
+  // Abort the run if no `codex/event` arrives for this long (activity
+  // watchdog). Default 10 minutes; set <= 0 to disable.
+  idleTimeoutMs?: number;
+  // When set, continue an existing Codex thread (codex-reply) instead of
+  // starting a fresh session.
+  threadId?: string;
 }
 
 export interface StreamResult {
   threadId?: string;
   output: string;
   isError: boolean;
+  timedOut: boolean;
+  raw?: unknown;
 }
 
 function cleanEnv(codexHome?: string): Record<string, string> {
@@ -62,9 +71,9 @@ function extractOutput(result: {
 
 /**
  * Run one Codex session over its own stdio MCP process, forwarding every
- * `codex/event` notification to `onEvent` as it arrives. Unlike the
- * `@openai/agents` client the harness uses, this registers a notification
- * handler, so the live stream is observed instead of discarded.
+ * `codex/event` notification to `onEvent` as it arrives. Registering a
+ * notification handler is what lets the harness observe the live event
+ * stream — and drive the activity watchdog — instead of discarding it.
  */
 export async function runArmStreaming(
   params: StreamParams,
@@ -81,8 +90,27 @@ export async function runArmStreaming(
     version: "0.1.0",
   });
 
+  // Activity watchdog: each `codex/event` resets the idle timer; a stretch of
+  // silence longer than idleTimeoutMs aborts the call. This catches wedged
+  // runs quickly instead of waiting out the 24h hard ceiling.
+  const idleTimeoutMs = params.idleTimeoutMs ?? 600_000;
+  const controller = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const bumpWatchdog = (): void => {
+    if (idleTimeoutMs <= 0) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(
+        new Error(`no codex/event for ${idleTimeoutMs}ms`),
+      );
+    }, idleTimeoutMs);
+  };
+
   client.fallbackNotificationHandler = async (notification) => {
     if (notification.method !== "codex/event") return;
+    bumpWatchdog();
     const raw = notification.params as
       | { msg?: CodexMsg; _meta?: CodexEventMeta }
       | undefined;
@@ -90,23 +118,24 @@ export async function runArmStreaming(
   };
 
   await client.connect(transport);
+  bumpWatchdog();
+  const continuing = params.threadId !== undefined;
   try {
     const result = (await client.callTool(
       {
-        name: "codex",
-        arguments: {
-          prompt: params.prompt,
-          cwd: params.cwd,
-          sandbox: params.sandbox,
-          "approval-policy": "never",
-        },
+        name: continuing ? "codex-reply" : "codex",
+        arguments: continuing
+          ? { threadId: params.threadId, prompt: params.prompt }
+          : {
+              prompt: params.prompt,
+              cwd: params.cwd,
+              sandbox: params.sandbox,
+              "approval-policy": "never",
+            },
         _meta: { progressToken: `${params.arm}-progress` },
       },
       undefined,
-      // Codex streams custom `codex/event` notifications, not standard
-      // `notifications/progress`, so the SDK cannot reset this on activity —
-      // it is a hard ceiling on a single arm's run. 24h fits a long rung.
-      { timeout: params.timeoutMs ?? 86_400_000 },
+      { timeout: params.timeoutMs ?? 86_400_000, signal: controller.signal },
     )) as {
       structuredContent?: { threadId?: string };
       content?: unknown;
@@ -117,8 +146,18 @@ export async function runArmStreaming(
       threadId: result.structuredContent?.threadId,
       output: extractOutput(result),
       isError: Boolean(result.isError),
+      timedOut: false,
+      raw: result,
     };
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(
+        `watchdog aborted ${params.arm}: no activity for ${idleTimeoutMs}ms`,
+      );
+    }
+    throw error;
   } finally {
+    if (idleTimer) clearTimeout(idleTimer);
     await client.close();
   }
 }

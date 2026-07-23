@@ -16,6 +16,7 @@ export interface HarnessConfig {
   resultsDir: string;
   codexHome: string;
   maxAttempts: number;
+  idleTimeoutMs: number;
 }
 
 function valueAfter(args: string[], flag: string): string | undefined {
@@ -54,6 +55,17 @@ function maxAttemptsFromEnv(value: string | undefined): number {
   return attempts;
 }
 
+function idleTimeoutFromEnv(value: string | undefined): number {
+  if (value === undefined) return 600_000;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms < 1_000) {
+    throw new Error(
+      "CODEX_IDLE_TIMEOUT_MS must be an integer of at least 1000 (milliseconds)",
+    );
+  }
+  return ms;
+}
+
 export function parseArgs(
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -80,6 +92,7 @@ export function parseArgs(
     resultsDir: env.RESULTS_DIR ?? "results",
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
     maxAttempts: maxAttemptsFromEnv(env.MAX_ATTEMPTS),
+    idleTimeoutMs: idleTimeoutFromEnv(env.CODEX_IDLE_TIMEOUT_MS),
   };
 }
 
@@ -122,6 +135,8 @@ Optional environment:
   RESULTS_DIR=<path>      Defaults to ./results
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts
   MAX_ATTEMPTS=<count>    Defaults to 3 autonomous attempts per arm
+  CODEX_IDLE_TIMEOUT_MS=<ms>  Abort an arm after this much event silence
+                          (activity watchdog). Defaults to 600000 (10m)
 
 The caller supplies only --ticket. Repository and tool isolation are deployment
 configuration, not per-ticket orchestration inputs.`;

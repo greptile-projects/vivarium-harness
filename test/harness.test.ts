@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunArtifacts } from "../src/artifacts.js";
 import type { HarnessConfig } from "../src/config.js";
-import { runArm } from "../src/harness.js";
+import { runArm, type AttemptRunner } from "../src/harness.js";
+import type { StreamParams, StreamResult } from "../src/live/stream.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -16,76 +17,73 @@ afterEach(async () => {
   );
 });
 
+async function makeConfig(): Promise<{
+  config: HarnessConfig;
+  artifacts: RunArtifacts;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "terrarium-retry-"));
+  temporaryDirectories.push(root);
+  const codexHome = join(root, "codex");
+  const sessions = join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, "rollout-retry-thread.jsonl"),
+    '{"thread":"retry-thread"}\n',
+  );
+
+  const config: HarnessConfig = {
+    ticket: "ENG-123",
+    arms: [
+      { name: "control", repo: "/tmp/control" },
+      { name: "greptile", repo: "/tmp/greptile" },
+    ],
+    sandbox: "workspace-write",
+    resultsDir: join(root, "results"),
+    codexHome,
+    maxAttempts: 3,
+    idleTimeoutMs: 600_000,
+  };
+  const artifacts = await RunArtifacts.create(config, "original prompt");
+  return { config, artifacts };
+}
+
 describe("autonomous arm retries", () => {
   it("continues the same thread and preserves every attempt", async () => {
-    const root = await mkdtemp(join(tmpdir(), "terrarium-retry-"));
-    temporaryDirectories.push(root);
-    const codexHome = join(root, "codex");
-    const sessions = join(codexHome, "sessions");
-    await mkdir(sessions, { recursive: true });
-    await writeFile(
-      join(sessions, "rollout-retry-thread.jsonl"),
-      '{"thread":"retry-thread"}\n',
-    );
-
-    const config: HarnessConfig = {
-      ticket: "ENG-123",
-      arms: [
-        { name: "control", repo: "/tmp/control" },
-        { name: "greptile", repo: "/tmp/greptile" },
-      ],
-      sandbox: "workspace-write",
-      resultsDir: join(root, "results"),
-      codexHome,
-      maxAttempts: 3,
-    };
-    const artifacts = await RunArtifacts.create(config, "original prompt");
-    const calls: Array<{ toolName: string; request: Record<string, unknown> }> =
-      [];
-    const responses = [
+    const { config, artifacts } = await makeConfig();
+    const calls: StreamParams[] = [];
+    const results: StreamResult[] = [
       {
         isError: true,
-        structuredContent: {
-          threadId: "retry-thread",
-          content: "first attempt failed",
-        },
-        content: [{ type: "text", text: "first attempt failed" }],
+        output: "first attempt failed",
+        threadId: "retry-thread",
+        timedOut: false,
       },
       {
         isError: false,
-        structuredContent: {
-          threadId: "retry-thread",
-          content: "recovered",
-        },
-        content: [{ type: "text", text: "recovered" }],
+        output: "recovered",
+        threadId: "retry-thread",
+        timedOut: false,
       },
     ];
-    const server = {
-      async callToolResult(
-        toolName: string,
-        request: Record<string, unknown>,
-      ) {
-        calls.push({ toolName, request });
-        return responses.shift() as never;
-      },
+    const runner: AttemptRunner = async (params) => {
+      calls.push(params);
+      return results.shift() as StreamResult;
     };
 
     const result = await runArm(
-      server,
       config.arms[0],
       "original prompt",
       config,
       artifacts,
+      runner,
     );
 
     expect(result.status).toBe("succeeded");
     expect(result.attempt).toBe(2);
-    expect(calls.map((call) => call.toolName)).toEqual([
-      "codex",
-      "codex-reply",
-    ]);
-    expect(calls[1].request.threadId).toBe("retry-thread");
-    expect(calls[1].request.prompt).toContain("first attempt failed");
+    // First attempt starts fresh; the retry continues the same thread.
+    expect(calls[0].threadId).toBeUndefined();
+    expect(calls[1].threadId).toBe("retry-thread");
+    expect(calls[1].prompt).toContain("first attempt failed");
     expect(
       await readFile(
         join(artifacts.directory, "control", "attempt-01", "error.txt"),
@@ -98,5 +96,45 @@ describe("autonomous arm retries", () => {
         "utf8",
       ),
     ).toBe("recovered\n");
+  });
+
+  it("records a watchdog abort as a failed attempt and retries", async () => {
+    const { config, artifacts } = await makeConfig();
+    const calls: StreamParams[] = [];
+    let call = 0;
+    const runner: AttemptRunner = async (params) => {
+      calls.push(params);
+      call += 1;
+      if (call === 1) {
+        throw new Error("watchdog aborted control: no activity for 600000ms");
+      }
+      return {
+        isError: false,
+        output: "recovered after watchdog",
+        threadId: "retry-thread",
+        timedOut: false,
+      };
+    };
+
+    const result = await runArm(
+      config.arms[0],
+      "original prompt",
+      config,
+      artifacts,
+      runner,
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(result.attempt).toBe(2);
+    // A thrown watchdog abort produced no thread id, so the retry restarts
+    // fresh rather than continuing a thread that never formed.
+    expect(calls[0].threadId).toBeUndefined();
+    expect(calls[1].threadId).toBeUndefined();
+    expect(
+      await readFile(
+        join(artifacts.directory, "control", "attempt-01", "error.txt"),
+        "utf8",
+      ),
+    ).toContain("watchdog aborted");
   });
 });

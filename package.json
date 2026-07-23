@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/agents": "^0.13.5",
     "ink": "^5",
     "react": "^18"
   },

@@ -33,6 +33,7 @@ describe("run artifacts", () => {
       resultsDir: join(root, "results"),
       codexHome,
       maxAttempts: 3,
+      idleTimeoutMs: 600_000,
     };
     const artifacts = await RunArtifacts.create(config, "exact prompt");
     const results = [];

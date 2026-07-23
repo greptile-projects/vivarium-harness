@@ -134,6 +134,7 @@ export class RunArtifacts {
           resultsDir: resolve(config.resultsDir),
           codexHome: resolve(config.codexHome),
           maxAttempts: config.maxAttempts,
+          idleTimeoutMs: config.idleTimeoutMs,
         }),
       ),
     ]);
