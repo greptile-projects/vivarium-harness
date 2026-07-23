@@ -29,13 +29,21 @@ arm_home="${CODEX_ARM_HOME:-$HOME/.terrarium/$name}"
 # doesn't materialize it as a root-owned directory.
 mkdir -p "$arm_home/sessions"
 
-docker run -d --rm \
-  --name "$name" \
-  -v "$checkout:/workspace" \
-  -v "$HOME/.codex/auth.json:/codex/auth.json:ro" \
-  -v "$arm_home/sessions:/codex/sessions" \
-  ${token:+-e GH_TOKEN="$token"} \
-  ${token:+-e GITHUB_TOKEN="$token"} \
-  "$image"
+# Build argv as an array so the optional token flags stay correctly split into
+# separate `-e` / `KEY=value` words. Inlining `${token:+-e GH_TOKEN="$token"}`
+# does not: the whole thing collapses into one argv element, so docker never
+# sees a valid -e flag and the container starts without GitHub auth.
+run_args=(
+  -d --rm
+  --name "$name"
+  -v "$checkout:/workspace"
+  -v "$HOME/.codex/auth.json:/codex/auth.json:ro"
+  -v "$arm_home/sessions:/codex/sessions"
+)
+if [[ -n "$token" ]]; then
+  run_args+=(-e "GH_TOKEN=$token" -e "GITHUB_TOKEN=$token")
+fi
+
+docker run "${run_args[@]}" "$image"
 
 echo "started $name  (checkout: $checkout, sessions: $arm_home/sessions)"
