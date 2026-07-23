@@ -103,7 +103,10 @@ export async function runArmStreaming(
         _meta: { progressToken: `${params.arm}-progress` },
       },
       undefined,
-      { timeout: params.timeoutMs ?? 3_600_000 },
+      // Codex streams custom `codex/event` notifications, not standard
+      // `notifications/progress`, so the SDK cannot reset this on activity —
+      // it is a hard ceiling on a single arm's run. 24h fits a long rung.
+      { timeout: params.timeoutMs ?? 86_400_000 },
     )) as {
       structuredContent?: { threadId?: string };
       content?: unknown;

@@ -180,7 +180,7 @@ async function runArmIsolated(
   const server = new MCPServerStdio({
     name: `Codex CLI (${arm.name})`,
     fullCommand: "codex mcp-server",
-    clientSessionTimeoutSeconds: 3_600,
+    clientSessionTimeoutSeconds: 86_400,
   });
   await server.connect();
   try {
