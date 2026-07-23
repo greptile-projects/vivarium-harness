@@ -44,40 +44,29 @@ a run that fails for infrastructure reasons is marked `failed`.
 
 ## Greg Tile (the planner)
 
-A single ticket runs one rung. Greg Tile climbs the whole ladder. Greg is a
-stateless Codex planner sitting on top of the harness: each turn he plans the
-next rung toward a North Star, files a Linear ticket for it, appends it to a
-shared ladder file, then mechanically runs the two-arm harness on it. Repeat.
+A single ticket runs one rung. Greg Tile climbs the whole ladder toward the
+North Star (a working GitHub clone):
 
 ```bash
-bun run greg -- --north-star "Build a working clone of GitHub" --max-rungs 10
+bun run greg
 ```
 
-Greg himself has no memory across rungs — his only state is `LADDER.md`, which
-lists the North Star and every rung planned and built so far. That file is
-symlinked into both checkouts (the local stand-in for the docker bind mount the
-experiment uses), so both build arms can see where the work is going.
+Same setup as the harness — `CONTROL_REPO` and `GREPTILE_REPO` — and nothing
+else to configure. Each turn Greg plans the next rung, files a Linear ticket
+for it, appends it to `LADDER.md`, then mechanically runs the two-arm harness on
+it. He keeps climbing until he reports the North Star is reached.
+
+Greg has no memory across rungs — his only state is `LADDER.md`, which lists the
+North Star and every rung planned and built so far. That file is symlinked into
+both checkouts (the local stand-in for the docker bind mount), so both build
+arms can see where the work is going. Under docker isolation, bind-mount the
+ladder to `LADDER.md` inside each arm's container instead; Greg leaves any
+pre-existing file at that path untouched.
 
 The loop is deliberately mechanical: Greg (the agent) only plans one rung and,
 if a Linear MCP is configured in your Codex environment, files a ticket for it.
-Running the harness is not one of Greg's tool calls — the loop calls it directly
-in code. Each rung's Codex session is fresh (no thread continuity), and each
-rung's harness run writes its own `results/<run-id>/` as usual.
-
-Greg reads two files' worth of context: the North Star and the ladder. He stops
-early if he reports the North Star is reached, otherwise after `--max-rungs`.
-
-Greg options (flags override env):
-
-- `--north-star <text>` / `GREG_NORTH_STAR` — the eventual goal
-- `--ladder <path>` / `GREG_LADDER` — canonical ladder file (default `./LADDER.md`)
-- `--max-rungs <count>` / `GREG_MAX_RUNGS` — rungs before stopping (default 10)
-- `GREG_SANDBOX` — Greg's own sandbox (default `read-only`; the builder arms
-  keep their own `CODEX_SANDBOX`)
-
-Under docker isolation, skip the symlink and bind-mount the canonical ladder to
-`LADDER.md` inside each arm's container instead; Greg leaves any pre-existing
-file at that path untouched.
+Running the harness is not one of Greg's tool calls — the loop calls it directly.
+Each rung is a fresh Codex session and writes its own `results/<run-id>/`.
 
 Other env vars, all optional:
 

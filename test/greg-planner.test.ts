@@ -7,8 +7,8 @@ import {
 
 describe("plannerPrompt", () => {
   it("embeds the North Star, ladder, and output contract", () => {
-    const prompt = plannerPrompt("Clone GitHub", "## Rung 1: Bootstrap", 2);
-    expect(prompt).toContain("Clone GitHub");
+    const prompt = plannerPrompt("## Rung 1: Bootstrap", 2);
+    expect(prompt).toContain("clone of GitHub");
     expect(prompt).toContain("## Rung 1: Bootstrap");
     expect(prompt).toContain("rung 2");
     expect(prompt).toContain("<<<RUNG>>>");
@@ -16,7 +16,7 @@ describe("plannerPrompt", () => {
   });
 
   it("marks the first turn when the ladder is empty", () => {
-    expect(plannerPrompt("goal", "   ", 1)).toContain("very first");
+    expect(plannerPrompt("   ", 1)).toContain("very first");
   });
 });
 

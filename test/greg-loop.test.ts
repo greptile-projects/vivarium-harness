@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessConfig } from "../src/config.js";
 import type { HarnessRunResult } from "../src/harness.js";
-import type { GregConfig } from "../src/greg/config.js";
 import { runGreg } from "../src/greg/loop.js";
 import type { RungOutcome } from "../src/greg/planner.js";
 
@@ -18,7 +17,10 @@ afterEach(async () => {
   );
 });
 
-async function makeConfig(maxRungs: number): Promise<GregConfig> {
+async function makeSetup(): Promise<{
+  base: HarnessConfig;
+  ladderPath: string;
+}> {
   const root = await mkdtemp(join(tmpdir(), "greg-loop-"));
   const control = await mkdtemp(join(tmpdir(), "greg-loop-control-"));
   const greptile = await mkdtemp(join(tmpdir(), "greg-loop-greptile-"));
@@ -37,14 +39,7 @@ async function makeConfig(maxRungs: number): Promise<GregConfig> {
     idleTimeoutMs: 600_000,
   };
 
-  return {
-    base,
-    northStar: "Clone GitHub",
-    ladderPath: join(root, "LADDER.md"),
-    ladderLinkName: "LADDER.md",
-    maxRungs,
-    plannerSandbox: "read-only",
-  };
+  return { base, ladderPath: join(root, "LADDER.md") };
 }
 
 function fakeRun(runId: string): HarnessRunResult {
@@ -57,8 +52,8 @@ function fakeRun(runId: string): HarnessRunResult {
 }
 
 describe("runGreg", () => {
-  it("plans, links, appends, and mechanically runs each rung in order", async () => {
-    const config = await makeConfig(5);
+  it("plans, links, appends, and mechanically runs each rung until the North Star", async () => {
+    const { base, ladderPath } = await makeSetup();
     const outcomes: RungOutcome[] = [
       {
         kind: "rung",
@@ -73,17 +68,21 @@ describe("runGreg", () => {
     const seenLadders: string[] = [];
     const harnessTickets: string[] = [];
 
-    const iterations = await runGreg(config, {
-      propose: async (_config, ladder) => {
-        seenLadders.push(ladder);
-        return outcomes.shift() as RungOutcome;
+    const iterations = await runGreg(
+      base,
+      {
+        propose: async (_base, _ladderPath, ladder) => {
+          seenLadders.push(ladder);
+          return outcomes.shift() as RungOutcome;
+        },
+        harness: async (harnessConfig) => {
+          harnessTickets.push(harnessConfig.ticket);
+          return fakeRun(`run-${harnessTickets.length}`);
+        },
+        log: () => {},
       },
-      harness: async (harnessConfig) => {
-        harnessTickets.push(harnessConfig.ticket);
-        return fakeRun(`run-${harnessTickets.length}`);
-      },
-      log: () => {},
-    });
+      ladderPath,
+    );
 
     // Two rungs built, then stopped on the north-star signal.
     expect(iterations).toHaveLength(2);
@@ -98,7 +97,7 @@ describe("runGreg", () => {
     expect(seenLadders[1]).toContain("## Rung 1: Rung one");
 
     // The ladder records both the plan and the run outcome for each rung.
-    const ladder = await readFile(config.ladderPath, "utf8");
+    const ladder = await readFile(ladderPath, "utf8");
     expect(ladder).toContain("## Rung 1: Rung one");
     expect(ladder).toContain("- **Linear:** ENG-1");
     expect(ladder).toContain("**Run `run-1`:** completed");
@@ -106,22 +105,9 @@ describe("runGreg", () => {
     expect(ladder).toContain("**Run `run-2`:** completed");
 
     // The ladder is linked into both checkouts.
-    for (const arm of config.base.arms) {
+    for (const arm of base.arms) {
       const link = join(arm.repo, "LADDER.md");
       expect((await readFile(link, "utf8")).length).toBeGreaterThan(0);
     }
-  });
-
-  it("stops at maxRungs even when Greg keeps planning", async () => {
-    const config = await makeConfig(2);
-    const iterations = await runGreg(config, {
-      propose: async (_config, _ladder, index) => ({
-        kind: "rung",
-        rung: { title: `Rung ${index}`, description: `body ${index}` },
-      }),
-      harness: async () => fakeRun("r"),
-      log: () => {},
-    });
-    expect(iterations).toHaveLength(2);
   });
 });
