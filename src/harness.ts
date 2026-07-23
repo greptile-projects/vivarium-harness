@@ -15,6 +15,11 @@ export type ArmResult = PersistedArmResult;
 
 export type ArmEventSink = (arm: string, msg: CodexMsg) => void;
 
+// Fired the moment an individual arm settles, independent of the other arms
+// still running — lets a live view retire that arm's panel immediately
+// instead of waiting for the whole Promise.all to resolve.
+export type ArmCompleteSink = (result: ArmResult) => void;
+
 // Injectable so tests can simulate arms without spawning a real Codex process.
 export type AttemptRunner = (
   params: StreamParams,
@@ -165,6 +170,7 @@ export async function runArm(
 export async function runHarness(
   config: HarnessConfig,
   onEvent: ArmEventSink = () => {},
+  onArmComplete: ArmCompleteSink = () => {},
 ): Promise<HarnessRunResult> {
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
@@ -172,7 +178,12 @@ export async function runHarness(
   try {
     const results = await Promise.all(
       config.arms.map((arm) =>
-        runArm(arm, prompt, config, artifacts, runArmStreaming, onEvent),
+        runArm(arm, prompt, config, artifacts, runArmStreaming, onEvent).then(
+          (result) => {
+            onArmComplete(result);
+            return result;
+          },
+        ),
       ),
     );
     await artifacts.complete(results);

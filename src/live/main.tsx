@@ -7,7 +7,11 @@ import { join, resolve } from "node:path";
 import { App } from "./ui.js";
 import { LiveStore, summarize } from "./store.js";
 import type { CodexMsg } from "./stream.js";
-import { runHarness, type ArmEventSink } from "../harness.js";
+import {
+  runHarness,
+  type ArmCompleteSink,
+  type ArmEventSink,
+} from "../harness.js";
 import { parseArgs, validateConfig, type HarnessConfig } from "../config.js";
 
 function flag(args: string[], name: string): string | undefined {
@@ -100,6 +104,17 @@ async function main(): Promise<void> {
     void tee(arm, msg);
   };
 
+  // Retire each arm's panel as soon as that arm settles, rather than waiting
+  // for every arm to finish — otherwise a fast arm shows "working" until the
+  // slowest one completes.
+  const onArmComplete: ArmCompleteSink = (result) => {
+    store.finish(result.arm, {
+      threadId: result.threadId,
+      error:
+        result.status === "failed" ? result.error ?? "arm failed" : undefined,
+    });
+  };
+
   const app = useTui ? render(<App store={store} ticket={config.ticket} />) : undefined;
   if (!useTui) {
     process.stdout.write(
@@ -108,14 +123,7 @@ async function main(): Promise<void> {
   }
 
   // Single run: durable artifacts under runHarness, live events via onEvent.
-  const run = await runHarness(config, onEvent);
-  for (const result of run.results) {
-    store.finish(result.arm, {
-      threadId: result.threadId,
-      error:
-        result.status === "failed" ? result.error ?? "arm failed" : undefined,
-    });
-  }
+  const run = await runHarness(config, onEvent, onArmComplete);
 
   if (app) {
     await app.waitUntilExit();
