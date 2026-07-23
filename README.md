@@ -1,6 +1,8 @@
-# *terrarium* harness 🪴
+# terrarium harness
 
-Runs the same Linear ticket through two Codex workers — one in a control checkout, one in a Greptile checkout — and saves a complete, arm-separated record of every run.
+Runs the same Linear ticket through two Codex workers at once — one against a
+control checkout, one against a Greptile checkout — and saves everything each
+one did.
 
 ## Setup
 
@@ -9,14 +11,14 @@ bun install
 cp .env.example .env
 ```
 
-Set the checkout paths in `.env`:
+Edit `.env` and point it at two checkouts of the same commit:
 
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
 ```
 
-Requires Bun, an authenticated Codex CLI, and two checkouts of the same commit.
+Requires Bun and an authenticated Codex CLI.
 
 ## Run
 
@@ -24,20 +26,45 @@ Requires Bun, an authenticated Codex CLI, and two checkouts of the same commit.
 bun start -- --ticket "Your ticket description"
 ```
 
-Each invocation creates `results/<run-id>/`. Run-level files include the
-manifest, exact ticket, generated prompt, and resolved configuration. The
-`control/` and `greptile/` directories each contain the exact MCP request, raw
-response, output or error, status and timing metadata, and a copy of the Codex
-JSONL transcript when Codex returns a thread ID. Each autonomous retry is kept
-in its own `attempt-01/`, `attempt-02/`, etc. directory. The CLI prints the
-artifact directory with its result.
+For a live TUI view of both arms as they run:
 
-Set `RESULTS_DIR` to change the artifact root. If Codex stores sessions outside
-`~/.codex`, set `CODEX_HOME` so the harness can find and copy each transcript.
-Failed arms retry up to three times by default, continuing the same Codex thread
-when possible. Set `MAX_ATTEMPTS` to another positive integer. Runs that exhaust
-an arm's attempts are marked `completed_with_failures`; infrastructure failures
-are marked `failed`.
+```bash
+bun run live -- --ticket "Your ticket description"
+```
+
+Each run writes to `results/<run-id>/`: the ticket, generated prompt, and
+config at the top level, then a `control/` and `greptile/` directory each
+holding that arm's MCP request/response, status, timing, and a copy of the
+Codex transcript. Retries get their own `attempt-01/`, `attempt-02/`, etc.
+subdirectories. The CLI prints the artifact directory when it's done.
+
+Failed arms retry up to 3 times by default (set `MAX_ATTEMPTS` to change
+that). A run that exhausts its retries is marked `completed_with_failures`;
+a run that fails for infrastructure reasons is marked `failed`.
+
+Other env vars, all optional:
+
+- `RESULTS_DIR` — where artifacts go (default `results`)
+- `CODEX_HOME` — where to find Codex sessions, if not `~/.codex`
+
+## Container isolation (optional)
+
+By default both arms run on your host, and either one could technically read
+the other's checkout. To actually isolate them, run each arm's Codex in its
+own container:
+
+```bash
+docker build -t terrarium-arm .
+scripts/arm-run.sh terrarium-control /abs/path/to/control-checkout <gh-token>
+scripts/arm-run.sh terrarium-greptile /abs/path/to/greptile-checkout <gh-token>
+```
+
+Then point the harness at them in `.env`:
+
+```dotenv
+CONTROL_CONTAINER=terrarium-control
+GREPTILE_CONTAINER=terrarium-greptile
+```
 
 ## Verify
 
