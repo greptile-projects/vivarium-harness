@@ -38,9 +38,9 @@ holding that arm's MCP request/response, status, timing, and a copy of the
 Codex transcript. Retries get their own `attempt-01/`, `attempt-02/`, etc.
 subdirectories. The CLI prints the artifact directory when it's done.
 
-Failed arms retry up to 3 times by default (set `MAX_ATTEMPTS` to change
-that). A run that exhausts its retries is marked `completed_with_failures`;
-a run that fails for infrastructure reasons is marked `failed`.
+Failed arms retry up to 3 times. A run that exhausts its retries is marked
+`completed_with_failures`; a run that fails for infrastructure reasons is
+marked `failed`.
 
 ## Greg Tile (the planner)
 
@@ -77,10 +77,14 @@ if a Linear MCP is configured in your Codex environment, files a ticket for it.
 Running the harness is not one of Greg's tool calls — the loop calls it directly.
 Each rung is a fresh Codex session and writes its own `results/<run-id>/`.
 
-Other env vars, all optional:
+Two optional env vars, both deployment-level:
 
-- `RESULTS_DIR` — where artifacts go (default `results`)
+- `CODEX_SANDBOX` — arm sandbox mode (default `workspace-write`; the disposable
+  VMs use `danger-full-access`)
 - `CODEX_HOME` — where to find Codex sessions, if not `~/.codex`
+
+Everything else is fixed in code: artifacts go to `results/`, arms get 3
+attempts, and the idle watchdog is 10 minutes.
 
 ## Container isolation (optional)
 

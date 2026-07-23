@@ -12,7 +12,13 @@ import {
   type ArmCompleteSink,
   type ArmEventSink,
 } from "../harness.js";
-import { parseArgs, validateConfig, type HarnessConfig } from "../config.js";
+import {
+  parseArgs,
+  validateConfig,
+  RESULTS_DIR,
+  IDLE_TIMEOUT_MS,
+  type HarnessConfig,
+} from "../config.js";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -62,10 +68,10 @@ async function buildConfig(
         { name: "greptile", repo: greptile },
       ],
       sandbox: "read-only",
-      resultsDir: process.env.RESULTS_DIR ?? "results",
+      resultsDir: RESULTS_DIR,
       codexHome: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
       maxAttempts: 1,
-      idleTimeoutMs: 600_000,
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
     },
   };
 }
