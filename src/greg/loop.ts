@@ -14,6 +14,11 @@ import { NORTH_STAR, proposeRung, type PlannedRung } from "./planner.js";
 // The one shared ladder, mounted into both checkouts.
 export const LADDER_PATH = resolve("LADDER.md");
 
+// Runaway guard: Greg pauses after this many rungs so a human reconfirms before
+// he climbs further. Re-running continues from the ladder; --unbounded removes
+// the cap entirely.
+export const MAX_RUNGS = 10;
+
 export interface GregIteration {
   rung: Rung;
   run: HarnessRunResult;
@@ -34,14 +39,14 @@ export interface GregDeps {
 // The whole of Greg Tile: a mechanical loop, not an agent that decides. Greg
 // (the agent) only plans one rung; the loop appends it to the ladder and then
 // runs the harness on it directly — never as one of Greg's tool calls. The
-// North Star is a direction, not a destination, so the loop never terminates on
-// its own — it climbs until the process is stopped. `rungLimit` is an internal
-// seam for tests only; production leaves it Infinity.
+// North Star is a direction, not a destination, so the loop has no natural end;
+// it pauses after `rungLimit` rungs (default 10) for a human to reconfirm, or
+// runs unbounded when passed Infinity.
 export async function runGreg(
   base: HarnessConfig,
+  rungLimit: number = MAX_RUNGS,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
-  rungLimit: number = Infinity,
 ): Promise<GregIteration[]> {
   const propose = deps.propose ?? proposeRung;
   const harness = deps.harness ?? runHarness;

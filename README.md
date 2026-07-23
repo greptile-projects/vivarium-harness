@@ -54,8 +54,16 @@ bun run greg
 Same setup as the harness — `CONTROL_REPO` and `GREPTILE_REPO` — and nothing
 else to configure. Each turn Greg plans the next rung, files a Linear ticket
 for it, appends it to `LADDER.md`, then mechanically runs the two-arm harness on
-it. The North Star is a direction, not a destination: Greg keeps climbing until
-you stop the process.
+it.
+
+The North Star is a direction, not a destination, so there is no natural end. To
+guard against runaway, Greg pauses after 10 rungs for you to reconfirm — just
+re-run `bun run greg` to continue (he reads the ladder, so he picks up where he
+left off). Pass `--unbounded` to climb without the cap:
+
+```bash
+bun run greg -- --unbounded
+```
 
 Greg has no memory across rungs — his only state is `LADDER.md`, which lists the
 North Star and every rung planned and built so far. That file is symlinked into

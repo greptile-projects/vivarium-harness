@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessConfig } from "../src/config.js";
 import type { HarnessRunResult } from "../src/harness.js";
-import { runGreg } from "../src/greg/loop.js";
+import { MAX_RUNGS, runGreg } from "../src/greg/loop.js";
 import type { PlannedRung } from "../src/greg/planner.js";
 
 const temporaryDirectories: string[] = [];
@@ -61,9 +61,10 @@ describe("runGreg", () => {
     const seenLadders: string[] = [];
     const harnessTickets: string[] = [];
 
-    // rungLimit stops the otherwise-endless loop after the two scripted rungs.
+    // The rung cap stops the otherwise-endless loop after the two scripted rungs.
     const iterations = await runGreg(
       base,
+      2,
       {
         propose: async (_base, _ladderPath, ladder, index) => {
           seenLadders.push(ladder);
@@ -76,7 +77,6 @@ describe("runGreg", () => {
         log: () => {},
       },
       ladderPath,
-      2,
     );
 
     expect(iterations).toHaveLength(2);
@@ -103,5 +103,27 @@ describe("runGreg", () => {
       const link = join(arm.repo, "LADDER.md");
       expect((await readFile(link, "utf8")).length).toBeGreaterThan(0);
     }
+  });
+
+  it("pauses at the default rung cap for a human to reconfirm", async () => {
+    const { base, ladderPath } = await makeSetup();
+    let planned = 0;
+
+    const iterations = await runGreg(
+      base,
+      undefined, // fall back to the default MAX_RUNGS cap
+      {
+        propose: async (_base, _ladderPath, _ladder, index) => {
+          planned += 1;
+          return { title: `Rung ${index}`, description: `body ${index}` };
+        },
+        harness: async () => fakeRun("r"),
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(iterations).toHaveLength(MAX_RUNGS);
+    expect(planned).toBe(MAX_RUNGS);
   });
 });
