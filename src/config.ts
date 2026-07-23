@@ -6,7 +6,20 @@ export type ArmName = "control" | "greptile";
 
 export interface ArmConfig {
   name: ArmName;
+  // Host path to the arm's checkout: the bind-mount source and where the
+  // harness runs its own file ops (artifacts, greptile review).
   repo: string;
+  // When set, the arm's codex runs via `docker exec` in this container instead
+  // of on the host, giving each arm an isolated filesystem.
+  container?: string;
+  // Codex's cwd inside the container (defaults to /workspace). Ignored when the
+  // arm runs on the host.
+  workspace?: string;
+  // Host CODEX_HOME for this arm — the directory whose `sessions/` the harness
+  // scans to recover the arm's transcript. Containerized arms write sessions
+  // inside the container, so this must point at the host dir arm-run.sh mounts
+  // in. Unset means fall back to the run-wide CODEX_HOME.
+  codexHome?: string;
 }
 
 export interface HarnessConfig {
@@ -55,6 +68,20 @@ function maxAttemptsFromEnv(value: string | undefined): number {
   return attempts;
 }
 
+// A containerized arm writes its Codex sessions inside the container, so they
+// must land on a host directory the harness can scan. arm-run.sh mounts
+// $HOME/.vivarium/<container>/sessions into the container's CODEX_HOME; mirror
+// that convention here so finishArm finds the transcript. Host-mode arms
+// (no container) return undefined and fall back to the run-wide CODEX_HOME.
+function armCodexHomeFromEnv(
+  explicit: string | undefined,
+  container: string | undefined,
+): string | undefined {
+  if (explicit) return explicit;
+  if (container) return join(homedir(), ".vivarium", container);
+  return undefined;
+}
+
 function idleTimeoutFromEnv(value: string | undefined): number {
   if (value === undefined) return 600_000;
   const ms = Number(value);
@@ -85,8 +112,26 @@ export function parseArgs(
   return {
     ticket,
     arms: [
-      { name: "control", repo: env.CONTROL_REPO },
-      { name: "greptile", repo: env.GREPTILE_REPO },
+      {
+        name: "control",
+        repo: env.CONTROL_REPO,
+        container: env.CONTROL_CONTAINER,
+        workspace: env.CONTROL_WORKSPACE,
+        codexHome: armCodexHomeFromEnv(
+          env.CONTROL_CODEX_HOME,
+          env.CONTROL_CONTAINER,
+        ),
+      },
+      {
+        name: "greptile",
+        repo: env.GREPTILE_REPO,
+        container: env.GREPTILE_CONTAINER,
+        workspace: env.GREPTILE_WORKSPACE,
+        codexHome: armCodexHomeFromEnv(
+          env.GREPTILE_CODEX_HOME,
+          env.GREPTILE_CONTAINER,
+        ),
+      },
     ],
     sandbox: sandboxFromEnv(env.CODEX_SANDBOX),
     resultsDir: env.RESULTS_DIR ?? "results",
@@ -131,6 +176,15 @@ Required environment:
   GREPTILE_REPO=<path>    Checkout with access to Greptile comments
 
 Optional environment:
+  CONTROL_CONTAINER=<name>    Run the control arm's codex via docker exec in
+                          this container (checkout mounted at the workspace
+                          path). Unset runs on the host with no isolation.
+  GREPTILE_CONTAINER=<name>   Same, for the greptile arm.
+  CONTROL_WORKSPACE=<path>    Codex cwd inside the container. Defaults to
+  GREPTILE_WORKSPACE=<path>   /workspace.
+  CONTROL_CODEX_HOME=<path>   Host dir whose sessions/ holds the arm's Codex
+  GREPTILE_CODEX_HOME=<path>  transcript. Containerized arms default to
+                          ~/.vivarium/<container>; host arms use CODEX_HOME.
   CODEX_SANDBOX=<mode>    Defaults to workspace-write
   RESULTS_DIR=<path>      Defaults to ./results
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts
