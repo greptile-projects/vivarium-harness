@@ -70,7 +70,7 @@ function maxAttemptsFromEnv(value: string | undefined): number {
 
 // A containerized arm writes its Codex sessions inside the container, so they
 // must land on a host directory the harness can scan. arm-run.sh mounts
-// $HOME/.terrarium/<container>/sessions into the container's CODEX_HOME; mirror
+// $HOME/.vivarium/<container>/sessions into the container's CODEX_HOME; mirror
 // that convention here so finishArm finds the transcript. Host-mode arms
 // (no container) return undefined and fall back to the run-wide CODEX_HOME.
 function armCodexHomeFromEnv(
@@ -78,7 +78,7 @@ function armCodexHomeFromEnv(
   container: string | undefined,
 ): string | undefined {
   if (explicit) return explicit;
-  if (container) return join(homedir(), ".terrarium", container);
+  if (container) return join(homedir(), ".vivarium", container);
   return undefined;
 }
 
@@ -184,7 +184,7 @@ Optional environment:
   GREPTILE_WORKSPACE=<path>   /workspace.
   CONTROL_CODEX_HOME=<path>   Host dir whose sessions/ holds the arm's Codex
   GREPTILE_CODEX_HOME=<path>  transcript. Containerized arms default to
-                          ~/.terrarium/<container>; host arms use CODEX_HOME.
+                          ~/.vivarium/<container>; host arms use CODEX_HOME.
   CODEX_SANDBOX=<mode>    Defaults to workspace-write
   RESULTS_DIR=<path>      Defaults to ./results
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts

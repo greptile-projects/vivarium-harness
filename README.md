@@ -1,4 +1,4 @@
-# terrarium harness
+# vivarium harness
 
 Runs the same Linear ticket through two Codex workers at once — one against a
 control checkout, one against a Greptile checkout — and saves everything each
@@ -30,8 +30,8 @@ at two checkouts of the same commit and give each arm a GitHub token:
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
-CONTROL_CONTAINER=terrarium-control     # already set in .env.example
-GREPTILE_CONTAINER=terrarium-greptile
+CONTROL_CONTAINER=vivarium-control     # already set in .env.example
+GREPTILE_CONTAINER=vivarium-greptile
 CONTROL_GH_TOKEN=ghp_...                # this arm's identity when opening PRs
 GREPTILE_GH_TOKEN=ghp_...
 ```
@@ -40,14 +40,14 @@ Build the arm image once, then start a container per arm. `arm-run.sh` takes
 only the arm name and reads the rest from `.env`:
 
 ```bash
-docker build -t terrarium-arm .
+docker build -t vivarium-arm .
 scripts/arm-run.sh control
 scripts/arm-run.sh greptile
 ```
 
 Each container mounts only that arm's checkout at `/workspace`, mounts Codex auth
 read-only, and bind-mounts the arm's in-container Codex sessions dir out to a
-per-arm host directory (`~/.terrarium/<container>/sessions` by default) so the
+per-arm host directory (`~/.vivarium/<container>/sessions` by default) so the
 harness can copy each arm's transcript into the run artifacts. The arms never
 share a sessions directory. To relocate it, set `<ARM>_CODEX_HOME` in `.env` —
 both `arm-run.sh` and the harness read the same value.

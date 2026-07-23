@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start one terrarium arm's container from configuration in .env — no paths or
+# Start one vivarium arm's container from configuration in .env — no paths or
 # secrets on the command line.
 #
 # Usage:  scripts/arm-run.sh <control|greptile>
@@ -11,13 +11,13 @@
 #   <ARM>_GH_TOKEN     GitHub token for this arm            (optional, no default)
 #   <ARM>_CODEX_HOME   host dir whose sessions/ is mounted into the container so
 #                      the harness can copy transcripts. Defaults to
-#                      ~/.terrarium/<container>, matching the harness default.
+#                      ~/.vivarium/<container>, matching the harness default.
 #
 # The arm's checkout (at /workspace) is the only repo it can see; Codex auth is
 # mounted read-only. Each arm gets its own sessions dir — the arms never share
 # one, preserving isolation.
 #
-# Build the image once:  docker build -t terrarium-arm .
+# Build the image once:  docker build -t vivarium-arm .
 # Then:                  scripts/arm-run.sh control
 #                        scripts/arm-run.sh greptile
 set -euo pipefail
@@ -57,8 +57,8 @@ arm_home="${!home_var:-}"
 : "${container:?$container_var must be set in $env_file}"
 : "${repo:?$repo_var must be set in $env_file}"
 
-image="${TERRARIUM_IMAGE:-terrarium-arm}"
-arm_home="${arm_home:-$HOME/.terrarium/$container}"
+image="${VIVARIUM_IMAGE:-vivarium-arm}"
+arm_home="${arm_home:-$HOME/.vivarium/$container}"
 
 # Host sink for this arm's Codex sessions; created before mounting so Docker
 # does not materialize it as a root-owned directory.

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Toolchain image for one terrarium arm. Both arms share this image; they differ
+# Toolchain image for one vivarium arm. Both arms share this image; they differ
 # only in the checkout bind-mounted at /workspace, the GitHub token passed at run
 # time, and whether the harness feeds Greptile reviews back. Neither arm has
 # Greptile installed — the review runs in the harness, outside the container.

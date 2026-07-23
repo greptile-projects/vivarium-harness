@@ -17,7 +17,7 @@ afterEach(async () => {
 
 describe("run artifacts", () => {
   it("persists run data and separates each arm's transcript", async () => {
-    const root = await mkdtemp(join(tmpdir(), "terrarium-artifacts-"));
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
     temporaryDirectories.push(root);
     const codexHome = join(root, "codex");
     const sessions = join(codexHome, "sessions", "2026", "07", "21");
@@ -104,7 +104,7 @@ describe("run artifacts", () => {
   });
 
   it("finds a container arm's transcript under its own codex home", async () => {
-    const root = await mkdtemp(join(tmpdir(), "terrarium-artifacts-"));
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
     temporaryDirectories.push(root);
 
     // Run-wide CODEX_HOME (the host home) is empty — a containerized arm never
@@ -122,7 +122,7 @@ describe("run artifacts", () => {
         {
           name: "control",
           repo: "/tmp/control",
-          container: "terrarium-control",
+          container: "vivarium-control",
           codexHome: armHome,
         },
         { name: "greptile", repo: "/tmp/greptile" },

@@ -140,7 +140,7 @@ export function App({ store, ticket }: { store: LiveStore; ticket: string }) {
   return (
     <Box flexDirection="column" paddingX={1} paddingTop={1}>
       <Box>
-        <Text bold>terrarium live</Text>
+        <Text bold>vivarium live</Text>
         <Text dimColor>
           {"  ·  "}
           {ticket.replace(/\s+/g, " ").slice(0, 72)}

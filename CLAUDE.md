@@ -39,7 +39,7 @@ All arm configuration lives in `.env` (`<ARM>_REPO`, `<ARM>_CONTAINER`,
 harness and `scripts/arm-run.sh` read it — nothing is passed on the command line.
 
 ```bash
-docker build -t terrarium-arm .
+docker build -t vivarium-arm .
 scripts/arm-run.sh control    # reads CONTROL_* from .env
 scripts/arm-run.sh greptile   # reads GREPTILE_* from .env
 ```
@@ -56,7 +56,7 @@ acceptable for a throwaway smoke test.
 
 The container's `CODEX_HOME` is `/codex`, so Codex writes transcripts to
 `/codex/sessions` *inside* the container. `arm-run.sh` bind-mounts that back to a
-per-arm host dir (`<ARM>_CODEX_HOME`, default `~/.terrarium/<container>`), and
+per-arm host dir (`<ARM>_CODEX_HOME`, default `~/.vivarium/<container>`), and
 each arm's `config.codexHome` defaults to the same value so
 `RunArtifacts.finishArm` can find and copy the transcript. Both sides read the
 same `<ARM>_CODEX_HOME`, so they stay in sync; a mismatch would leave transcripts

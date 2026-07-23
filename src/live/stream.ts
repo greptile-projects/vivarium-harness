@@ -96,7 +96,7 @@ export async function runArmStreaming(
     cwd: exec.length > 0 ? undefined : params.cwd,
   });
   const client = new Client({
-    name: `terrarium-${params.arm}`,
+    name: `vivarium-${params.arm}`,
     version: "0.1.0",
   });
 
