@@ -12,7 +12,11 @@ import { parseArgs, validateConfig, type HarnessConfig } from "../config.js";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
-  return index === -1 ? undefined : args[index + 1];
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  // Treat a missing value or a following flag as "not provided" rather than
+  // silently consuming the next flag as the value.
+  return value && !value.startsWith("--") ? value : undefined;
 }
 
 // Events worth surfacing as transitions; deltas and raw items stay in the

@@ -117,10 +117,12 @@ export async function runArmStreaming(
     if (raw?.msg) onEvent(raw.msg, raw._meta ?? {});
   };
 
-  await client.connect(transport);
-  bumpWatchdog();
-  const continuing = params.threadId !== undefined;
   try {
+    // connect() spawns the codex mcp-server subprocess; keep it inside the
+    // try so a failed handshake still hits the finally cleanup below.
+    await client.connect(transport);
+    bumpWatchdog();
+    const continuing = params.threadId !== undefined;
     const result = (await client.callTool(
       {
         name: continuing ? "codex-reply" : "codex",
@@ -158,6 +160,11 @@ export async function runArmStreaming(
     throw error;
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
-    await client.close();
+    // Best-effort cleanup; never let a close error mask the original outcome.
+    try {
+      await client.close();
+    } catch {
+      // ignore
+    }
   }
 }
