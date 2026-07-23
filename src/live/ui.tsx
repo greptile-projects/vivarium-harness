@@ -3,8 +3,6 @@ import { Box, Text, useApp } from "ink";
 import type { ArmState, ArmStatus, LiveStore } from "./store.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const PANEL_WIDTH = 48;
-const BAR_WIDTH = 22;
 
 const STATUS_COLOR: Record<ArmStatus, string> = {
   starting: "yellow",
@@ -13,10 +11,11 @@ const STATUS_COLOR: Record<ArmStatus, string> = {
   failed: "red",
 };
 
-const STATUS_ICON: Record<ArmStatus, string> = {
-  starting: "◌",
-  working: "◍",
-  done: "✓",
+// Leading status dot for each arm — the one place color earns its keep.
+const STATUS_DOT: Record<ArmStatus, string> = {
+  starting: "○",
+  working: "●",
+  done: "✔",
   failed: "✗",
 };
 
@@ -35,109 +34,77 @@ function formatDuration(totalSeconds: number): string {
   return hours ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-// A fixed-width [████░░░░] context-usage meter. Color shifts warm as the
-// window fills so a run approaching its context limit reads at a glance.
-function TokenBar({
-  tokens,
-  contextWindow,
-}: {
-  tokens: number;
-  contextWindow: number;
-}) {
-  const ratio = Math.min(1, Math.max(0, tokens / contextWindow));
-  const filled = Math.round(ratio * BAR_WIDTH);
-  const color = ratio > 0.85 ? "red" : ratio > 0.6 ? "yellow" : "green";
-  const pct = Math.round(ratio * 100);
-  return (
-    <Text>
-      <Text color={color}>{"█".repeat(filled)}</Text>
-      <Text dimColor>{"░".repeat(BAR_WIDTH - filled)}</Text>
-      <Text dimColor>
-        {" "}
-        {pct}%
-      </Text>
-    </Text>
-  );
+// 41230 -> "41.2k", 248900 -> "249k", 1_500_000 -> "1.5M".
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return `${k < 100 ? k.toFixed(1) : Math.round(k)}k`;
+  }
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-function ArmPanel({ state, frame }: { state: ArmState; frame: number }) {
+function contextColor(ratio: number): string {
+  return ratio > 0.85 ? "red" : ratio > 0.6 ? "yellow" : "green";
+}
+
+// One arm as two calm lines: a primary status line and an indented detail
+// line. No borders — alignment and dimmed metadata carry the structure.
+function Arm({ state, frame }: { state: ArmState; frame: number }) {
   const color = STATUS_COLOR[state.status];
-  const marker =
-    state.status === "working"
-      ? SPINNER[frame % SPINNER.length]
-      : STATUS_ICON[state.status];
+
+  const meta: string[] = [];
+  if (state.model) meta.push(state.model);
+  if (state.tokens !== undefined) meta.push(`${formatTokens(state.tokens)} tok`);
+
+  const ratio =
+    state.tokens !== undefined && state.contextWindow
+      ? Math.min(1, state.tokens / state.contextWindow)
+      : undefined;
+
+  const detail =
+    state.status === "failed" && state.error
+      ? { marker: "✗", color: "red", text: state.error.slice(0, 88) }
+      : state.answer
+        ? {
+            marker: "▸",
+            color: "green",
+            text: state.answer.replace(/\s+/g, " ").slice(0, 88),
+          }
+        : state.status === "working"
+          ? {
+              marker: SPINNER[frame % SPINNER.length],
+              color,
+              text: state.activity,
+            }
+          : { marker: " ", color: "gray", text: state.activity };
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={color}
-      paddingX={1}
-      width={PANEL_WIDTH}
-      marginRight={1}
-    >
-      <Box justifyContent="space-between">
-        <Text bold color={color}>
-          {STATUS_ICON[state.status]} {state.arm.toUpperCase()}
-        </Text>
-        <Text color={color}>{state.status}</Text>
+    <Box flexDirection="column" marginBottom={1}>
+      <Box>
+        <Box width={2}>
+          <Text color={color}>{STATUS_DOT[state.status]}</Text>
+        </Box>
+        <Box width={10}>
+          <Text bold>{state.arm}</Text>
+        </Box>
+        <Box width={9}>
+          <Text color={color}>{state.status}</Text>
+        </Box>
+        <Box width={7}>
+          <Text dimColor>{formatDuration(elapsedSeconds(state))}</Text>
+        </Box>
+        <Text dimColor>{meta.join(" · ")}</Text>
+        {ratio !== undefined ? (
+          <Text color={contextColor(ratio)}> · {Math.round(ratio * 100)}%</Text>
+        ) : null}
       </Box>
-
-      <Text dimColor>
-        {(state.model ?? "…").padEnd(16)} {formatDuration(elapsedSeconds(state))}
-        {" · "}
-        {state.events} events
-      </Text>
-
-      {state.tokens !== undefined && state.contextWindow ? (
-        <TokenBar tokens={state.tokens} contextWindow={state.contextWindow} />
-      ) : state.tokens !== undefined ? (
-        <Text dimColor>{state.tokens.toLocaleString()} tok</Text>
-      ) : null}
-
-      <Box marginTop={1}>
-        <Text>
-          <Text color={color}>{marker}</Text> {state.activity}
-        </Text>
+      <Box>
+        <Box width={2} marginLeft={2}>
+          <Text color={detail.color}>{detail.marker}</Text>
+        </Box>
+        <Text dimColor={detail.marker === " "}>{detail.text}</Text>
       </Box>
-
-      {state.answer ? (
-        <Text color="green">
-          ▸ {state.answer.replace(/\s+/g, " ").slice(0, 80)}
-        </Text>
-      ) : null}
-      {state.error ? <Text color="red">✗ {state.error.slice(0, 80)}</Text> : null}
-    </Box>
-  );
-}
-
-// Overall run line: how many arms have settled and the wall-clock spread.
-function Header({ arms, ticket }: { arms: ArmState[]; ticket: string }) {
-  const done = arms.filter((a) => a.status === "done").length;
-  const failed = arms.filter((a) => a.status === "failed").length;
-  const settled = done + failed;
-  const total = arms.length;
-  const allSettled = total > 0 && settled === total;
-  const wall = arms.length
-    ? Math.max(...arms.map((a) => elapsedSeconds(a)))
-    : 0;
-
-  const summaryColor = allSettled ? (failed ? "red" : "green") : "cyan";
-  const summary = allSettled
-    ? failed
-      ? `settled · ${done} done · ${failed} failed`
-      : `settled · ${done} done`
-    : `${settled}/${total} settled`;
-
-  return (
-    <Box flexDirection="column">
-      <Box justifyContent="space-between" width={PANEL_WIDTH * 2 + 1}>
-        <Text bold>🪴 terrarium live</Text>
-        <Text color={summaryColor}>
-          {summary} · {formatDuration(wall)}
-        </Text>
-      </Box>
-      <Text dimColor>{ticket.slice(0, PANEL_WIDTH * 2)}</Text>
     </Box>
   );
 }
@@ -154,9 +121,10 @@ export function App({ store, ticket }: { store: LiveStore; ticket: string }) {
   }, []);
 
   const arms = store.snapshot();
-  const settled =
-    arms.length > 0 &&
-    arms.every((a) => a.status === "done" || a.status === "failed");
+  const done = arms.filter((a) => a.status === "done").length;
+  const failed = arms.filter((a) => a.status === "failed").length;
+  const settled = arms.length > 0 && done + failed === arms.length;
+  const wall = arms.length ? Math.max(...arms.map(elapsedSeconds)) : 0;
 
   useEffect(() => {
     if (!settled) return;
@@ -164,22 +132,28 @@ export function App({ store, ticket }: { store: LiveStore; ticket: string }) {
     return () => clearTimeout(id);
   }, [settled]);
 
+  const summaryColor = settled ? (failed ? "red" : "green") : "cyan";
+  const summary = failed
+    ? `${done} done · ${failed} failed`
+    : `${done}/${arms.length} done`;
+
   return (
-    <Box flexDirection="column">
-      <Header arms={arms} ticket={ticket} />
-      <Box marginTop={1}>
-        {arms.map((state) => (
-          <ArmPanel key={state.arm} state={state} frame={frame} />
-        ))}
-      </Box>
-      <Box marginTop={1}>
+    <Box flexDirection="column" paddingX={1} paddingTop={1}>
+      <Box>
+        <Text bold>terrarium live</Text>
         <Text dimColor>
-          <Text color="yellow">◌</Text> starting{"  "}
-          <Text color="cyan">◍</Text> working{"  "}
-          <Text color="green">✓</Text> done{"  "}
-          <Text color="red">✗</Text> failed
+          {"  ·  "}
+          {ticket.replace(/\s+/g, " ").slice(0, 72)}
         </Text>
       </Box>
+      <Box marginBottom={1}>
+        <Text color={summaryColor}>
+          {summary} · {formatDuration(wall)}
+        </Text>
+      </Box>
+      {arms.map((state) => (
+        <Arm key={state.arm} state={state} frame={frame} />
+      ))}
     </Box>
   );
 }
