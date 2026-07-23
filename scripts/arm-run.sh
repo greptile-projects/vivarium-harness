@@ -1,42 +1,75 @@
 #!/usr/bin/env bash
-# Start one terrarium arm container with an isolated filesystem: only this arm's
-# checkout is mounted (at /workspace), so it cannot see the other arm's repo, the
-# harness, or the host. Codex auth is mounted read-only; the GitHub token is this
-# arm's identity.
+# Start one terrarium arm's container from configuration in .env — no paths or
+# secrets on the command line.
 #
-# The container's CODEX_HOME is /codex, so Codex writes its session transcript to
-# /codex/sessions. That directory is bind-mounted back to a per-arm host dir
-# ($HOME/.terrarium/<name>/sessions by default) so the harness can copy the
-# transcript into the run artifacts. Each arm gets its own host dir — the arms
-# never share a sessions directory, preserving isolation. Override the host dir
-# with CODEX_ARM_HOME, and point the harness at the same place via
-# CONTROL_CODEX_HOME / GREPTILE_CODEX_HOME.
+# Usage:  scripts/arm-run.sh <control|greptile>
 #
-# Build the image once:   docker build -t terrarium-arm .
-# Start an arm:           scripts/arm-run.sh terrarium-control /abs/control-checkout <gh-token>
+# Reads these from .env (override the file with ENV_FILE=/path/to/env). <ARM> is
+# CONTROL or GREPTILE:
+#   <ARM>_CONTAINER    container name to start                        (required)
+#   <ARM>_REPO         host checkout, bind-mounted at /workspace      (required)
+#   <ARM>_GH_TOKEN     GitHub token for this arm            (optional, no default)
+#   <ARM>_CODEX_HOME   host dir whose sessions/ is mounted into the container so
+#                      the harness can copy transcripts. Defaults to
+#                      ~/.terrarium/<container>, matching the harness default.
 #
-# Point the harness at it via env:
-#   CONTROL_CONTAINER=terrarium-control CONTROL_REPO=/abs/control-checkout
+# The arm's checkout (at /workspace) is the only repo it can see; Codex auth is
+# mounted read-only. Each arm gets its own sessions dir — the arms never share
+# one, preserving isolation.
+#
+# Build the image once:  docker build -t terrarium-arm .
+# Then:                  scripts/arm-run.sh control
+#                        scripts/arm-run.sh greptile
 set -euo pipefail
 
-name="${1:?container name, e.g. terrarium-control}"
-checkout="${2:?absolute path to this arm checkout}"
-token="${3:-}"
+arm="${1:?arm to start: control or greptile}"
+case "$arm" in
+  control | greptile) ;;
+  *)
+    echo "error: arm must be 'control' or 'greptile', got '$arm'" >&2
+    exit 1
+    ;;
+esac
+
+# Load the same .env the harness reads, so arm config lives in one place.
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+env_file="${ENV_FILE:-$root/.env}"
+if [[ ! -f "$env_file" ]]; then
+  echo "error: no env file at $env_file (copy .env.example to .env)" >&2
+  exit 1
+fi
+set -a
+# shellcheck disable=SC1090
+. "$env_file"
+set +a
+
+prefix="$(printf '%s' "$arm" | tr '[:lower:]' '[:upper:]')"
+container_var="${prefix}_CONTAINER"
+repo_var="${prefix}_REPO"
+token_var="${prefix}_GH_TOKEN"
+home_var="${prefix}_CODEX_HOME"
+
+container="${!container_var:-}"
+repo="${!repo_var:-}"
+token="${!token_var:-}"
+arm_home="${!home_var:-}"
+
+: "${container:?$container_var must be set in $env_file}"
+: "${repo:?$repo_var must be set in $env_file}"
+
 image="${TERRARIUM_IMAGE:-terrarium-arm}"
-arm_home="${CODEX_ARM_HOME:-$HOME/.terrarium/$name}"
+arm_home="${arm_home:-$HOME/.terrarium/$container}"
 
 # Host sink for this arm's Codex sessions; created before mounting so Docker
-# doesn't materialize it as a root-owned directory.
+# does not materialize it as a root-owned directory.
 mkdir -p "$arm_home/sessions"
 
 # Build argv as an array so the optional token flags stay correctly split into
-# separate `-e` / `KEY=value` words. Inlining `${token:+-e GH_TOKEN="$token"}`
-# does not: the whole thing collapses into one argv element, so docker never
-# sees a valid -e flag and the container starts without GitHub auth.
+# separate `-e` / `KEY=value` words.
 run_args=(
   -d --rm
-  --name "$name"
-  -v "$checkout:/workspace"
+  --name "$container"
+  -v "$repo:/workspace"
   -v "$HOME/.codex/auth.json:/codex/auth.json:ro"
   -v "$arm_home/sessions:/codex/sessions"
 )
@@ -46,4 +79,4 @@ fi
 
 docker run "${run_args[@]}" "$image"
 
-echo "started $name  (checkout: $checkout, sessions: $arm_home/sessions)"
+echo "started $container  (repo: $repo, sessions: $arm_home/sessions)"

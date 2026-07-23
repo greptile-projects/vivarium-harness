@@ -22,35 +22,35 @@ bun install
 cp .env.example .env
 ```
 
-Edit `.env` and point it at two checkouts of the same commit:
+`.env` is the single place all arm configuration lives — checkouts, container
+names, and optional per-arm GitHub tokens. Both the harness and
+`scripts/arm-run.sh` read it, so nothing is passed on the command line. Point it
+at two checkouts of the same commit and give each arm a GitHub token:
 
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
+CONTROL_CONTAINER=terrarium-control     # already set in .env.example
+GREPTILE_CONTAINER=terrarium-greptile
+CONTROL_GH_TOKEN=ghp_...                # this arm's identity when opening PRs
+GREPTILE_GH_TOKEN=ghp_...
 ```
 
-Build the arm image once, then start one container per arm (each mounts only its
-own checkout at `/workspace`; the third argument is that arm's GitHub token):
+Build the arm image once, then start a container per arm. `arm-run.sh` takes
+only the arm name and reads the rest from `.env`:
 
 ```bash
 docker build -t terrarium-arm .
-scripts/arm-run.sh terrarium-control /absolute/path/to/control-checkout <gh-token>
-scripts/arm-run.sh terrarium-greptile /absolute/path/to/greptile-checkout <gh-token>
+scripts/arm-run.sh control
+scripts/arm-run.sh greptile
 ```
 
-`.env.example` already points the harness at these container names:
-
-```dotenv
-CONTROL_CONTAINER=terrarium-control
-GREPTILE_CONTAINER=terrarium-greptile
-```
-
-`arm-run.sh` also bind-mounts each arm's in-container Codex sessions dir out to a
-per-arm host directory (`~/.terrarium/<container>/sessions` by default), so the
+Each container mounts only that arm's checkout at `/workspace`, mounts Codex auth
+read-only, and bind-mounts the arm's in-container Codex sessions dir out to a
+per-arm host directory (`~/.terrarium/<container>/sessions` by default) so the
 harness can copy each arm's transcript into the run artifacts. The arms never
-share a sessions directory. Override it with `CODEX_ARM_HOME` when starting an
-arm, and point the harness at the same place via `CONTROL_CODEX_HOME` /
-`GREPTILE_CODEX_HOME`.
+share a sessions directory. To relocate it, set `<ARM>_CODEX_HOME` in `.env` —
+both `arm-run.sh` and the harness read the same value.
 
 ## Run
 

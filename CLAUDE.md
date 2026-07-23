@@ -34,27 +34,33 @@ so keep writing `./foo.js` in imports even though the file is `foo.ts`.
 
 ## Container setup (standard path for real runs)
 
+All arm configuration lives in `.env` (`<ARM>_REPO`, `<ARM>_CONTAINER`,
+`<ARM>_GH_TOKEN`, optionally `<ARM>_CODEX_HOME` / `<ARM>_WORKSPACE`). Both the
+harness and `scripts/arm-run.sh` read it — nothing is passed on the command line.
+
 ```bash
 docker build -t terrarium-arm .
-scripts/arm-run.sh terrarium-control /abs/control-checkout <gh-token>
-scripts/arm-run.sh terrarium-greptile /abs/greptile-checkout <gh-token>
+scripts/arm-run.sh control    # reads CONTROL_* from .env
+scripts/arm-run.sh greptile   # reads GREPTILE_* from .env
 ```
 
-`scripts/arm-run.sh` starts a detached container that mounts only that arm's
-checkout at `/workspace` and mounts `~/.codex/auth.json` read-only, then idles
-(`sleep infinity`) so the harness can `docker exec` a fresh `codex mcp-server`
-per attempt. Set `CONTROL_CONTAINER`/`GREPTILE_CONTAINER` in `.env` to those
-names and the harness routes each arm through `docker exec` automatically.
-Leaving them unset runs both arms directly on the host with **no isolation** —
-only acceptable for a throwaway smoke test.
+`arm-run.sh` sources `.env` (override with `ENV_FILE`), resolves the arm's
+`<ARM>_*` vars via bash indirect expansion, starts a detached container that
+mounts only that arm's checkout at `/workspace` and `~/.codex/auth.json`
+read-only, and passes `<ARM>_GH_TOKEN` in as `GH_TOKEN`/`GITHUB_TOKEN`. The
+container idles (`sleep infinity`) so the harness can `docker exec` a fresh
+`codex mcp-server` per attempt. Set `CONTROL_CONTAINER`/`GREPTILE_CONTAINER` and
+the harness routes each arm through `docker exec` automatically; leaving them
+unset runs both arms directly on the host with **no isolation** — only
+acceptable for a throwaway smoke test.
 
 The container's `CODEX_HOME` is `/codex`, so Codex writes transcripts to
 `/codex/sessions` *inside* the container. `arm-run.sh` bind-mounts that back to a
-per-arm host dir (`~/.terrarium/<container>/sessions`), and each arm's
-`config.codexHome` defaults to the matching `~/.terrarium/<container>` so
-`RunArtifacts.finishArm` can find and copy the transcript. If you change where
-the sessions dir is mounted (`CODEX_ARM_HOME`), set `CONTROL_CODEX_HOME` /
-`GREPTILE_CODEX_HOME` to match, or transcripts land as `not-found`.
+per-arm host dir (`<ARM>_CODEX_HOME`, default `~/.terrarium/<container>`), and
+each arm's `config.codexHome` defaults to the same value so
+`RunArtifacts.finishArm` can find and copy the transcript. Both sides read the
+same `<ARM>_CODEX_HOME`, so they stay in sync; a mismatch would leave transcripts
+`not-found`.
 
 ## Architecture
 
