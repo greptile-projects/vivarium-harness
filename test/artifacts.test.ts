@@ -17,7 +17,7 @@ afterEach(async () => {
 
 describe("run artifacts", () => {
   it("persists run data and separates each arm's transcript", async () => {
-    const root = await mkdtemp(join(tmpdir(), "terrarium-artifacts-"));
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
     temporaryDirectories.push(root);
     const codexHome = join(root, "codex");
     const sessions = join(codexHome, "sessions", "2026", "07", "21");

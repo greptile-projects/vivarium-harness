@@ -1,4 +1,4 @@
-# terrarium harness
+# vivarium harness
 
 Runs the same Linear ticket through two Codex workers at once — one against a
 control checkout, one against a Greptile checkout — and saves everything each
@@ -54,16 +54,16 @@ the other's checkout. To actually isolate them, run each arm's Codex in its
 own container:
 
 ```bash
-docker build -t terrarium-arm .
-scripts/arm-run.sh terrarium-control /abs/path/to/control-checkout <gh-token>
-scripts/arm-run.sh terrarium-greptile /abs/path/to/greptile-checkout <gh-token>
+docker build -t vivarium-arm .
+scripts/arm-run.sh vivarium-control /abs/path/to/control-checkout <gh-token>
+scripts/arm-run.sh vivarium-greptile /abs/path/to/greptile-checkout <gh-token>
 ```
 
 Then point the harness at them in `.env`:
 
 ```dotenv
-CONTROL_CONTAINER=terrarium-control
-GREPTILE_CONTAINER=terrarium-greptile
+CONTROL_CONTAINER=vivarium-control
+GREPTILE_CONTAINER=vivarium-greptile
 ```
 
 ## Verify

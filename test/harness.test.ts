@@ -21,7 +21,7 @@ async function makeConfig(): Promise<{
   config: HarnessConfig;
   artifacts: RunArtifacts;
 }> {
-  const root = await mkdtemp(join(tmpdir(), "terrarium-retry-"));
+  const root = await mkdtemp(join(tmpdir(), "vivarium-retry-"));
   temporaryDirectories.push(root);
   const codexHome = join(root, "codex");
   const sessions = join(codexHome, "sessions");

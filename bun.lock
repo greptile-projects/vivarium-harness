@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "terrarium-harness",
+      "name": "vivarium-harness",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "ink": "^5",

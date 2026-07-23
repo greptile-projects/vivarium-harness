@@ -49,8 +49,8 @@ async function buildConfig(
     return { config, demo: false };
   }
 
-  const control = await mkdtemp(join(tmpdir(), "terrarium-control-"));
-  const greptile = await mkdtemp(join(tmpdir(), "terrarium-greptile-"));
+  const control = await mkdtemp(join(tmpdir(), "vivarium-control-"));
+  const greptile = await mkdtemp(join(tmpdir(), "vivarium-greptile-"));
   return {
     demo: true,
     config: {
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
   const app = useTui ? render(<App store={store} ticket={config.ticket} />) : undefined;
   if (!useTui) {
     process.stdout.write(
-      `terrarium live${demo ? " (demo)" : ""} · ${config.arms.length} arms · log: ${logPath}\n`,
+      `vivarium live${demo ? " (demo)" : ""} · ${config.arms.length} arms · log: ${logPath}\n`,
     );
   }
 
