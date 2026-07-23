@@ -4,6 +4,17 @@ Runs the same Linear ticket through two Codex workers at once — one against a
 control checkout, one against a Greptile checkout — and saves everything each
 one did.
 
+Each arm's Codex runs in its own Docker container, so neither arm can read the
+other's checkout, the harness, or the host. The harness itself runs on the host
+and drives both containers over MCP.
+
+## Prerequisites
+
+- [Bun](https://bun.sh)
+- Docker
+- An authenticated Codex CLI (`~/.codex/auth.json`; mounted read-only into each
+  container)
+
 ## Setup
 
 ```bash
@@ -11,14 +22,35 @@ bun install
 cp .env.example .env
 ```
 
-Edit `.env` and point it at two checkouts of the same commit:
+`.env` is the single place all arm configuration lives — checkouts, container
+names, and optional per-arm GitHub tokens. Both the harness and
+`scripts/arm-run.sh` read it, so nothing is passed on the command line. Point it
+at two checkouts of the same commit and give each arm a GitHub token:
 
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
+CONTROL_CONTAINER=vivarium-control     # already set in .env.example
+GREPTILE_CONTAINER=vivarium-greptile
+CONTROL_GH_TOKEN=ghp_...                # this arm's identity when opening PRs
+GREPTILE_GH_TOKEN=ghp_...
 ```
 
-Requires Bun and an authenticated Codex CLI.
+Build the arm image once, then start a container per arm. `arm-run.sh` takes
+only the arm name and reads the rest from `.env`:
+
+```bash
+docker build -t vivarium-arm .
+scripts/arm-run.sh control
+scripts/arm-run.sh greptile
+```
+
+Each container mounts only that arm's checkout at `/workspace`, mounts Codex auth
+read-only, and bind-mounts the arm's in-container Codex sessions dir out to a
+per-arm host directory (`~/.vivarium/<container>/sessions` by default) so the
+harness can copy each arm's transcript into the run artifacts. The arms never
+share a sessions directory. To relocate it, set `<ARM>_CODEX_HOME` in `.env` —
+both `arm-run.sh` and the harness read the same value.
 
 ## Run
 
@@ -85,25 +117,6 @@ Two optional env vars, both deployment-level:
 
 Everything else is fixed in code: artifacts go to `results/`, arms get 3
 attempts, and the idle watchdog is 10 minutes.
-
-## Container isolation (optional)
-
-By default both arms run on your host, and either one could technically read
-the other's checkout. To actually isolate them, run each arm's Codex in its
-own container:
-
-```bash
-docker build -t vivarium-arm .
-scripts/arm-run.sh vivarium-control /abs/path/to/control-checkout <gh-token>
-scripts/arm-run.sh vivarium-greptile /abs/path/to/greptile-checkout <gh-token>
-```
-
-Then point the harness at them in `.env`:
-
-```dotenv
-CONTROL_CONTAINER=vivarium-control
-GREPTILE_CONTAINER=vivarium-greptile
-```
 
 ## Verify
 
