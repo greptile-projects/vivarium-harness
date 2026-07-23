@@ -48,6 +48,14 @@ names and the harness routes each arm through `docker exec` automatically.
 Leaving them unset runs both arms directly on the host with **no isolation** —
 only acceptable for a throwaway smoke test.
 
+The container's `CODEX_HOME` is `/codex`, so Codex writes transcripts to
+`/codex/sessions` *inside* the container. `arm-run.sh` bind-mounts that back to a
+per-arm host dir (`~/.terrarium/<container>/sessions`), and each arm's
+`config.codexHome` defaults to the matching `~/.terrarium/<container>` so
+`RunArtifacts.finishArm` can find and copy the transcript. If you change where
+the sessions dir is mounted (`CODEX_ARM_HOME`), set `CONTROL_CODEX_HOME` /
+`GREPTILE_CODEX_HOME` to match, or transcripts land as `not-found`.
+
 ## Architecture
 
 The pipeline is `config → prompt → harness → (per-arm streaming) → artifacts`,
@@ -91,8 +99,9 @@ with the live view tapping the same event stream.
   truth for run status; manifest writes are **serialized through a promise
   chain** (`manifestWrite`) that swallows its own errors so one failed write
   can't poison later ones. After an arm finishes it locates that arm's Codex
-  transcript under `CODEX_HOME/sessions` by matching the `threadId` suffix and
-  copies it in (`transcriptStatus` records copied / not-found / no-thread-id).
+  transcript under **that arm's** codex home (`arm.codexHome ?? config.codexHome`
+  — see the container note above) `/sessions` by matching the `threadId` suffix
+  and copies it in (`transcriptStatus` records copied / not-found / no-thread-id).
 
 - **`src/live/`** — the TUI. `main.tsx` wires one `runHarness` call to a
   `LiveStore` and tees a human-readable `progress.log`; `store.ts` reduces raw

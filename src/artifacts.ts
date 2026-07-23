@@ -86,6 +86,10 @@ export class RunArtifacts {
   readonly runId: string;
   readonly directory: string;
   private readonly codexHome: string;
+  // Per-arm host CODEX_HOME, used to locate that arm's transcript. Containerized
+  // arms write sessions inside the container, so their home differs from the
+  // run-wide one; arms absent here fall back to `codexHome`.
+  private readonly armCodexHomes: Record<string, string>;
   private manifest: RunManifest;
   private manifestWrite: Promise<void> = Promise.resolve();
 
@@ -94,10 +98,12 @@ export class RunArtifacts {
     directory: string,
     codexHome: string,
     startedAt: string,
+    armCodexHomes: Record<string, string>,
   ) {
     this.runId = runId;
     this.directory = directory;
     this.codexHome = codexHome;
+    this.armCodexHomes = armCodexHomes;
     this.manifest = {
       schemaVersion: 2,
       runId,
@@ -114,11 +120,19 @@ export class RunArtifacts {
     const startedAt = new Date().toISOString();
     const runId = `${startedAt.replaceAll(":", "-")}-${randomUUID()}`;
     const directory = resolve(config.resultsDir, runId);
+    const globalCodexHome = resolve(config.codexHome);
+    const armCodexHomes: Record<string, string> = {};
+    for (const arm of config.arms) {
+      armCodexHomes[arm.name] = arm.codexHome
+        ? resolve(arm.codexHome)
+        : globalCodexHome;
+    }
     const artifacts = new RunArtifacts(
       runId,
       directory,
-      resolve(config.codexHome),
+      globalCodexHome,
       startedAt,
+      armCodexHomes,
     );
 
     await mkdir(directory, { recursive: true });
@@ -183,8 +197,9 @@ export class RunArtifacts {
     }
 
     if (result.threadId) {
+      const codexHome = this.armCodexHomes[result.arm] ?? this.codexHome;
       const source = await findTranscript(
-        join(this.codexHome, "sessions"),
+        join(codexHome, "sessions"),
         result.threadId,
       );
       if (source) {

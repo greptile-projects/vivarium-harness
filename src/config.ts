@@ -15,6 +15,11 @@ export interface ArmConfig {
   // Codex's cwd inside the container (defaults to /workspace). Ignored when the
   // arm runs on the host.
   workspace?: string;
+  // Host CODEX_HOME for this arm — the directory whose `sessions/` the harness
+  // scans to recover the arm's transcript. Containerized arms write sessions
+  // inside the container, so this must point at the host dir arm-run.sh mounts
+  // in. Unset means fall back to the run-wide CODEX_HOME.
+  codexHome?: string;
 }
 
 export interface HarnessConfig {
@@ -63,6 +68,20 @@ function maxAttemptsFromEnv(value: string | undefined): number {
   return attempts;
 }
 
+// A containerized arm writes its Codex sessions inside the container, so they
+// must land on a host directory the harness can scan. arm-run.sh mounts
+// $HOME/.terrarium/<container>/sessions into the container's CODEX_HOME; mirror
+// that convention here so finishArm finds the transcript. Host-mode arms
+// (no container) return undefined and fall back to the run-wide CODEX_HOME.
+function armCodexHomeFromEnv(
+  explicit: string | undefined,
+  container: string | undefined,
+): string | undefined {
+  if (explicit) return explicit;
+  if (container) return join(homedir(), ".terrarium", container);
+  return undefined;
+}
+
 function idleTimeoutFromEnv(value: string | undefined): number {
   if (value === undefined) return 600_000;
   const ms = Number(value);
@@ -98,12 +117,20 @@ export function parseArgs(
         repo: env.CONTROL_REPO,
         container: env.CONTROL_CONTAINER,
         workspace: env.CONTROL_WORKSPACE,
+        codexHome: armCodexHomeFromEnv(
+          env.CONTROL_CODEX_HOME,
+          env.CONTROL_CONTAINER,
+        ),
       },
       {
         name: "greptile",
         repo: env.GREPTILE_REPO,
         container: env.GREPTILE_CONTAINER,
         workspace: env.GREPTILE_WORKSPACE,
+        codexHome: armCodexHomeFromEnv(
+          env.GREPTILE_CODEX_HOME,
+          env.GREPTILE_CONTAINER,
+        ),
       },
     ],
     sandbox: sandboxFromEnv(env.CODEX_SANDBOX),
@@ -155,6 +182,9 @@ Optional environment:
   GREPTILE_CONTAINER=<name>   Same, for the greptile arm.
   CONTROL_WORKSPACE=<path>    Codex cwd inside the container. Defaults to
   GREPTILE_WORKSPACE=<path>   /workspace.
+  CONTROL_CODEX_HOME=<path>   Host dir whose sessions/ holds the arm's Codex
+  GREPTILE_CODEX_HOME=<path>  transcript. Containerized arms default to
+                          ~/.terrarium/<container>; host arms use CODEX_HOME.
   CODEX_SANDBOX=<mode>    Defaults to workspace-write
   RESULTS_DIR=<path>      Defaults to ./results
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts

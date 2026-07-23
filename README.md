@@ -45,6 +45,13 @@ CONTROL_CONTAINER=terrarium-control
 GREPTILE_CONTAINER=terrarium-greptile
 ```
 
+`arm-run.sh` also bind-mounts each arm's in-container Codex sessions dir out to a
+per-arm host directory (`~/.terrarium/<container>/sessions` by default), so the
+harness can copy each arm's transcript into the run artifacts. The arms never
+share a sessions directory. Override it with `CODEX_ARM_HOME` when starting an
+arm, and point the harness at the same place via `CONTROL_CODEX_HOME` /
+`GREPTILE_CODEX_HOME`.
+
 ## Run
 
 ```bash

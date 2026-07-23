@@ -102,4 +102,69 @@ describe("run artifacts", () => {
     expect(manifest.arms.control.final.transcriptStatus).toBe("copied");
     expect(manifest.arms.greptile.final.transcriptStatus).toBe("copied");
   });
+
+  it("finds a container arm's transcript under its own codex home", async () => {
+    const root = await mkdtemp(join(tmpdir(), "terrarium-artifacts-"));
+    temporaryDirectories.push(root);
+
+    // Run-wide CODEX_HOME (the host home) is empty — a containerized arm never
+    // writes here. Its transcript only exists under the per-arm home that
+    // arm-run.sh mounts into the container.
+    const hostHome = join(root, "host-codex");
+    await mkdir(join(hostHome, "sessions"), { recursive: true });
+    const armHome = join(root, "arm-codex");
+    const armSessions = join(armHome, "sessions", "2026", "07", "23");
+    await mkdir(armSessions, { recursive: true });
+
+    const config: HarnessConfig = {
+      ticket: "ENG-9",
+      arms: [
+        {
+          name: "control",
+          repo: "/tmp/control",
+          container: "terrarium-control",
+          codexHome: armHome,
+        },
+        { name: "greptile", repo: "/tmp/greptile" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: hostHome,
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+    };
+    const artifacts = await RunArtifacts.create(config, "exact prompt");
+    const threadId = "control-thread";
+    await writeFile(
+      join(armSessions, `rollout-2026-07-23-${threadId}.jsonl`),
+      '{"arm":"control"}\n',
+    );
+    const artifactDir = await artifacts.startAttempt(
+      config.arms[0],
+      { prompt: "exact prompt", cwd: "/workspace" },
+      "2026-07-23T00:00:00.000Z",
+      1,
+    );
+    const persisted = await artifacts.finishArm(
+      {
+        arm: "control",
+        repo: "/tmp/control",
+        attempt: 1,
+        maxAttempts: 1,
+        status: "succeeded",
+        startedAt: "2026-07-23T00:00:00.000Z",
+        completedAt: "2026-07-23T00:01:00.000Z",
+        durationMs: 60_000,
+        threadId,
+        output: "control output",
+        artifactDir,
+      },
+      { structuredContent: { threadId, content: "control output" } },
+    );
+
+    expect(persisted.transcriptStatus).toBe("copied");
+    expect(await readFile(join(artifactDir, "transcript.jsonl"), "utf8")).toBe(
+      '{"arm":"control"}\n',
+    );
+  });
 });
