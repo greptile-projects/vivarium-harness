@@ -231,9 +231,13 @@ export class RunArtifacts {
   }
 
   private async writeManifest(): Promise<void> {
-    this.manifestWrite = this.manifestWrite.then(() =>
+    const write = this.manifestWrite.then(() =>
       atomicWrite(join(this.directory, "manifest.json"), json(this.manifest)),
     );
-    await this.manifestWrite;
+    // Keep the serialization chain from poisoning: the stored promise always
+    // resolves, so one transient write failure doesn't cascade into every
+    // later finishArm/complete. The current caller still sees the error.
+    this.manifestWrite = write.catch(() => {});
+    await write;
   }
 }
