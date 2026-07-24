@@ -23,8 +23,9 @@ export const LADDER_PATH = resolve("LADDER.md");
 
 // Runaway guard: Greg pauses once he has built this many subtickets (harness
 // runs) so a human reconfirms before he climbs further. The cap is checked at
-// milestone boundaries, so the current milestone always finishes. Re-running
-// continues from the ladder; --unbounded (Infinity) removes the cap.
+// milestone boundaries, so the current milestone always finishes — overshoot is
+// bounded because parseMilestone caps a milestone at MAX_SUBTICKETS_PER_MILESTONE.
+// Re-running continues from the ladder; --unbounded (Infinity) removes the cap.
 export const MAX_SUBTICKETS = 10;
 
 export interface SubticketRun {

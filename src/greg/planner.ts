@@ -11,6 +11,13 @@ export const NORTH_STAR =
 const MILESTONE_OPEN = "<<<MILESTONE>>>";
 const MILESTONE_CLOSE = "<<<MILESTONE_END>>>";
 
+// A milestone must decompose into this many subtickets. The upper bound is what
+// keeps runGreg's runaway cap meaningful: since the cap is only checked at
+// milestone boundaries, a milestone that overran this bound would run its whole
+// oversized array before pausing. Enforced in parseMilestone.
+export const MIN_SUBTICKETS_PER_MILESTONE = 2;
+export const MAX_SUBTICKETS_PER_MILESTONE = 5;
+
 export interface PlannedSubticket {
   title: string;
   ticket?: string;
@@ -52,7 +59,7 @@ ${priorLadder}
 # Your job for this turn (milestone ${milestoneNumber})
 Plan milestone ${milestoneNumber}: the next coherent chunk of progress toward the North Star, building on the milestones above without repeating them.
 
-- Break it into 2–5 ordered subtickets, numbered ${milestoneNumber}.1, ${milestoneNumber}.2, … Each subticket is one PR-sized ticket a single engineer could land, with a concrete, standalone description (what to build, acceptance criteria, constraints). Each description is handed verbatim to a builder agent with no other context, so it must stand entirely on its own, and each should build on the previous subticket in this milestone.
+- Break it into ${MIN_SUBTICKETS_PER_MILESTONE}–${MAX_SUBTICKETS_PER_MILESTONE} ordered subtickets, numbered ${milestoneNumber}.1, ${milestoneNumber}.2, … Each subticket is one PR-sized ticket a single engineer could land, with a concrete, standalone description (what to build, acceptance criteria, constraints). Each description is handed verbatim to a builder agent with no other context, so it must stand entirely on its own, and each should build on the previous subticket in this milestone.
 - File this in Linear using the tools available to you: a parent issue for the milestone and a sub-issue per subticket. Put the milestone's identifier in the top-level "ticket" field and each subticket's identifier in its own "ticket" field. If you cannot reach Linear, leave those empty and continue anyway.
 
 # Output contract
@@ -112,8 +119,13 @@ export function parseMilestone(output: string): PlannedMilestone {
     };
   });
 
-  if (subtickets.length === 0) {
-    throw new Error("Greg's milestone has no subtickets");
+  if (
+    subtickets.length < MIN_SUBTICKETS_PER_MILESTONE ||
+    subtickets.length > MAX_SUBTICKETS_PER_MILESTONE
+  ) {
+    throw new Error(
+      `Greg's milestone must have ${MIN_SUBTICKETS_PER_MILESTONE}–${MAX_SUBTICKETS_PER_MILESTONE} subtickets, got ${subtickets.length}`,
+    );
   }
 
   return {
