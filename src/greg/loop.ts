@@ -4,6 +4,7 @@ import { runHarness, type HarnessRunResult } from "../harness.js";
 import {
   appendMilestone,
   appendSubticket,
+  appendSubticketError,
   appendSubticketOutcome,
   countMilestones,
   ensureLadderLinks,
@@ -30,7 +31,10 @@ export const MAX_SUBTICKETS = 10;
 
 export interface SubticketRun {
   subticket: Subticket;
-  run: HarnessRunResult;
+  // The harness result, or `error` when the harness itself threw (an
+  // infrastructure failure, distinct from an arm failing inside a run).
+  run?: HarnessRunResult;
+  error?: string;
 }
 
 export interface MilestoneResult {
@@ -115,12 +119,21 @@ export async function runGreg(
       );
 
       // Mechanical harness run — the two arms build this subticket. Greg is not
-      // in the loop here; the ladder already records the intent above.
-      const run = await harness({ ...base, ticket: subticket.description });
-      await appendSubticketOutcome(ladderPath, run);
-      log(`  ${subticket.number}: ${run.status} → ${run.artifactDir}`);
-
-      subtickets.push({ subticket, run });
+      // in the loop here; the ladder already records the intent above. If the
+      // harness throws (infrastructure failure), record it and keep going: the
+      // milestone must finish so its header on the ladder is not left standing
+      // over un-built subtickets that a resumed run would skip.
+      try {
+        const run = await harness({ ...base, ticket: subticket.description });
+        await appendSubticketOutcome(ladderPath, run);
+        log(`  ${subticket.number}: ${run.status} → ${run.artifactDir}`);
+        subtickets.push({ subticket, run });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await appendSubticketError(ladderPath, message);
+        log(`  ${subticket.number}: harness error — ${message}`);
+        subtickets.push({ subticket, error: message });
+      }
       built += 1;
     }
 

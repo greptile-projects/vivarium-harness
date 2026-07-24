@@ -151,6 +151,47 @@ describe("runGreg", () => {
     expect(results[0].subtickets).toHaveLength(2);
   });
 
+  it("records a harness failure and still builds the rest of the milestone", async () => {
+    const { base, ladderPath } = await makeSetup();
+    let call = 0;
+
+    const results = await runGreg(
+      base,
+      1,
+      {
+        propose: async () => ({
+          title: "Milestone",
+          subtickets: [
+            { title: "A", description: "do A" },
+            { title: "B", description: "do B" },
+          ],
+        }),
+        // The first subticket's harness throws (infrastructure failure); the
+        // loop must not abort and skip the second subticket.
+        harness: async () => {
+          call += 1;
+          if (call === 1) throw new Error("docker daemon unavailable");
+          return fakeRun("run-2");
+        },
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(results).toHaveLength(1);
+    const subs = results[0].subtickets;
+    expect(subs).toHaveLength(2);
+    expect(subs[0].error).toContain("docker daemon unavailable");
+    expect(subs[0].run).toBeUndefined();
+    expect(subs[1].run?.runId).toBe("run-2");
+
+    const ladder = await readFile(ladderPath, "utf8");
+    expect(ladder).toContain(
+      "**Run failed (infrastructure):** docker daemon unavailable",
+    );
+    expect(ladder).toContain("**Run `run-2`:** completed");
+  });
+
   it("resumes milestone numbering from the existing ladder", async () => {
     const { base, ladderPath } = await makeSetup();
     await initLadder(ladderPath, "goal");

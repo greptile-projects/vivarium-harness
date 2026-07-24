@@ -121,6 +121,21 @@ export async function appendSubticketOutcome(
   );
 }
 
+// Record that the harness itself threw (infrastructure failure) for a subticket,
+// so the subticket still gets an outcome line and the milestone stays fully
+// recorded — the loop then moves on instead of aborting mid-milestone.
+export async function appendSubticketError(
+  ladderPath: string,
+  message: string,
+): Promise<void> {
+  const oneLine = message.split("\n")[0]?.trim() || "unknown error";
+  await appendFile(
+    ladderPath,
+    `> **Run failed (infrastructure):** ${oneLine}\n`,
+    "utf8",
+  );
+}
+
 export type LinkStatus = "created" | "exists" | "skipped-nonlink" | "error";
 
 export interface LinkResult {

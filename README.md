@@ -93,7 +93,10 @@ the loop mechanically runs the two-arm harness on each subticket in order.
 Greg is blind to the builders — amnesic on both sides. He never sees the code
 the arms wrote or whether it truly worked; his only input is the ladder of plans.
 A subticket is simply "done" once its harness run returns, and a milestone is
-done once all its subtickets have run. Then Greg plans the next milestone.
+done once all its subtickets have run. Then Greg plans the next milestone. If a
+harness run throws outright (an infrastructure failure), Greg records it on the
+ladder and moves on to the milestone's next subticket rather than aborting — so
+a resumed run never skips the rest of an interrupted milestone.
 
 The North Star is a direction, not a destination, so there is no natural end. To
 guard against runaway, Greg pauses after 10 subtickets for you to reconfirm (the
