@@ -40,6 +40,10 @@ describe("plannerPrompt", () => {
     expect(prompt).toContain("milestone 2");
     // The contract is now: edit the ladder file directly with checkbox headings.
     expect(prompt).toContain("editing the file directly");
+    // Greg does not file tickets — headless codex blocks destructive MCP tool
+    // calls, so the loop files Linear mechanically after planning.
+    expect(prompt).toContain("Do NOT file any tickets");
+    expect(prompt).not.toContain("File it in Linear");
     expect(prompt).toContain("### [ ] 2.1");
     expect(prompt).toContain("LADDER.md");
     // No more JSON hand-off.
@@ -75,31 +79,57 @@ describe("planNextMilestone", () => {
     expect(await readLadder(ladderPath)).toContain("## Milestone 1: Repo hosting");
   });
 
-  it("throws when Greg's session errors", async () => {
+  it("throws when Greg's session errors on every attempt", async () => {
     const ladderPath = await scratchLadder();
-    const runner: AttemptRunner = async () => ({
-      output: "boom",
-      isError: true,
-      timedOut: false,
-    });
+    let attempts = 0;
+    const runner: AttemptRunner = async () => {
+      attempts += 1;
+      return { output: "boom", isError: true, timedOut: false };
+    };
 
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
-    ).rejects.toThrow(/Greg failed to plan milestone 1/);
+    ).rejects.toThrow(/Greg failed to plan milestone 1 after 2 attempt\(s\): boom/);
+    expect(attempts).toBe(2);
   });
 
-  it("throws when Greg appends no buildable milestone", async () => {
+  it("retries once after a transient session failure (e.g. watchdog abort)", async () => {
     const ladderPath = await scratchLadder();
-    // Greg's session succeeds but leaves the ladder unchanged (no new milestone).
-    const runner: AttemptRunner = async () => ({
-      output: "I thought about it",
-      isError: false,
-      timedOut: false,
-    });
+    let attempts = 0;
+    const runner: AttemptRunner = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        // First session wedges and is killed by the activity watchdog.
+        throw new Error("watchdog aborted greg: no activity for 600000ms");
+      }
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 1: Repo hosting\n\n### [ ] 1.1 Skeleton\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner);
+
+    expect(attempts).toBe(2);
+    expect(await readLadder(ladderPath)).toContain("## Milestone 1: Repo hosting");
+  });
+
+  it("throws without retrying when Greg appends no buildable milestone", async () => {
+    const ladderPath = await scratchLadder();
+    // Greg's session succeeds but leaves the ladder unchanged (no new
+    // milestone). Wrong output isn't transient, so no second attempt.
+    let attempts = 0;
+    const runner: AttemptRunner = async () => {
+      attempts += 1;
+      return { output: "I thought about it", isError: false, timedOut: false };
+    };
 
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
     ).rejects.toThrow(/did not append a buildable milestone 1/);
+    expect(attempts).toBe(1);
   });
 
   it("rejects a milestone appended under the wrong number", async () => {

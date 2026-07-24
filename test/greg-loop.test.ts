@@ -87,7 +87,7 @@ describe("runGreg", () => {
 
     const built = await runGreg(
       base,
-      3, // hard cap on subtickets built this run
+      2, // milestone cap: builds both of milestone 1, all of milestone 2
       {
         plan: async (_base, path, ladder, milestoneNumber) => {
           seenLadders.push(ladder);
@@ -97,6 +97,8 @@ describe("runGreg", () => {
           harnessTickets.push(harnessConfig.ticket);
           return fakeRun(`run-${harnessTickets.length}`);
         },
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -136,29 +138,69 @@ describe("runGreg", () => {
     }
   });
 
-  it("stops at the hard subticket cap and leaves the rest resumable", async () => {
+  it("always finishes the milestone it is on, then pauses instead of planning another", async () => {
     const { base, ladderPath } = await makeSetup();
+    let plans = 0;
 
     const built = await runGreg(
       base,
-      1, // cap of 1, but the milestone Greg plans has 2 subtickets
+      1, // milestone cap of 1 — the whole rung builds, no second rung starts
       {
-        plan: async (_base, path) =>
-          appendMilestone(path, 1, "Big milestone", [
+        plan: async (_base, path) => {
+          plans += 1;
+          await appendMilestone(path, 1, "Big milestone", [
             { title: "A", description: "do A" },
             { title: "B", description: "do B" },
-          ]),
+          ]);
+        },
         harness: async () => fakeRun("r"),
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
     );
 
-    // Exactly one subticket built; the second stays unchecked for a re-run.
-    expect(built.map((subticket) => subticket.number)).toEqual(["1.1"]);
+    // Both subtickets of the one milestone built; planning never ran again.
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.1", "1.2"]);
+    expect(plans).toBe(1);
     const ladder = await readFile(ladderPath, "utf8");
     expect(ladder).toContain("### [x] 1.1 A");
-    expect(ladder).toContain("### [ ] 1.2 B");
+    expect(ladder).toContain("### [x] 1.2 B");
+  });
+
+  it("counts a resumed milestone toward the cap and pauses before a planned-ahead rung", async () => {
+    const { base, ladderPath } = await makeSetup();
+    await initLadder(ladderPath, "goal");
+    // A previous run built 1.1 then stopped; milestone 2 was planned ahead.
+    await appendFile(
+      ladderPath,
+      "\n## Milestone 1: Resumed\n\n### [x] 1.1 Done\n\nbody\n\n### [ ] 1.2 Rest\n\ndo rest\n" +
+        "\n## Milestone 2: Queued\n\n### [ ] 2.1 Next\n\ndo next\n",
+      "utf8",
+    );
+
+    const built = await runGreg(
+      base,
+      1,
+      {
+        plan: async () => {
+          throw new Error("nothing should need planning");
+        },
+        harness: async () => fakeRun("r"),
+        file: async () => {},
+        close: async () => {},
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    // Finishes milestone 1 (the resumed rung, its one pending subticket) and
+    // pauses at the boundary — milestone 2 stays queued for the next run.
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.2"]);
+    const ladder = await readFile(ladderPath, "utf8");
+    expect(ladder).toContain("### [x] 1.2 Rest");
+    expect(ladder).toContain("### [ ] 2.1 Next");
   });
 
   it("halts immediately when the harness throws, leaving the subticket unchecked", async () => {
@@ -179,6 +221,8 @@ describe("runGreg", () => {
           if (call === 1) throw new Error("docker daemon unavailable");
           return fakeRun("run-2");
         },
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -222,6 +266,8 @@ describe("runGreg", () => {
           }
           return fakeRun("run-2");
         },
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -257,6 +303,8 @@ describe("runGreg", () => {
           ]);
         },
         harness: async () => fakeRun("r"),
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -267,6 +315,115 @@ describe("runGreg", () => {
     expect(await readFile(ladderPath, "utf8")).toContain(
       "## Milestone 2: Next up",
     );
+  });
+});
+
+describe("Linear closing from the loop", () => {
+  it("closes each built subticket's issue using the id stamped by filing", async () => {
+    const { base, ladderPath } = await makeSetup();
+    const closed: Array<string | undefined> = [];
+
+    await runGreg(
+      base,
+      1,
+      {
+        plan: async (_base, path) =>
+          appendMilestone(path, 1, "Milestone", [
+            { title: "A", ticket: "GRE-10", description: "do A" },
+            { title: "B", ticket: "GRE-11", description: "do B" },
+          ]),
+        file: async () => {},
+        close: async (ticket) => {
+          closed.push(ticket);
+        },
+        harness: async () => fakeRun("r"),
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(closed).toEqual(["GRE-10", "GRE-11"]);
+  });
+
+  it("halts when closing fails, leaving the box checked (the build did succeed)", async () => {
+    const { base, ladderPath } = await makeSetup();
+
+    const runPromise = runGreg(
+      base,
+      1,
+      {
+        plan: async (_base, path) =>
+          appendMilestone(path, 1, "Milestone", [
+            { title: "A", ticket: "GRE-10", description: "do A" },
+            { title: "B", ticket: "GRE-11", description: "do B" },
+          ]),
+        file: async () => {},
+        close: async (ticket) => {
+          throw new Error(`failed to close ${ticket} in Linear: 500`);
+        },
+        harness: async () => fakeRun("r"),
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    await expect(runPromise).rejects.toThrow(/failed to close GRE-10 in Linear/);
+
+    // The build itself succeeded, so the box is checked; the halt is about the
+    // board drifting, and the second subticket was never started.
+    const ladder = await readFile(ladderPath, "utf8");
+    expect(ladder).toContain("### [x] 1.1 A — GRE-10");
+    expect(ladder).toContain("### [ ] 1.2 B — GRE-11");
+  });
+});
+
+describe("Linear filing from the loop", () => {
+  it("files each milestone right after it is planned", async () => {
+    const { base, ladderPath } = await makeSetup();
+    const filed: number[] = [];
+
+    await planAhead(
+      base,
+      2,
+      {
+        plan: async (_base, path, _ladder, milestoneNumber) =>
+          appendMilestone(path, milestoneNumber, `M${milestoneNumber}`, [
+            { title: "A", description: "do A" },
+          ]),
+        file: async (_path, milestoneNumber) => {
+          filed.push(milestoneNumber);
+        },
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(filed).toEqual([1, 2]);
+  });
+
+  it("keeps climbing when the filer throws — ids are bookkeeping, not build state", async () => {
+    const { base, ladderPath } = await makeSetup();
+    const logs: string[] = [];
+
+    const built = await runGreg(
+      base,
+      1,
+      {
+        plan: async (_base, path) =>
+          appendMilestone(path, 1, "Milestone", [
+            { title: "A", description: "do A" },
+          ]),
+        file: async () => {
+          throw new Error("linear is down");
+        },
+        harness: async () => fakeRun("r"),
+        log: (message) => logs.push(message),
+      },
+      ladderPath,
+    );
+
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.1"]);
+    expect(logs.join("\n")).toContain("linear is down");
   });
 });
 
@@ -288,7 +445,7 @@ describe("planAhead", () => {
 
     const planned = await planAhead(
       base,
-      3, // cap on subtickets planned this run
+      2, // milestone cap: plans milestones 1 and 2
       {
         plan: async (_base, path, _ladder, milestoneNumber) =>
           plans[milestoneNumber - 1](path),
@@ -296,6 +453,8 @@ describe("planAhead", () => {
           harnessCalls += 1;
           return fakeRun("should-not-run");
         },
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -317,18 +476,20 @@ describe("planAhead", () => {
     expect(nextPendingSubticket(ladder)?.number).toBe("1.1");
   });
 
-  it("stops at the subticket cap, leaving the rest for a later write-ahead run", async () => {
+  it("plans exactly the milestone cap, however many subtickets each rung holds", async () => {
     const { base, ladderPath } = await makeSetup();
 
     const planned = await planAhead(
       base,
-      1, // cap of 1, but the milestone Greg plans has 2 subtickets
+      1, // one milestone, whatever its size
       {
         plan: async (_base, path) =>
           appendMilestone(path, 1, "Big milestone", [
             { title: "A", description: "do A" },
             { title: "B", description: "do B" },
           ]),
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -338,8 +499,6 @@ describe("planAhead", () => {
       "1.1",
       "1.2",
     ]);
-    // planAhead only checks the cap between milestones, not mid-milestone, so
-    // both subtickets from the one milestone Greg planned land in the ladder.
     const ladder = await readFile(ladderPath, "utf8");
     expect(ladder).toContain("### [ ] 1.1 A");
     expect(ladder).toContain("### [ ] 1.2 B");
@@ -364,6 +523,8 @@ describe("planAhead", () => {
       {
         plan: async (_base, path, _ladder, milestoneNumber) =>
           plans[milestoneNumber - 1](path),
+        file: async () => {},
+        close: async () => {},
         log: () => {},
       },
       ladderPath,

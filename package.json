@@ -7,8 +7,6 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "bun src/index.ts",
-    "greg": "bun src/greg.ts",
-    "live": "bun src/live/main.tsx",
     "test": "bun test test/"
   },
   "dependencies": {

@@ -156,6 +156,72 @@ export function nextPendingSubticket(ladder: string): ParsedSubticket | null {
   return parseSubtickets(ladder).find((subticket) => !subticket.done) ?? null;
 }
 
+// One parsed milestone heading plus its summary (the prose between the heading
+// and its first subticket). Used by the mechanical Linear filer to build the
+// parent issue.
+export interface ParsedMilestone {
+  number: number;
+  title: string;
+  ticket?: string;
+  summary: string;
+}
+
+const MILESTONE_HEADING_FULL = /^##\s+Milestone\s+(\d+)\s*:\s*(.+?)\s*$/;
+
+export function parseMilestone(
+  ladder: string,
+  milestoneNumber: number,
+): ParsedMilestone | null {
+  const lines = ladder.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(MILESTONE_HEADING_FULL);
+    if (!match || Number(match[1]) !== milestoneNumber) continue;
+
+    let title = match[2];
+    let ticket: string | undefined;
+    const ticketMatch = title.match(TRAILING_TICKET);
+    if (ticketMatch) {
+      ticket = ticketMatch[1];
+      title = title.slice(0, ticketMatch.index).trim();
+    }
+
+    const body: string[] = [];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const next = lines[cursor];
+      if (SUBTICKET_HEADING.test(next) || MILESTONE_HEADING.test(next)) break;
+      body.push(next);
+    }
+
+    return { number: milestoneNumber, title, ticket, summary: body.join("\n").trim() };
+  }
+  return null;
+}
+
+// Append a filed Linear id (` — GRE-12`) to a milestone or subticket heading
+// that does not already carry one. Idempotent so a re-run of the filer never
+// double-stamps; headings with an existing id are left untouched.
+export async function recordTicketId(
+  ladderPath: string,
+  target: { milestone: number } | { subticket: string },
+  ticketId: string,
+): Promise<void> {
+  const ladder = await readLadder(ladderPath);
+  const lines = ladder.split("\n");
+
+  const index = lines.findIndex((line) => {
+    if ("milestone" in target) {
+      const match = line.match(MILESTONE_HEADING_FULL);
+      return match !== null && Number(match[1]) === target.milestone;
+    }
+    const match = line.match(SUBTICKET_HEADING);
+    return match?.[2] === target.subticket;
+  });
+  if (index === -1 || TRAILING_TICKET.test(lines[index])) return;
+
+  lines[index] = `${lines[index].trimEnd()} — ${ticketId}`;
+  await writeFile(ladderPath, lines.join("\n"), "utf8");
+}
+
 // Mark a subticket built: flip its checkbox to `[x]` and append the harness run
 // outcome below its description. Called by the loop only after a successful
 // run, so the ladder doubles as the build history both arms can read. Checking

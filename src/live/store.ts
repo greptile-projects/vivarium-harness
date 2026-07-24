@@ -7,6 +7,9 @@ export interface ArmState {
   status: ArmStatus;
   model?: string;
   activity: string;
+  // The last `ACTIVITY_HISTORY` activity lines, oldest first — what the arm's
+  // own tab shows so a single `activity` string is not the whole story.
+  recent: string[];
   tokens?: number;
   contextWindow?: number;
   events: number;
@@ -16,6 +19,9 @@ export interface ArmState {
   error?: string;
   threadId?: string;
 }
+
+// Enough to fill a tall pane, bounded so a long run cannot grow without limit.
+const ACTIVITY_HISTORY = 200;
 
 function num(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
@@ -54,6 +60,16 @@ function describeItem(item: unknown): string | undefined {
   }
 }
 
+// Events worth surfacing as transitions; deltas and raw items stay in the
+// stream but out of the human-readable tee.
+export const NOISY = new Set([
+  "agent_message_content_delta",
+  "raw_response_item",
+  "raw_response_completed",
+  "item_completed",
+  "user_message",
+]);
+
 // Compact one-line summary for the progress.log tee.
 export function summarize(msg: CodexMsg): string {
   switch (msg.type) {
@@ -86,9 +102,19 @@ function initialArm(arm: string): ArmState {
     arm,
     status: "starting",
     activity: "connecting…",
+    recent: [],
     events: 0,
     startedAt: Date.now(),
   };
+}
+
+// Set the arm's current activity and remember it. Consecutive repeats collapse
+// (a burst of reasoning items would otherwise fill the history with one word).
+function setActivity(state: ArmState, activity: string): void {
+  state.activity = activity;
+  if (state.recent[state.recent.length - 1] === activity) return;
+  state.recent.push(activity);
+  if (state.recent.length > ACTIVITY_HISTORY) state.recent.shift();
 }
 
 export class LiveStore {
@@ -97,6 +123,13 @@ export class LiveStore {
 
   register(arm: string): void {
     if (!this.arms.has(arm)) this.arms.set(arm, initialArm(arm));
+    this.emit();
+  }
+
+  // Clear every panel so the store can be reused for the next phase of a
+  // multi-phase run (Greg alternates planning and building sessions).
+  reset(): void {
+    this.arms.clear();
     this.emit();
   }
 
@@ -124,19 +157,19 @@ export class LiveStore {
         state.contextWindow = num(msg.model_context_window) ?? state.contextWindow;
         break;
       case "mcp_startup_update":
-        state.activity = `starting MCP: ${str(msg.server) ?? "?"}`;
+        setActivity(state, `starting MCP: ${str(msg.server) ?? "?"}`);
         break;
       case "mcp_startup_complete":
-        state.activity = "tools ready";
+        setActivity(state, "tools ready");
         break;
       case "item_started":
       case "item_completed": {
         const activity = describeItem(msg.item);
-        if (activity) state.activity = activity;
+        if (activity) setActivity(state, activity);
         break;
       }
       case "agent_message_content_delta":
-        state.activity = "responding…";
+        setActivity(state, "responding…");
         state.answer = `${state.answer ?? ""}${str(msg.delta) ?? ""}`;
         break;
       case "agent_message":
