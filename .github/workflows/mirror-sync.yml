@@ -31,14 +31,39 @@ jobs:
       - name: Checkout harness
         uses: actions/checkout@v4
 
+      # Mint a short-lived installation token for the `vivarium-mirror` GitHub
+      # App (installed on the mirror's owner account). All mirror pushes/PRs/
+      # merges are then attributed to `vivarium-mirror[bot]`, never a human.
+      - name: Mint mirror app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.MIRROR_APP_ID }}
+          private-key: ${{ secrets.MIRROR_APP_PRIVATE_KEY }}
+          owner: ${{ vars.MIRROR_OWNER }}
+          repositories: ${{ vars.MIRROR_REPO_NAME }}
+
+      # Derive the app bot's git identity so mirror commits are committed by
+      # `vivarium-mirror[bot]` (author stays the arm B agent via passthrough).
+      - name: Derive bot committer identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          bot_login="${APP_SLUG}[bot]"
+          bot_id="$(gh api "/users/${bot_login}" -q .id)"
+          echo "BOT_COMMITTER_NAME=${bot_login}" >> "$GITHUB_ENV"
+          echo "BOT_COMMITTER_EMAIL=${bot_id}+${bot_login}@users.noreply.github.com" >> "$GITHUB_ENV"
+
       - name: Run mirror sync
         env:
-          MIRROR_PUSH_TOKEN: ${{ secrets.MIRROR_PUSH_TOKEN }}
+          MIRROR_PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           HARNESS_ORG_TOKEN: ${{ secrets.HARNESS_ORG_TOKEN }}
           SOURCE_REPO: ${{ vars.SOURCE_REPO }}
           MIRROR_REPO: ${{ vars.MIRROR_REPO }}
           HARNESS_REPO: ${{ github.repository }}
           GREPTILE_BOT_LOGIN: ${{ vars.GREPTILE_BOT_LOGIN }}
+          # BOT_COMMITTER_NAME / BOT_COMMITTER_EMAIL come from $GITHUB_ENV above.
         run: |
           chmod +x scripts/mirror_sync.sh
           ./scripts/mirror_sync.sh
