@@ -130,6 +130,32 @@ either way it lands in `results/live-<ts>/progress.log`, and the CLI prints the
 run summary and artifact directory when it finishes. the exit code is 1 if an
 arm exhausts its retries.
 
+## if a run gets interrupted
+
+you can just start it again. the ladder is the state, and a subticket's box is
+only checked after its run actually succeeded — so a machine that dies mid-run
+leaves that box unchecked and the next `bun start` picks it up. nothing else is
+saved, so the interrupted subticket starts over from scratch; they're one
+PR-sized step each, which is what makes that fine.
+
+what doesn't reset is the two checkouts. both arms build the same subticket at
+once, so a crash after one arm pushed and before the other did leaves its work
+lying around — and the retry would hand that arm a ticket that's already done.
+it finishes in seconds, "wins", and the comparison for that rung is quietly
+junk. so clean both arms back to the same baseline first:
+
+```bash
+scripts/resume-clean.sh          # what did the interrupted run leave behind?
+scripts/resume-clean.sh --apply  # reset both arms to origin/main
+bun start                        # carry on
+```
+
+it never touches `main` — that's the climb so far — and work that already
+merged is reported rather than thrown away. on a clean shutdown it does
+nothing, so it's safe to run every time. add `--reconcile-linear` to also put
+the board back in step with the ladder (issues left open, subtickets left
+unfiled).
+
 ## what you get
 
 every run writes to `results/<run-id>/`:

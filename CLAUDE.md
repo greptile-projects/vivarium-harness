@@ -103,6 +103,8 @@ scripts/arm-run.sh control       # start the control arm's container from .env
 scripts/arm-run.sh greptile      # same, for the greptile arm
 scripts/mirror_sync.sh           # replay arm B's main-states into the review mirror
 scripts/mirror_sync_test.sh      # offline tests for mirror_sync.sh
+scripts/resume-clean.sh          # report what an interrupted climb left behind
+scripts/resume-clean.sh --apply  # …and reset both arms to the same baseline
 ```
 
 `arm-run.sh` is the per-arm container launcher (details below).
@@ -112,6 +114,7 @@ before merge, strictly one open PR at a time. It normally runs from
 `.github/workflows/mirror-sync.yml`, not by hand, and needs two fine-grained
 PATs (see `SETUP.md`). `mirror_sync_test.sh` exercises its local git logic
 against throwaway bare repos with a `gh` stub — no network, safe to run anytime.
+`resume-clean.sh` is the preflight for resuming an interrupted climb (below).
 
 Runtime is **Bun** (not Node) — use `bun`, not `npm`/`node`. Source is authored
 in ESM TypeScript/TSX but imports use `.js` specifiers (NodeNext resolution),
@@ -221,7 +224,11 @@ with the live view tapping the same event stream.
 - **`src/live/tui/`** — the fullscreen view. It takes over the terminal via the
   alternate screen buffer (`fullscreen.ts`) and hands it back on exit, so the
   run's frames never bury the user's scrollback and the closing summary always
-  prints to the normal buffer. `app.tsx` is the shell: header, tab strip, body,
+  prints to the normal buffer. The restore is bound to Ink's exit at **mount**
+  (`restoreOnExit`), not to the caller's `await`: callers only await once the
+  run is over, but `q` can end the view hours earlier, and binding it late
+  stranded the terminal on the alternate screen with a hidden cursor for the
+  rest of the run. `app.tsx` is the shell: header, tab strip, body,
   key handling. `tabs.ts` is the pure tab logic, keyed on **stable ids, never
   indices** — Greg swaps which sessions are live between phases, so the tab list
   changes shape mid-run; a future tab (a recent-PR list) slots into `tabsFor`
@@ -260,6 +267,48 @@ with the live view tapping the same event stream.
 its retries — process exits 1) · `failed` (the harness itself threw). These
 appear in both the CLI JSON result and `manifest.json`.
 
+## Resuming an interrupted climb
+
+The ladder resumes on its own. A subticket's box is only checked **after** its
+run succeeded, so a machine that dies mid-run leaves the box `[ ]` and the next
+`bun start` retries it. Nothing else is checkpointed — in particular the arm's
+Codex `threadId` is written into `status.json` but never read back, so the
+interrupted subticket restarts from attempt 1 on a fresh thread. Subtickets are
+one PR-sized step, which is what makes that affordable.
+
+What does *not* reset is the arms' checkouts, and that is the part worth
+handling. `runHarness` runs both arms concurrently, so a crash after one arm
+pushed and before the other did leaves the box unchecked while one arm's work
+already sits in its checkout. The retry then replays both arms against it: the
+arm that already finished re-solves a solved ticket in seconds and "wins", and
+the manifest records two clean successes. The rung's A/B comparison is silently
+worthless, which is worse than losing it loudly.
+
+So the preflight is symmetric — both arms back to the same baseline, or
+neither:
+
+```bash
+scripts/resume-clean.sh                     # report only; changes nothing
+scripts/resume-clean.sh --apply             # reset both arms to origin/main
+scripts/resume-clean.sh --apply --reconcile-linear
+```
+
+It never touches `main` beyond fast-forwarding to `origin/main` — main is the
+accumulated climb. Work that already **merged** is reported, not discarded,
+with a warning: if the crash beat the checkbox, check that box by hand or the
+next run builds it twice. On a clean shutdown the whole thing is a no-op, so it
+can sit unconditionally in front of `bun start` in a systemd unit.
+
+`--reconcile-linear` runs `src/greg/reconcile.ts`, which fixes the two ways
+Linear drifts from the ladder (neither self-heals, and neither affects the
+build — ids are bookkeeping): an issue left open because the crash landed
+between `completeSubticket` and `close`, and subtickets left unstamped because
+it landed inside the filer, which only ever runs right after planning. It reads
+the ladder — still the only source of truth — and makes Linear agree. Unlike
+the close inside the climb, this pass **fails open**: the drift has already
+happened and this exists to shrink it, so one unreachable issue must not
+abandon the rest. Re-running finishes whatever was left.
+
 ## Artifact layout
 
 ```
@@ -286,4 +335,12 @@ Greg's tests do the same one level up: `greg-loop.test.ts` injects fake `plan` /
 `harness` / `log` deps (`GregDeps`) and a temp ladder path, `greg-ladder.test.ts`
 covers the markdown parse/complete/link logic, and `greg-planner.test.ts` fakes
 the runner to check the prompt and the "did Greg actually append milestone N"
-guard. Nothing in the suite touches Docker, Linear, or the real `LADDER.md`.
+guard, and `greg-reconcile.test.ts` fakes the filer/closer to check what a
+half-filed, half-closed ladder asks Linear for — and that one failure does not
+abandon the rest of the pass. Nothing in the suite touches Docker, Linear, or
+the real `LADDER.md`.
+
+`live-fullscreen.test.ts` covers the terminal handoff without rendering Ink:
+`restoreOnExit` is the pure lifecycle seam, so the regression it pins (the
+terminal coming back when the *view* exits, not when the caller finally awaits)
+is a plain promise-ordering test.
