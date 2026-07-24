@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessConfig } from "../src/config.js";
 import type { HarnessRunResult } from "../src/harness.js";
-import { MAX_RUNGS, runGreg } from "../src/greg/loop.js";
-import type { PlannedRung } from "../src/greg/planner.js";
+import { appendMilestone, initLadder } from "../src/greg/ladder.js";
+import { runGreg } from "../src/greg/loop.js";
+import type { PlannedMilestone } from "../src/greg/planner.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -52,23 +53,34 @@ function fakeRun(runId: string): HarnessRunResult {
 }
 
 describe("runGreg", () => {
-  it("plans, links, appends, and mechanically runs each rung in order", async () => {
+  it("plans milestones and mechanically builds their subtickets in order", async () => {
     const { base, ladderPath } = await makeSetup();
-    const rungs: PlannedRung[] = [
-      { title: "Rung one", ticket: "ENG-1", description: "do first" },
-      { title: "Rung two", description: "do second" },
+    const milestones: PlannedMilestone[] = [
+      {
+        title: "Repo hosting",
+        ticket: "ENG-10",
+        subtickets: [
+          { title: "Skeleton", ticket: "ENG-11", description: "do 1.1" },
+          { title: "Storage", description: "do 1.2" },
+        ],
+      },
+      {
+        title: "Browse code",
+        subtickets: [{ title: "Tree view", description: "do 2.1" }],
+      },
     ];
     const seenLadders: string[] = [];
     const harnessTickets: string[] = [];
 
-    // The rung cap stops the otherwise-endless loop after the two scripted rungs.
-    const iterations = await runGreg(
+    // subticketLimit stops the otherwise-endless loop; the cap is checked at
+    // milestone boundaries, so milestone 2 still builds fully.
+    const results = await runGreg(
       base,
-      2,
+      3,
       {
-        propose: async (_base, _ladderPath, ladder, index) => {
+        propose: async (_base, _ladderPath, ladder, milestoneNumber) => {
           seenLadders.push(ladder);
-          return rungs[index - 1];
+          return milestones[milestoneNumber - 1];
         },
         harness: async (harnessConfig) => {
           harnessTickets.push(harnessConfig.ticket);
@@ -79,24 +91,34 @@ describe("runGreg", () => {
       ladderPath,
     );
 
-    expect(iterations).toHaveLength(2);
-    expect(iterations[0].rung.index).toBe(1);
-    expect(iterations[1].rung.index).toBe(2);
+    // Two milestones planned; subtickets built in order.
+    expect(results).toHaveLength(2);
+    expect(results[0].milestone.number).toBe(1);
+    expect(results[1].milestone.number).toBe(2);
+    expect(results[0].subtickets.map((s) => s.subticket.number)).toEqual([
+      "1.1",
+      "1.2",
+    ]);
+    expect(results[1].subtickets.map((s) => s.subticket.number)).toEqual([
+      "2.1",
+    ]);
 
-    // The harness is driven mechanically with each rung's description verbatim.
-    expect(harnessTickets).toEqual(["do first", "do second"]);
+    // The harness is driven mechanically with each subticket's description.
+    expect(harnessTickets).toEqual(["do 1.1", "do 1.2", "do 2.1"]);
 
-    // Greg is stateless: rung 2's planning sees rung 1 already on the ladder.
-    expect(seenLadders[0]).not.toContain("Rung one");
-    expect(seenLadders[1]).toContain("## Rung 1: Rung one");
+    // Greg is stateless: milestone 2's planning sees milestone 1 on the ladder.
+    expect(seenLadders[0]).not.toContain("Milestone 1");
+    expect(seenLadders[1]).toContain("## Milestone 1: Repo hosting");
 
-    // The ladder records both the plan and the run outcome for each rung.
+    // The ladder records milestones, subtickets, and each run outcome.
     const ladder = await readFile(ladderPath, "utf8");
-    expect(ladder).toContain("## Rung 1: Rung one");
-    expect(ladder).toContain("- **Linear:** ENG-1");
+    expect(ladder).toContain("## Milestone 1: Repo hosting");
+    expect(ladder).toContain("### 1.1 Skeleton");
+    expect(ladder).toContain("### 1.2 Storage");
     expect(ladder).toContain("**Run `run-1`:** completed");
-    expect(ladder).toContain("## Rung 2: Rung two");
-    expect(ladder).toContain("**Run `run-2`:** completed");
+    expect(ladder).toContain("## Milestone 2: Browse code");
+    expect(ladder).toContain("### 2.1 Tree view");
+    expect(ladder).toContain("**Run `run-3`:** completed");
 
     // The ladder is linked into both checkouts.
     for (const arm of base.arms) {
@@ -105,17 +127,45 @@ describe("runGreg", () => {
     }
   });
 
-  it("pauses at the default rung cap for a human to reconfirm", async () => {
+  it("finishes the current milestone before pausing at the cap", async () => {
     const { base, ladderPath } = await makeSetup();
-    let planned = 0;
 
-    const iterations = await runGreg(
+    const results = await runGreg(
       base,
-      undefined, // fall back to the default MAX_RUNGS cap
+      1, // cap of 1, but the milestone has 2 subtickets
       {
-        propose: async (_base, _ladderPath, _ladder, index) => {
-          planned += 1;
-          return { title: `Rung ${index}`, description: `body ${index}` };
+        propose: async () => ({
+          title: "Big milestone",
+          subtickets: [
+            { title: "A", description: "do A" },
+            { title: "B", description: "do B" },
+          ],
+        }),
+        harness: async () => fakeRun("r"),
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].subtickets).toHaveLength(2);
+  });
+
+  it("resumes milestone numbering from the existing ladder", async () => {
+    const { base, ladderPath } = await makeSetup();
+    await initLadder(ladderPath, "goal");
+    await appendMilestone(ladderPath, { number: 1, title: "Already built" });
+
+    const results = await runGreg(
+      base,
+      1,
+      {
+        propose: async (_base, _ladderPath, _ladder, milestoneNumber) => {
+          expect(milestoneNumber).toBe(2);
+          return {
+            title: "Next up",
+            subtickets: [{ title: "S", description: "do it" }],
+          };
         },
         harness: async () => fakeRun("r"),
         log: () => {},
@@ -123,7 +173,7 @@ describe("runGreg", () => {
       ladderPath,
     );
 
-    expect(iterations).toHaveLength(MAX_RUNGS);
-    expect(planned).toBe(MAX_RUNGS);
+    expect(results[0].milestone.number).toBe(2);
+    expect(await readFile(ladderPath, "utf8")).toContain("## Milestone 2: Next up");
   });
 });

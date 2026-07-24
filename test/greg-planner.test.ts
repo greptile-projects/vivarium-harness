@@ -1,14 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { parseRung, plannerPrompt } from "../src/greg/planner.js";
+import { parseMilestone, plannerPrompt } from "../src/greg/planner.js";
 
 describe("plannerPrompt", () => {
-  it("embeds the North Star, ladder, and output contract", () => {
-    const prompt = plannerPrompt("## Rung 1: Bootstrap", 2);
+  it("embeds the North Star, ladder, blindness, and output contract", () => {
+    const prompt = plannerPrompt("## Milestone 1: Repo hosting", 2);
     expect(prompt).toContain("clone of GitHub");
     expect(prompt).toContain("direction, not a finish line");
-    expect(prompt).toContain("## Rung 1: Bootstrap");
-    expect(prompt).toContain("rung 2");
-    expect(prompt).toContain("<<<RUNG>>>");
+    expect(prompt).toContain("blind to the builders");
+    expect(prompt).toContain("## Milestone 1: Repo hosting");
+    expect(prompt).toContain("milestone 2");
+    expect(prompt).toContain("2.1");
+    expect(prompt).toContain("<<<MILESTONE>>>");
   });
 
   it("marks the first turn when the ladder is empty", () => {
@@ -16,47 +18,61 @@ describe("plannerPrompt", () => {
   });
 });
 
-describe("parseRung", () => {
-  it("parses a well-formed rung block", () => {
+describe("parseMilestone", () => {
+  it("parses a well-formed milestone block", () => {
     const output = `Here is my plan.
 
-<<<RUNG>>>
-{"title": "Add auth", "ticket": "ENG-7", "summary": "login", "description": "Implement email login with sessions."}
-<<<RUNG_END>>>`;
+<<<MILESTONE>>>
+{"title": "Repo hosting", "ticket": "ENG-10", "summary": "host repos", "subtickets": [{"title": "Skeleton", "ticket": "ENG-11", "description": "Scaffold the app."}, {"title": "Storage", "description": "Add git storage."}]}
+<<<MILESTONE_END>>>`;
 
-    expect(parseRung(output)).toEqual({
-      title: "Add auth",
-      ticket: "ENG-7",
-      summary: "login",
-      description: "Implement email login with sessions.",
+    expect(parseMilestone(output)).toEqual({
+      title: "Repo hosting",
+      ticket: "ENG-10",
+      summary: "host repos",
+      subtickets: [
+        { title: "Skeleton", ticket: "ENG-11", description: "Scaffold the app." },
+        { title: "Storage", ticket: undefined, description: "Add git storage." },
+      ],
     });
   });
 
   it("takes the last block when the contract is quoted earlier", () => {
-    const output = `The contract says to emit <<<RUNG>>> ... <<<RUNG_END>>>.
+    const output = `The contract says to emit <<<MILESTONE>>> ... <<<MILESTONE_END>>>.
 
-<<<RUNG>>>
-{"title": "Real rung", "description": "the actual body"}
-<<<RUNG_END>>>`;
+<<<MILESTONE>>>
+{"title": "Real milestone", "subtickets": [{"title": "S", "description": "do it"}]}
+<<<MILESTONE_END>>>`;
 
-    const rung = parseRung(output);
-    expect(rung.title).toBe("Real rung");
-    expect(rung.ticket).toBeUndefined();
+    const milestone = parseMilestone(output);
+    expect(milestone.title).toBe("Real milestone");
+    expect(milestone.ticket).toBeUndefined();
+    expect(milestone.subtickets).toHaveLength(1);
   });
 
-  it("throws when no rung block is present", () => {
-    expect(() => parseRung("just some prose")).toThrow(/no rung block/);
+  it("throws when no milestone block is present", () => {
+    expect(() => parseMilestone("just some prose")).toThrow(/no milestone block/);
   });
 
   it("throws on invalid JSON", () => {
-    expect(() => parseRung("<<<RUNG>>>\nnot json\n<<<RUNG_END>>>")).toThrow(
-      /not valid JSON/,
-    );
+    expect(() =>
+      parseMilestone("<<<MILESTONE>>>\nnot json\n<<<MILESTONE_END>>>"),
+    ).toThrow(/not valid JSON/);
   });
 
-  it("throws when title or description is missing", () => {
+  it("throws when the milestone has no subtickets", () => {
     expect(() =>
-      parseRung('<<<RUNG>>>\n{"title": "only title"}\n<<<RUNG_END>>>'),
+      parseMilestone(
+        '<<<MILESTONE>>>\n{"title": "M", "subtickets": []}\n<<<MILESTONE_END>>>',
+      ),
+    ).toThrow(/no subtickets/);
+  });
+
+  it("throws when a subticket is missing its description", () => {
+    expect(() =>
+      parseMilestone(
+        '<<<MILESTONE>>>\n{"title": "M", "subtickets": [{"title": "S"}]}\n<<<MILESTONE_END>>>',
+      ),
     ).toThrow(/missing a title or description/);
   });
 });

@@ -2,26 +2,39 @@ import { resolve } from "node:path";
 import type { HarnessConfig } from "../config.js";
 import { runHarness, type HarnessRunResult } from "../harness.js";
 import {
-  appendRunOutcome,
-  appendRungPlan,
+  appendMilestone,
+  appendSubticket,
+  appendSubticketOutcome,
+  countMilestones,
   ensureLadderLinks,
   initLadder,
   readLadder,
-  type Rung,
+  type Milestone,
+  type Subticket,
 } from "./ladder.js";
-import { NORTH_STAR, proposeRung, type PlannedRung } from "./planner.js";
+import {
+  NORTH_STAR,
+  proposeMilestone,
+  type PlannedMilestone,
+} from "./planner.js";
 
 // The one shared ladder, mounted into both checkouts.
 export const LADDER_PATH = resolve("LADDER.md");
 
-// Runaway guard: Greg pauses after this many rungs so a human reconfirms before
-// he climbs further. Re-running continues from the ladder; --unbounded removes
-// the cap entirely.
-export const MAX_RUNGS = 10;
+// Runaway guard: Greg pauses once he has built this many subtickets (harness
+// runs) so a human reconfirms before he climbs further. The cap is checked at
+// milestone boundaries, so the current milestone always finishes. Re-running
+// continues from the ladder; --unbounded (Infinity) removes the cap.
+export const MAX_SUBTICKETS = 10;
 
-export interface GregIteration {
-  rung: Rung;
+export interface SubticketRun {
+  subticket: Subticket;
   run: HarnessRunResult;
+}
+
+export interface MilestoneResult {
+  milestone: Milestone;
+  subtickets: SubticketRun[];
 }
 
 // Injectable so the loop can be tested without spawning Greg or the arms.
@@ -30,25 +43,26 @@ export interface GregDeps {
     base: HarnessConfig,
     ladderPath: string,
     ladder: string,
-    index: number,
-  ) => Promise<PlannedRung>;
+    milestoneNumber: number,
+  ) => Promise<PlannedMilestone>;
   harness: (config: HarnessConfig) => Promise<HarnessRunResult>;
   log: (message: string) => void;
 }
 
 // The whole of Greg Tile: a mechanical loop, not an agent that decides. Greg
-// (the agent) only plans one rung; the loop appends it to the ladder and then
-// runs the harness on it directly — never as one of Greg's tool calls. The
-// North Star is a direction, not a destination, so the loop has no natural end;
-// it pauses after `rungLimit` rungs (default 10) for a human to reconfirm, or
-// runs unbounded when passed Infinity.
+// (the agent) only plans a milestone and its subtickets; the loop appends them
+// to the ladder and runs the harness on each subticket directly — never as one
+// of Greg's tool calls. Greg is blind to the builders, so a subticket is simply
+// "done" once its harness run returns. The North Star is a direction, not a
+// destination, so the loop pauses after `subticketLimit` subtickets (default
+// 10) for a human to reconfirm, or runs unbounded when passed Infinity.
 export async function runGreg(
   base: HarnessConfig,
-  rungLimit: number = MAX_RUNGS,
+  subticketLimit: number = MAX_SUBTICKETS,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
-): Promise<GregIteration[]> {
-  const propose = deps.propose ?? proposeRung;
+): Promise<MilestoneResult[]> {
+  const propose = deps.propose ?? proposeMilestone;
   const harness = deps.harness ?? runHarness;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
 
@@ -58,24 +72,59 @@ export async function runGreg(
     log(link.message);
   }
 
-  const iterations: GregIteration[] = [];
-  for (let index = 1; index <= rungLimit; index += 1) {
-    log(`\n=== Rung ${index}: planning ===`);
+  const results: MilestoneResult[] = [];
+  let built = 0;
+  // Continue numbering after any milestones a previous run already recorded.
+  let milestoneNumber = countMilestones(await readLadder(ladderPath));
+
+  // Checked at milestone boundaries: the current milestone always builds fully.
+  while (built < subticketLimit) {
+    milestoneNumber += 1;
+    log(`\n=== Milestone ${milestoneNumber}: planning ===`);
     const ladder = await readLadder(ladderPath);
-    const rung: Rung = { index, ...(await propose(base, ladderPath, ladder, index)) };
+    const planned = await propose(base, ladderPath, ladder, milestoneNumber);
 
-    await appendRungPlan(ladderPath, rung);
-    log(`Rung ${index}: ${rung.title}${rung.ticket ? ` (${rung.ticket})` : ""}`);
+    const milestone: Milestone = {
+      number: milestoneNumber,
+      title: planned.title,
+      ticket: planned.ticket,
+      summary: planned.summary,
+    };
+    await appendMilestone(ladderPath, milestone);
+    log(
+      `Milestone ${milestoneNumber}: ${milestone.title}${
+        milestone.ticket ? ` (${milestone.ticket})` : ""
+      } — ${planned.subtickets.length} subtickets`,
+    );
 
-    // Mechanical harness run — the two arms build this rung. Greg is not in the
-    // loop here; the ladder already records the intent above.
-    log(`Rung ${index}: running both arms…`);
-    const run = await harness({ ...base, ticket: rung.description });
-    await appendRunOutcome(ladderPath, run);
-    log(`Rung ${index}: ${run.status} → ${run.artifactDir}`);
+    const subtickets: SubticketRun[] = [];
+    for (let index = 0; index < planned.subtickets.length; index += 1) {
+      const planSub = planned.subtickets[index];
+      const subticket: Subticket = {
+        number: `${milestoneNumber}.${index + 1}`,
+        title: planSub.title,
+        ticket: planSub.ticket,
+        description: planSub.description,
+      };
+      await appendSubticket(ladderPath, subticket);
+      log(
+        `  ${subticket.number} ${subticket.title}${
+          subticket.ticket ? ` (${subticket.ticket})` : ""
+        }: building…`,
+      );
 
-    iterations.push({ rung, run });
+      // Mechanical harness run — the two arms build this subticket. Greg is not
+      // in the loop here; the ladder already records the intent above.
+      const run = await harness({ ...base, ticket: subticket.description });
+      await appendSubticketOutcome(ladderPath, run);
+      log(`  ${subticket.number}: ${run.status} → ${run.artifactDir}`);
+
+      subtickets.push({ subticket, run });
+      built += 1;
+    }
+
+    results.push({ milestone, subtickets });
   }
 
-  return iterations;
+  return results;
 }

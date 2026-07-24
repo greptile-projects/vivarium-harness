@@ -3,8 +3,10 @@ import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  appendRunOutcome,
-  appendRungPlan,
+  appendMilestone,
+  appendSubticket,
+  appendSubticketOutcome,
+  countMilestones,
   ensureLadderLinks,
   initLadder,
   readLadder,
@@ -33,33 +35,50 @@ describe("ladder file", () => {
     const ladderPath = join(root, "LADDER.md");
 
     await initLadder(ladderPath, "Build a GitHub clone");
-    await appendRungPlan(ladderPath, {
-      index: 1,
-      title: "Bootstrap the app",
+    await appendMilestone(ladderPath, {
+      number: 1,
+      title: "Repo hosting",
       ticket: "ENG-1",
-      summary: "scaffold",
+      summary: "host repos",
+    });
+    await appendSubticket(ladderPath, {
+      number: "1.1",
+      title: "Bootstrap the app",
+      ticket: "ENG-2",
       description: "Create the project skeleton.",
     });
 
-    // A second init must not wipe the appended rung.
+    // A second init must not wipe the appended milestone.
     await initLadder(ladderPath, "A different goal");
     const ladder = await readLadder(ladderPath);
 
     expect(ladder).toContain("## North Star");
     expect(ladder).toContain("Build a GitHub clone");
     expect(ladder).not.toContain("A different goal");
-    expect(ladder).toContain("## Rung 1: Bootstrap the app");
-    expect(ladder).toContain("- **Linear:** ENG-1");
+    expect(ladder).toContain("## Milestone 1: Repo hosting");
+    expect(ladder).toContain("- **Summary:** host repos");
+    expect(ladder).toContain("### 1.1 Bootstrap the app");
     expect(ladder).toContain("Create the project skeleton.");
+  });
+
+  it("counts milestones for numbering and resume", async () => {
+    const root = await scratch();
+    const ladderPath = join(root, "LADDER.md");
+    await initLadder(ladderPath, "goal");
+    expect(countMilestones(await readLadder(ladderPath))).toBe(0);
+
+    await appendMilestone(ladderPath, { number: 1, title: "One" });
+    await appendMilestone(ladderPath, { number: 2, title: "Two" });
+    expect(countMilestones(await readLadder(ladderPath))).toBe(2);
   });
 
   it("renders a missing ticket as an em dash", async () => {
     const root = await scratch();
     const ladderPath = join(root, "LADDER.md");
     await initLadder(ladderPath, "goal");
-    await appendRungPlan(ladderPath, {
-      index: 2,
-      title: "No ticket rung",
+    await appendSubticket(ladderPath, {
+      number: "1.1",
+      title: "No ticket",
       description: "body",
     });
 
@@ -80,7 +99,7 @@ describe("ladder file", () => {
         { arm: "greptile", status: "failed" },
       ],
     } as unknown as HarnessRunResult;
-    await appendRunOutcome(ladderPath, run);
+    await appendSubticketOutcome(ladderPath, run);
 
     const ladder = await readLadder(ladderPath);
     expect(ladder).toContain("**Run `run-42`:** completed_with_failures");
@@ -121,7 +140,6 @@ describe("ladder links", () => {
 
     const [result] = await ensureLadderLinks(ladderPath, [repo]);
     expect(result.status).toBe("skipped-nonlink");
-    // The real file is untouched, not a symlink.
     expect((await lstat(join(repo, "LADDER.md"))).isSymbolicLink()).toBe(false);
     expect(await readFile(join(repo, "LADDER.md"), "utf8")).toBe(
       "a real mounted file",

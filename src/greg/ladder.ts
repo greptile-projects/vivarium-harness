@@ -10,13 +10,20 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import type { HarnessRunResult } from "../harness.js";
 
-// One planned step on the climb toward the North Star. `index` is assigned by
-// the loop, not by Greg — Greg is stateless and only sees the ladder text.
-export interface Rung {
-  index: number;
+// A milestone is one rung of the ladder (1, 2, 3, …). The loop assigns `number`.
+export interface Milestone {
+  number: number;
   title: string;
   ticket?: string;
   summary?: string;
+}
+
+// A subticket is a single PR-sized step under a milestone (1.1, 1.2, …). The
+// loop assigns `number` as "<milestone>.<index>".
+export interface Subticket {
+  number: string;
+  title: string;
+  ticket?: string;
   description: string;
 }
 
@@ -32,9 +39,10 @@ export async function initLadder(
   await mkdir(dirname(resolve(ladderPath)), { recursive: true });
   const header = `# Ladder
 
-The ordered climb toward the North Star. Each rung is one shippable increment,
-planned by Greg Tile and built by both arms. This file is mounted into both
-checkouts so the builders can see where the work is going.
+The ordered climb toward the North Star. Each milestone is one rung; its
+subtickets (1.1, 1.2, …) are the single PR-sized steps that build it. Greg Tile
+plans milestones and both arms build the subtickets. This file is mounted into
+both checkouts so the builders can see where the work is going.
 
 ## North Star
 
@@ -46,7 +54,7 @@ ${northStar.trim()}
 }
 
 // The whole ladder as text — this is the entire context a stateless Greg gets
-// about what has been planned and built so far. Missing file reads as empty.
+// about what has been planned so far. Missing file reads as empty.
 export async function readLadder(ladderPath: string): Promise<string> {
   try {
     return await readFile(ladderPath, "utf8");
@@ -56,28 +64,49 @@ export async function readLadder(ladderPath: string): Promise<string> {
   }
 }
 
-// Record a freshly planned rung before the builders touch it, so the ladder
-// always reflects intent even if the harness run below crashes.
-export async function appendRungPlan(
+// How many milestones the ladder already records — used to number the next one
+// and to resume numbering after a paused run.
+export function countMilestones(ladder: string): number {
+  return (ladder.match(/^## Milestone \d+:/gm) ?? []).length;
+}
+
+// Record a milestone header before its subtickets are built.
+export async function appendMilestone(
   ladderPath: string,
-  rung: Rung,
+  milestone: Milestone,
 ): Promise<void> {
   const lines = [
     "",
-    `## Rung ${rung.index}: ${rung.title}`,
+    `## Milestone ${milestone.number}: ${milestone.title}`,
     "",
-    `- **Linear:** ${rung.ticket ?? "—"}`,
-    ...(rung.summary ? [`- **Summary:** ${rung.summary}`] : []),
-    "",
-    rung.description.trim(),
+    `- **Linear:** ${milestone.ticket ?? "—"}`,
+    ...(milestone.summary ? [`- **Summary:** ${milestone.summary}`] : []),
     "",
   ];
   await appendFile(ladderPath, lines.join("\n"), "utf8");
 }
 
-// Annotate the rung just planned with what the mechanical harness run did to
+// Record a subticket just before the builders touch it, so the ladder always
+// reflects intent even if the harness run below crashes.
+export async function appendSubticket(
+  ladderPath: string,
+  subticket: Subticket,
+): Promise<void> {
+  const lines = [
+    "",
+    `### ${subticket.number} ${subticket.title}`,
+    "",
+    `- **Linear:** ${subticket.ticket ?? "—"}`,
+    "",
+    subticket.description.trim(),
+    "",
+  ];
+  await appendFile(ladderPath, lines.join("\n"), "utf8");
+}
+
+// Annotate the subticket just built with what the mechanical harness run did to
 // it, so the ladder doubles as the build history both arms can read.
-export async function appendRunOutcome(
+export async function appendSubticketOutcome(
   ladderPath: string,
   run: HarnessRunResult,
 ): Promise<void> {
