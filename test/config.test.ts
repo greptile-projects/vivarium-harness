@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { parseArgs } from "../src/config.js";
+import {
+  parseArgs,
+  IDLE_TIMEOUT_MS,
+  MAX_ATTEMPTS,
+  RESULTS_DIR,
+} from "../src/config.js";
 import { codexArguments } from "../src/harness.js";
 import { workerPrompt } from "../src/prompt.js";
 
@@ -25,20 +30,17 @@ describe("parseArgs", () => {
     );
   });
 
-  it("defaults to three attempts and validates overrides", () => {
-    expect(parseArgs(["--ticket", "ENG-123"], env).maxAttempts).toBe(3);
-    expect(
-      parseArgs(["--ticket", "ENG-123"], {
-        ...env,
-        MAX_ATTEMPTS: "5",
-      }).maxAttempts,
-    ).toBe(5);
-    expect(() =>
-      parseArgs(["--ticket", "ENG-123"], {
-        ...env,
-        MAX_ATTEMPTS: "forever",
-      }),
-    ).toThrow(/positive integer/);
+  it("uses the fixed experiment constants, not env overrides", () => {
+    const config = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      // These are no longer configurable; they must be ignored.
+      MAX_ATTEMPTS: "5",
+      RESULTS_DIR: "/somewhere/else",
+      CODEX_IDLE_TIMEOUT_MS: "1000",
+    });
+    expect(config.maxAttempts).toBe(MAX_ATTEMPTS);
+    expect(config.resultsDir).toBe(RESULTS_DIR);
+    expect(config.idleTimeoutMs).toBe(IDLE_TIMEOUT_MS);
   });
 });
 

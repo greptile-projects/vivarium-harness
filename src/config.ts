@@ -2,6 +2,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 
+// Fixed for the experiment — not configurable. Artifacts always land in
+// ./results, each arm gets three autonomous attempts, and a stalled arm is
+// aborted after ten minutes of event silence.
+export const RESULTS_DIR = "results";
+export const MAX_ATTEMPTS = 3;
+export const IDLE_TIMEOUT_MS = 600_000;
+
 export type ArmName = "control" | "greptile";
 
 export interface ArmConfig {
@@ -59,15 +66,6 @@ function sandboxFromEnv(
   return sandbox;
 }
 
-function maxAttemptsFromEnv(value: string | undefined): number {
-  if (value === undefined) return 3;
-  const attempts = Number(value);
-  if (!Number.isSafeInteger(attempts) || attempts < 1) {
-    throw new Error("MAX_ATTEMPTS must be a positive integer");
-  }
-  return attempts;
-}
-
 // A containerized arm writes its Codex sessions inside the container, so they
 // must land on a host directory the harness can scan. arm-run.sh mounts
 // $HOME/.vivarium/<container>/sessions into the container's CODEX_HOME; mirror
@@ -80,17 +78,6 @@ function armCodexHomeFromEnv(
   if (explicit) return explicit;
   if (container) return join(homedir(), ".vivarium", container);
   return undefined;
-}
-
-function idleTimeoutFromEnv(value: string | undefined): number {
-  if (value === undefined) return 600_000;
-  const ms = Number(value);
-  if (!Number.isSafeInteger(ms) || ms < 1_000) {
-    throw new Error(
-      "CODEX_IDLE_TIMEOUT_MS must be an integer of at least 1000 (milliseconds)",
-    );
-  }
-  return ms;
 }
 
 export function parseArgs(
@@ -134,10 +121,10 @@ export function parseArgs(
       },
     ],
     sandbox: sandboxFromEnv(env.CODEX_SANDBOX),
-    resultsDir: env.RESULTS_DIR ?? "results",
+    resultsDir: RESULTS_DIR,
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
-    maxAttempts: maxAttemptsFromEnv(env.MAX_ATTEMPTS),
-    idleTimeoutMs: idleTimeoutFromEnv(env.CODEX_IDLE_TIMEOUT_MS),
+    maxAttempts: MAX_ATTEMPTS,
+    idleTimeoutMs: IDLE_TIMEOUT_MS,
   };
 }
 
@@ -186,11 +173,8 @@ Optional environment:
   GREPTILE_CODEX_HOME=<path>  transcript. Containerized arms default to
                           ~/.vivarium/<container>; host arms use CODEX_HOME.
   CODEX_SANDBOX=<mode>    Defaults to workspace-write
-  RESULTS_DIR=<path>      Defaults to ./results
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts
-  MAX_ATTEMPTS=<count>    Defaults to 3 autonomous attempts per arm
-  CODEX_IDLE_TIMEOUT_MS=<ms>  Abort an arm after this much event silence
-                          (activity watchdog). Defaults to 600000 (10m)
 
 The caller supplies only --ticket. Repository and tool isolation are deployment
-configuration, not per-ticket orchestration inputs.`;
+configuration, not per-ticket orchestration inputs. Results dir (./results),
+attempts per arm (3), and the idle watchdog (10m) are fixed constants.`;
