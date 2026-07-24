@@ -1,42 +1,30 @@
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { HarnessConfig } from "../config.js";
 import type { AttemptRunner } from "../harness.js";
 import { runArmStreaming } from "../live/stream.js";
+import { highestMilestone, nextPendingSubticket, readLadder } from "./ladder.js";
 
 // The one fixed goal of the experiment. Greg plans every milestone toward this.
 // It is a direction, not a milestone that gets reached — the climb never ends.
 export const NORTH_STAR =
   "Build a working clone of GitHub: a web application where users can host git repositories, browse code, open and review pull requests, and manage issues.";
 
-const MILESTONE_OPEN = "<<<MILESTONE>>>";
-const MILESTONE_CLOSE = "<<<MILESTONE_END>>>";
-
-// A milestone must decompose into this many subtickets. The upper bound is what
-// keeps runGreg's runaway cap meaningful: since the cap is only checked at
-// milestone boundaries, a milestone that overran this bound would run its whole
-// oversized array before pausing. Enforced in parseMilestone.
+// A milestone should decompose into this many subtickets. This is guidance in
+// the prompt now, not an enforced bound — Greg edits the ladder directly and we
+// trust him to keep milestones the right size. The loop's runaway cap is checked
+// per subticket built, so it holds regardless of how many a milestone contains.
 export const MIN_SUBTICKETS_PER_MILESTONE = 2;
 export const MAX_SUBTICKETS_PER_MILESTONE = 5;
 
-export interface PlannedSubticket {
-  title: string;
-  ticket?: string;
-  description: string;
-}
-
-// What Greg returns for one planning turn: a milestone and its ordered
-// subtickets. Numbers are assigned by the loop, not by Greg.
-export interface PlannedMilestone {
-  title: string;
-  ticket?: string;
-  summary?: string;
-  subtickets: PlannedSubticket[];
-}
-
 // The full instruction handed to a fresh, stateless Greg. Everything Greg knows
 // is in here: the goal and the ladder of milestones planned so far. Greg cannot
-// see the builders' code or output — only the plan.
-export function plannerPrompt(ladder: string, milestoneNumber: number): string {
+// see the builders' code or output — only the plan. He plans the next milestone
+// by editing the ladder file directly; there is no structured hand-off.
+export function plannerPrompt(
+  ladder: string,
+  milestoneNumber: number,
+  ladderFile: string,
+): string {
   const priorLadder =
     ladder.trim().length > 0
       ? ladder.trim()
@@ -49,110 +37,62 @@ ${NORTH_STAR}
 
 The North Star is a direction, not a finish line. You will not complete it, and the climb continues indefinitely — always plan the next milestone.
 
-# The ladder so far
-The ladder is the ordered list of milestones already planned toward the North Star, each broken into subtickets. It is written to a markdown file mounted into both build checkouts.
+# The ladder
+The ladder is a single markdown file, \`${ladderFile}\`, in your working directory. It holds the North Star and every milestone planned so far, each broken into subtickets. It is the single source of truth and is mounted into both build checkouts. Its current contents are:
 
-You are blind to the builders: you CANNOT see the code they wrote, their pull requests, or whether their work truly succeeded. The ladder below — the plan itself — is your only input. Plan forward from it.
-
+---
 ${priorLadder}
+---
+
+You are blind to the builders: you CANNOT see the code they wrote, their pull requests, or whether their work truly succeeded. The ladder above — the plan itself — is your only input. Plan forward from it.
 
 # Your job for this turn (milestone ${milestoneNumber})
 Plan milestone ${milestoneNumber}: the next coherent chunk of progress toward the North Star, building on the milestones above without repeating them.
 
-- Break it into ${MIN_SUBTICKETS_PER_MILESTONE}–${MAX_SUBTICKETS_PER_MILESTONE} ordered subtickets, numbered ${milestoneNumber}.1, ${milestoneNumber}.2, … Each subticket is one PR-sized ticket a single engineer could land, with a concrete, standalone description (what to build, acceptance criteria, constraints). Each description is handed verbatim to a builder agent with no other context, so it must stand entirely on its own, and each should build on the previous subticket in this milestone.
-- File this in Linear using the tools available to you: a parent issue for the milestone and a sub-issue per subticket. Put the milestone's identifier in the top-level "ticket" field and each subticket's identifier in its own "ticket" field. If you cannot reach Linear, leave those empty and continue anyway.
+1. File it in Linear using the tools available to you: a parent issue for the milestone and a sub-issue per subticket. If you cannot reach Linear, continue anyway and leave the ticket ids off.
+2. **Append the milestone to \`${ladderFile}\` by editing the file directly** (read it first, then add to the end — never rewrite or reorder what is already there). Use exactly this shape:
 
-# Output contract
-After any thinking or tool use, end your reply with a single block, exactly:
+## Milestone ${milestoneNumber}: <milestone title> — <LINEAR-ID or omit " — ..." entirely>
 
-${MILESTONE_OPEN}
-{"title": "...", "ticket": "ENG-10 or empty string", "summary": "one-line summary", "subtickets": [{"title": "...", "ticket": "ENG-11 or empty string", "description": "full standalone ticket body"}]}
-${MILESTONE_CLOSE}
+<one-line summary of the milestone>
 
-The block must be the last thing in your reply, and the lines between the markers must be valid JSON and nothing else.`;
+### [ ] ${milestoneNumber}.1 <subticket title> — <LINEAR-ID or omit " — ..." entirely>
+
+<Full standalone ticket body: what to build, acceptance criteria, constraints. It is handed verbatim to a builder agent with NO other context, so it must stand entirely on its own.>
+
+### [ ] ${milestoneNumber}.2 <subticket title> — <LINEAR-ID>
+
+<Full standalone ticket body.>
+
+Rules:
+- Break the milestone into ${MIN_SUBTICKETS_PER_MILESTONE}–${MAX_SUBTICKETS_PER_MILESTONE} ordered subtickets, numbered ${milestoneNumber}.1, ${milestoneNumber}.2, … Each is one PR-sized ticket a single engineer could land, and each should build on the previous one in this milestone.
+- Every subticket heading MUST start with \`### [ ] \` (an unchecked box) followed by its number. The box tracks build progress — leave every box unchecked; the harness checks them off after it builds each subticket. Do not add checkboxes anywhere else.
+- Put the Linear id, when you have one, as a trailing \` — LINEAR-ID\` on the heading. Omit that suffix entirely if you have no id.
+- Change nothing above your new milestone. Only append.
+
+When you have filed Linear (if reachable) and appended the milestone to the file, you are done. Your reply text is ignored — the ladder file is the result.`;
 }
 
-// Extract the milestone from Greg's final message. Tolerant of surrounding prose
-// and tool chatter: we take the LAST block, since any earlier occurrence would
-// be Greg quoting the contract back at itself.
-export function parseMilestone(output: string): PlannedMilestone {
-  const start = output.lastIndexOf(MILESTONE_OPEN);
-  const end = output.lastIndexOf(MILESTONE_CLOSE);
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error(
-      `Greg produced no milestone block. Output was:\n${output.slice(0, 400)}`,
-    );
-  }
-
-  const body = output.slice(start + MILESTONE_OPEN.length, end).trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new Error(
-      `Greg's milestone block was not valid JSON:\n${body.slice(0, 400)}`,
-    );
-  }
-
-  const record = parsed as Record<string, unknown>;
-  const title = asText(record.title);
-  if (!title) {
-    throw new Error("Greg's milestone is missing a title");
-  }
-
-  const rawSubtickets = Array.isArray(record.subtickets)
-    ? record.subtickets
-    : [];
-  const subtickets: PlannedSubticket[] = rawSubtickets.map((entry, index) => {
-    const sub = entry as Record<string, unknown>;
-    const subTitle = asText(sub.title);
-    const description = asText(sub.description);
-    if (!subTitle || !description) {
-      throw new Error(
-        `Greg's subticket ${index + 1} is missing a title or description`,
-      );
-    }
-    return {
-      title: subTitle,
-      description,
-      ticket: asText(sub.ticket) || undefined,
-    };
-  });
-
-  if (
-    subtickets.length < MIN_SUBTICKETS_PER_MILESTONE ||
-    subtickets.length > MAX_SUBTICKETS_PER_MILESTONE
-  ) {
-    throw new Error(
-      `Greg's milestone must have ${MIN_SUBTICKETS_PER_MILESTONE}–${MAX_SUBTICKETS_PER_MILESTONE} subtickets, got ${subtickets.length}`,
-    );
-  }
-
-  return {
-    title,
-    subtickets,
-    ticket: asText(record.ticket) || undefined,
-    summary: asText(record.summary) || undefined,
-  };
-}
-
-// Run one fresh, stateless Greg session to plan the next milestone. Never
-// continues a thread — statelessness is the point; the ladder is the only
-// carried state. Greg only reads the ladder and files Linear tickets, so it
-// runs read-only and is blind to the builders' work.
-export async function proposeMilestone(
+// Run one fresh, stateless Greg session to plan the next milestone by editing
+// the ladder file directly. Never continues a thread — statelessness is the
+// point; the ladder is the only carried state. Greg runs with write access
+// scoped to the ladder's directory so he can append to the file and file Linear
+// tickets. Returns nothing: the loop re-reads the ladder to see what was added.
+export async function planNextMilestone(
   base: HarnessConfig,
   ladderPath: string,
   ladder: string,
   milestoneNumber: number,
   runner: AttemptRunner = runArmStreaming,
-): Promise<PlannedMilestone> {
+): Promise<void> {
+  const before = highestMilestone(ladder);
+
   const result = await runner(
     {
       arm: "greg",
-      prompt: plannerPrompt(ladder, milestoneNumber),
+      prompt: plannerPrompt(ladder, milestoneNumber, basename(ladderPath)),
       cwd: dirname(ladderPath),
-      sandbox: "read-only",
+      sandbox: "workspace-write",
       codexHome: base.codexHome,
       idleTimeoutMs: base.idleTimeoutMs,
     },
@@ -167,9 +107,14 @@ export async function proposeMilestone(
     );
   }
 
-  return parseMilestone(result.output);
-}
-
-function asText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
+  // Greg's reply is ignored; the file is the contract. Confirm he actually
+  // appended a milestone with at least one buildable subticket, so a Greg that
+  // wrote nothing surfaces as an error instead of an empty spin of the loop.
+  const after = await readLadder(ladderPath);
+  if (highestMilestone(after) <= before || !nextPendingSubticket(after)) {
+    throw new Error(
+      `Greg did not append a buildable milestone ${milestoneNumber} to the ladder. ` +
+        `Expected a new "## Milestone ${milestoneNumber}:" section with "### [ ] ${milestoneNumber}.x" subtickets.`,
+    );
+  }
 }
