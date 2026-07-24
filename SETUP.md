@@ -14,23 +14,55 @@ Pieces:
 | `vivarium-harness` | `scripts/mirror_sync.sh` | the state-based sync loop. |
 | `makors/vivarium-b-mirror` | — | private mirror. `main` tree byte-identical to arm B; disclosure README on `docs`; **GitHub Actions disabled**. |
 
-## Tokens (two fine-grained PATs)
+## Credentials
 
-GitHub fine-grained PATs must be created in the web UI
-(<https://github.com/settings/personal-access-tokens>) — they cannot be minted
-via API/CLI. Create both, then store them as **secrets in `vivarium-harness`**.
+Mirror-side operations (push, open PR, merge) run through the **`vivarium-mirror`
+GitHub App** so they are attributed to `vivarium-mirror[bot]`, never a human
+account. Org-side reads and the state variable use one fine-grained PAT.
 
-### 1. `MIRROR_PUSH_TOKEN`
+### 1. `vivarium-mirror` GitHub App (mirror push / PR / merge)
 
-- **Resource owner: `makors`** (the personal account that owns the mirror) — **NOT** the org.
-  - ⚠️ A wrong resource owner is the classic failure here: a token owned by the
-    org (or by a user without access) yields **404 Not Found** on the mirror
-    repo, *not* a 403/permission error. If the pipeline logs 404s against
-    `makors/vivarium-b-mirror`, the resource owner is wrong.
-- Repository access: **only** `makors/vivarium-b-mirror`.
-- Permissions: **Contents: Read and write**, **Pull requests: Read and write**.
-  (If adding the `review-timeout` label ever 403s, also grant **Issues: Read and
-  write** — label writes can route through the issues endpoint.)
+Why an App and not a PAT: the pipeline runs in `vivarium-harness` but acts on the
+mirror **cross-repo**, so any PAT would attribute every mirror PR to the PAT
+owner (a human). `github-actions[bot]` isn't available cross-repo either — it
+only exists for workflows running *inside* the target repo, and the mirror hosts
+no workflows by design. A GitHub App installation token gives a real bot identity
+(`vivarium-mirror[bot]`) with short-lived, least-privilege tokens.
+
+Create it (web UI, one time):
+
+1. **Create the App** — <https://github.com/settings/apps/new> (owner: `makors`,
+   the mirror's account). Name it `vivarium-mirror`. It needs no webhook (uncheck
+   Active). Repository permissions:
+   - **Contents: Read and write**
+   - **Pull requests: Read and write**
+   - **Workflows: Read and write** — ⚠️ **mandatory**. Arm B's tree contains
+     `.github/workflows/*` files (its app workflows + the `main-sync.yml` dispatch
+     file); tree identity forces those into every synced mirror state, and GitHub
+     **rejects any push that creates/updates a file under `.github/workflows/`
+     unless the token can write workflows** (error: `refusing to allow ... to
+     create or update workflow ... without workflow scope`). The whole sync fails
+     at the push step without it. Safe here because the mirror has Actions
+     **disabled**, so the files stay inert.
+2. **Generate a private key** (App settings → Private keys → Generate) and
+   download the `.pem`.
+3. **Install the App** on `makors/vivarium-b-mirror` only (App → Install App →
+   your account → Only select repositories).
+   - ⚠️ The App must be installed on the **`makors` account** (mirror owner). If
+     it isn't installed where the repo lives, the token has no access and pushes
+     404 (not 403).
+4. **Store secrets in `vivarium-harness`:**
+
+```sh
+gh secret set MIRROR_APP_ID          -R greptile-projects/vivarium-harness -b "<numeric app id>"
+gh secret set MIRROR_APP_PRIVATE_KEY -R greptile-projects/vivarium-harness < path/to/app.private-key.pem
+```
+
+The workflow mints the installation token at runtime via
+`actions/create-github-app-token` (scoped by the `MIRROR_OWNER` /
+`MIRROR_REPO_NAME` variables) and derives the `vivarium-mirror[bot]` committer
+identity automatically. The old `MIRROR_PUSH_TOKEN` PAT is no longer used and can
+be deleted.
 
 ### 2. `HARNESS_ORG_TOKEN`
 
@@ -43,11 +75,10 @@ via API/CLI. Create both, then store them as **secrets in `vivarium-harness`**.
   - on `vivarium-harness`: **Variables: Read and write**, **Metadata: Read**
     (read/advance `LAST_SYNCED_SHA`).
 
-Store both:
+Store it (fine-grained PAT, web-UI only):
 
 ```sh
-gh secret set MIRROR_PUSH_TOKEN -R greptile-projects/vivarium-harness   # paste token 1
-gh secret set HARNESS_ORG_TOKEN -R greptile-projects/vivarium-harness   # paste token 2
+gh secret set HARNESS_ORG_TOKEN -R greptile-projects/vivarium-harness   # paste token
 ```
 
 `vivarium-b` also needs a secret **`DISPATCH_TOKEN`** for its dispatch workflow —
@@ -62,10 +93,12 @@ Already set by bootstrap; listed here for reference:
 
 | Variable | Value | Meaning |
 |----------|-------|---------|
-| `LAST_SYNCED_SHA` | `eab8fcf…` | last arm B main-state mirrored. **State lives here, never in the mirror** (that would break tree identity). Bootstrap value = the arm B main SHA the mirror was seeded from. |
+| `LAST_SYNCED_SHA` | `12f37c6d…` | last arm B main-state mirrored. **State lives here, never in the mirror** (that would break tree identity). Bootstrap value = the arm B main SHA the mirror was seeded from. |
 | `SOURCE_REPO` | `greptile-projects/vivarium-b` | arm B. |
-| `MIRROR_REPO` | `makors/vivarium-b-mirror` | the mirror. |
-| `GREPTILE_BOT_LOGIN` | `greptile-apps[bot]` | login the sync loop polls for. **Confirm the exact string** from a real Greptile review on an arm A PR and update if different. |
+| `MIRROR_REPO` | `makors/vivarium-b-mirror` | the mirror (`owner/name`). |
+| `MIRROR_OWNER` | `makors` | mirror owner account — scopes the app installation token. |
+| `MIRROR_REPO_NAME` | `vivarium-b-mirror` | mirror repo name — scopes the app installation token. |
+| `GREPTILE_BOT_LOGIN` | `greptile-apps[bot]` | login the sync loop polls for. Confirmed live: Greptile reviews mirror PRs under this login. |
 
 ```sh
 gh variable set LAST_SYNCED_SHA -R greptile-projects/vivarium-harness -b <sha>
@@ -74,12 +107,11 @@ gh variable set LAST_SYNCED_SHA -R greptile-projects/vivarium-harness -b <sha>
 ## Greptile bot login parameter
 
 The sync loop waits for a PR review **or** comment authored by
-`GREPTILE_BOT_LOGIN` before merging. The default `greptile-apps[bot]` is a
-placeholder — at setup time arm A had no Greptile-reviewed PR to read the exact
-login from. **Confirm it**: open a real Greptile review on an arm A PR, read the
-author login (`gh api repos/greptile-projects/vivarium-a/pulls/<n>/reviews -q '.[].user.login'`),
-and set the `GREPTILE_BOT_LOGIN` variable to match. If it is wrong, every PR will
-hit the 10-minute timeout and get the `review-timeout` label instead of a review.
+`GREPTILE_BOT_LOGIN` before merging. `greptile-apps[bot]` is **confirmed live** —
+Greptile reviewed real mirror PRs under this login during bring-up. If it is ever
+wrong, every PR hits the 10-minute timeout and gets the `review-timeout` label
+instead of a review; re-confirm with
+`gh api "repos/makors/vivarium-b-mirror/pulls/<n>/reviews" -q '.[].user.login'`.
 
 ## One-time bootstrap (already done)
 
