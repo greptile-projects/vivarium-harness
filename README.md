@@ -55,14 +55,11 @@ both `arm-run.sh` and the harness read the same value.
 ## Run
 
 ```bash
-bun start -- --ticket "Your ticket description"
-```
-
-For a live TUI view of both arms as they run:
-
-```bash
 bun run live -- --ticket "Your ticket description"
 ```
+
+This runs one ticket through both arms with a live Ink TUI (or a line-tee'd log
+when there's no TTY).
 
 Each run writes to `results/<run-id>/`: the ticket, generated prompt, and
 config at the top level, then a `control/` and `greptile/` directory each
@@ -87,39 +84,48 @@ Same setup as the harness — `CONTROL_REPO` and `GREPTILE_REPO` — and nothing
 else to configure. The ladder is two levels: **milestones** (1, 2, 3 …) are the
 rungs, and each breaks into **subtickets** (1.1, 1.2, 1.3 …), one PR-sized step
 each. Every turn Greg plans one milestone and its subtickets, files them in
-Linear (a parent issue plus a sub-issue each), appends them to `LADDER.md`, and
-the loop mechanically runs the two-arm harness on each subticket in order.
+Linear (a parent issue plus a sub-issue each), and **appends them to `LADDER.md`
+by editing the file directly** — each subticket a checkbox heading with its full
+ticket body below. The loop then reads the ladder and mechanically runs the
+two-arm harness on each unchecked subticket in order, checking its box off.
 
 Greg is blind to the builders — amnesic on both sides. He never sees the code
 the arms wrote or whether it truly worked; his only input is the ladder of plans.
 A subticket is simply "done" once its harness run returns, and a milestone is
-done once all its subtickets have run. Then Greg plans the next milestone. If a
-harness run throws outright (an infrastructure failure), Greg records it on the
-ladder and moves on to the milestone's next subticket rather than aborting — so
-a resumed run never skips the rest of an interrupted milestone.
+done once all its subtickets have run. If a harness run throws outright (an
+infrastructure failure), the loop records it on the ladder and checks the box
+anyway, moving on to the next subticket rather than aborting — so a resumed run
+never repeats or skips a step.
 
-The North Star is a direction, not a destination, so there is no natural end. To
-guard against runaway, Greg pauses after 10 subtickets for you to reconfirm (the
-current milestone always finishes first). Just re-run `bun run greg` to continue
-— he reads the ladder, so he picks up numbering where he left off. Pass
-`--unbounded` to climb without the cap:
+One run climbs a single rung — Greg plans one milestone and the loop builds all
+its subtickets, then stops so you can look before climbing on:
 
 ```bash
-bun run greg -- --unbounded
+bun run greg        # climb the next rung (creates LADDER.md on first run)
+bun run continue    # same thing — climb the next rung
+```
+
+`greg` and `continue` are the same command; both read the ladder and advance it
+by one whole milestone. The North Star is a direction with no finish line, so
+the climb never runs on its own past a rung boundary. Pass `--unbounded` to climb
+every rung without stopping:
+
+```bash
+bun run continue -- --unbounded
 ```
 
 `LADDER.md` is Greg's only state — the North Star and every milestone and
-subticket planned and built so far. It is symlinked into both checkouts (the
-local stand-in for the docker bind mount), so both build arms can see where the
-work is going. Under docker isolation, bind-mount the ladder to `LADDER.md`
-inside each arm's container instead; Greg leaves any pre-existing file at that
-path untouched.
+subticket planned and built so far, and the single source of truth Greg edits
+directly. It is symlinked into both checkouts (the local stand-in for the docker
+bind mount), so both build arms can see where the work is going. Under docker
+isolation, bind-mount the ladder to `LADDER.md` inside each arm's container
+instead; Greg leaves any pre-existing file at that path untouched.
 
-The loop is deliberately mechanical: Greg (the agent) only plans, and files
-Linear tickets if a Linear MCP is configured in your Codex environment. Running
-the harness is not one of Greg's tool calls — the loop calls it directly. Each
-milestone is a fresh Codex session; each subticket writes its own
-`results/<run-id>/`.
+The loop is deliberately mechanical: Greg (the agent) only plans and edits the
+ladder, and files Linear tickets if a Linear MCP is configured in your Codex
+environment. Running the harness is not one of Greg's tool calls — the loop
+calls it directly. Each milestone is a fresh Codex session; each subticket writes
+its own `results/<run-id>/`.
 
 Two optional env vars, both deployment-level:
 

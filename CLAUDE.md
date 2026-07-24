@@ -19,8 +19,9 @@ host and orchestrates both containers.
 
 ```bash
 bun install
-bun start -- --ticket "..."   # headless run, prints artifact dir + JSON result
-bun run live -- --ticket "..." # same run with a live Ink TUI (or line tee if no TTY)
+bun run live -- --ticket "..." # one ticket through both arms, live Ink TUI (or line tee if no TTY)
+bun run greg                   # climb the next rung of the ladder (Greg planner loop)
+bun run continue               # same as greg — climb the next rung
 bun run check                  # typecheck only (tsc --noEmit)
 bun test                       # all tests
 bun test test/config.test.ts   # single test file

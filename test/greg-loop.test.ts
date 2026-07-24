@@ -87,7 +87,7 @@ describe("runGreg", () => {
 
     const built = await runGreg(
       base,
-      3, // hard cap on subtickets built this run
+      2, // climb two rungs (two whole milestones) this run
       {
         plan: async (_base, path, ladder, milestoneNumber) => {
           seenLadders.push(ladder);
@@ -136,29 +136,83 @@ describe("runGreg", () => {
     }
   });
 
-  it("stops at the hard subticket cap and leaves the rest resumable", async () => {
+  it("climbs exactly one whole rung then stops, without planning the next", async () => {
     const { base, ladderPath } = await makeSetup();
+    let plans = 0;
 
     const built = await runGreg(
       base,
-      1, // cap of 1, but the milestone Greg plans has 2 subtickets
+      1, // one rung = one whole milestone, however many subtickets it has
       {
-        plan: async (_base, path) =>
-          appendMilestone(path, 1, "Big milestone", [
+        plan: async (_base, path, _ladder, milestoneNumber) => {
+          plans += 1;
+          // Only milestone 1 should ever be planned this run.
+          expect(milestoneNumber).toBe(1);
+          await appendMilestone(path, 1, "Big milestone", [
             { title: "A", description: "do A" },
             { title: "B", description: "do B" },
-          ]),
+          ]);
+        },
         harness: async () => fakeRun("r"),
         log: () => {},
       },
       ladderPath,
     );
 
-    // Exactly one subticket built; the second stays unchecked for a re-run.
-    expect(built.map((subticket) => subticket.number)).toEqual(["1.1"]);
+    // The whole milestone is built (both subtickets), then the loop stops — it
+    // does not plan milestone 2.
+    expect(plans).toBe(1);
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.1", "1.2"]);
     const ladder = await readFile(ladderPath, "utf8");
     expect(ladder).toContain("### [x] 1.1 A");
-    expect(ladder).toContain("### [ ] 1.2 B");
+    expect(ladder).toContain("### [x] 1.2 B");
+    expect(ladder).not.toContain("Milestone 2");
+    expect(nextPendingSubticket(ladder)).toBeNull();
+  });
+
+  it("finishes a half-built milestone as its rung, without planning the next", async () => {
+    const { base, ladderPath } = await makeSetup();
+    await initLadder(ladderPath, "goal");
+    // A previous run built 1.1 but was interrupted before 1.2.
+    await appendFile(
+      ladderPath,
+      [
+        "",
+        "## Milestone 1: Repo hosting",
+        "",
+        "### [x] 1.1 A",
+        "",
+        "do A",
+        "",
+        "### [ ] 1.2 B",
+        "",
+        "do B",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    let plans = 0;
+
+    const built = await runGreg(
+      base,
+      1,
+      {
+        plan: async () => {
+          plans += 1;
+        },
+        harness: async () => fakeRun("run-2"),
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    // It finished the pending subticket to complete the rung and stopped —
+    // never planning a new milestone.
+    expect(plans).toBe(0);
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.2"]);
+    const ladder = await readFile(ladderPath, "utf8");
+    expect(ladder).toContain("### [x] 1.2 B");
+    expect(ladder).not.toContain("Milestone 2");
   });
 
   it("records a harness failure and still builds the rest of the milestone", async () => {
@@ -167,7 +221,7 @@ describe("runGreg", () => {
 
     const built = await runGreg(
       base,
-      2,
+      1, // one rung; the milestone has two subtickets, both built this run
       {
         plan: async (_base, path) =>
           appendMilestone(path, 1, "Milestone", [

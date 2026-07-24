@@ -8,6 +8,7 @@ import {
   highestMilestone,
   initLadder,
   nextPendingSubticket,
+  parseSubtickets,
   readLadder,
   runOutcome,
 } from "./ladder.js";
@@ -16,11 +17,12 @@ import { NORTH_STAR, planNextMilestone } from "./planner.js";
 // The one shared ladder, mounted into both checkouts.
 export const LADDER_PATH = resolve("LADDER.md");
 
-// Runaway guard: Greg pauses once he has built this many subtickets (harness
-// runs) so a human reconfirms before he climbs further. Checked per subticket,
-// so it holds no matter how many subtickets a milestone contains. Re-running
-// continues from the ladder; --unbounded (Infinity) removes the cap.
-export const MAX_SUBTICKETS = 10;
+// How many rungs one invocation climbs. A rung is a whole milestone: the loop
+// plans it and builds all its subtickets, then stops so a human can look before
+// climbing further (`bun run continue` does the next rung). This is the runaway
+// guard — the climb is a direction with no finish line, so it never runs on its
+// own past a rung boundary. --unbounded (Infinity) removes the stop.
+export const MILESTONES_PER_RUN = 1;
 
 // One subticket the loop built this run, tagged with its milestone.
 export interface BuiltSubticket {
@@ -52,14 +54,16 @@ export interface GregDeps {
 // then checks its box and records the outcome. Greg is blind to the builders, so
 // a subticket is simply "built" once its harness run returns (pass or fail).
 //
-// When no subtickets are pending, it is Greg's turn to plan the next milestone.
-// The North Star is a direction, not a destination, so the loop pauses after
-// `subticketLimit` subtickets (default 10) for a human to reconfirm, or runs
-// unbounded when passed Infinity. Everything is resumable: a re-run reads the
-// ladder and continues from the first unchecked box.
+// One call climbs `milestoneLimit` whole rungs (default 1): it plans a milestone
+// when none is pending, builds every subticket in it, and stops once that many
+// milestones have been fully built — so `bun run greg` / `bun run continue` each
+// advance exactly one rung. A run that finds a half-built milestone on the
+// ladder finishes it first, and that counts as the rung. Pass Infinity to climb
+// without stopping. Everything is resumable: a re-run reads the ladder and
+// continues from the first unchecked box.
 export async function runGreg(
   base: HarnessConfig,
-  subticketLimit: number = MAX_SUBTICKETS,
+  milestoneLimit: number = MILESTONES_PER_RUN,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
 ): Promise<BuiltSubticket[]> {
@@ -74,8 +78,9 @@ export async function runGreg(
   }
 
   const built: BuiltSubticket[] = [];
+  let rungsClimbed = 0;
 
-  while (built.length < subticketLimit) {
+  while (rungsClimbed < milestoneLimit) {
     const ladder = await readLadder(ladderPath);
     const pending = nextPendingSubticket(ladder);
 
@@ -125,6 +130,18 @@ export async function runGreg(
         title: pending.title,
         error: message,
       });
+    }
+
+    // A rung is climbed when the milestone we were building has no unchecked
+    // subtickets left. Subtickets in a milestone are contiguous and built in
+    // order, so this fires on the last one — completing the whole rung.
+    const remaining = parseSubtickets(await readLadder(ladderPath)).some(
+      (subticket) =>
+        subticket.milestone === pending.milestone && !subticket.done,
+    );
+    if (!remaining) {
+      rungsClimbed += 1;
+      log(`  milestone ${pending.milestone} complete (rung ${rungsClimbed})`);
     }
   }
 

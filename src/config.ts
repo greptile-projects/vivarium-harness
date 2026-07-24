@@ -156,7 +156,7 @@ export async function validateConfig(
 }
 
 export const usage = `Usage:
-  bun start -- --ticket <linear-ticket-description>
+  bun run live -- --ticket <linear-ticket-description>
 
 Required environment:
   CONTROL_REPO=<path>     Checkout without access to Greptile comments
