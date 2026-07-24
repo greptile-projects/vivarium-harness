@@ -1,0 +1,44 @@
+name: mirror-sync
+
+# Sequential review-mirror pipeline for arm B. Replays each successive
+# vivarium-b main-state into the private mirror as its own Greptile-reviewed PR.
+# All waiting happens here; arm B never blocks on this.
+
+on:
+  # Fired by vivarium-b's main-sync dispatch workflow on every push to main.
+  repository_dispatch:
+    types: [armb-main-push]
+  # Self-healing backstop: the dispatch workflow lives in agent-writable
+  # territory and may be broken/removed at any time, so we also poll daily.
+  schedule:
+    - cron: "17 6 * * *"
+  # Manual runs for debugging and bootstrap verification.
+  workflow_dispatch:
+
+# THE sequential queue: never run two syncs at once, and never cancel an
+# in-flight one (that could leave a half-open mirror PR).
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Run mirror sync
+        env:
+          MIRROR_PUSH_TOKEN: ${{ secrets.MIRROR_PUSH_TOKEN }}
+          HARNESS_ORG_TOKEN: ${{ secrets.HARNESS_ORG_TOKEN }}
+          SOURCE_REPO: ${{ vars.SOURCE_REPO }}
+          MIRROR_REPO: ${{ vars.MIRROR_REPO }}
+          HARNESS_REPO: ${{ github.repository }}
+          GREPTILE_BOT_LOGIN: ${{ vars.GREPTILE_BOT_LOGIN }}
+        run: |
+          chmod +x scripts/mirror_sync.sh
+          ./scripts/mirror_sync.sh
