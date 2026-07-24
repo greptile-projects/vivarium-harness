@@ -34,8 +34,10 @@ POLL_INTERVAL="${POLL_INTERVAL:-60}"     # seconds between review checks
 POLL_TIMEOUT="${POLL_TIMEOUT:-600}"      # 10 min; runner stays alive => bounds Actions minutes
 TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
 
-BOT_COMMITTER_NAME="${BOT_COMMITTER_NAME:-vivarium-mirror-bot}"
-BOT_COMMITTER_EMAIL="${BOT_COMMITTER_EMAIL:-mirror-bot@users.noreply.github.com}"
+# Committer identity for mirror commits: the GitHub Actions bot (these commits
+# are genuinely produced by an Actions run). The arm B agent stays the *author*.
+BOT_COMMITTER_NAME="${BOT_COMMITTER_NAME:-github-actions[bot]}"
+BOT_COMMITTER_EMAIL="${BOT_COMMITTER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
 
 # Remote URLs — overridable so tests can point at local bare repos.
 SOURCE_GIT_URL="${SOURCE_GIT_URL:-https://x-access-token:${HARNESS_ORG_TOKEN:-}@github.com/${SOURCE_REPO}.git}"
