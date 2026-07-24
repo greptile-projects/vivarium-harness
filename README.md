@@ -70,23 +70,65 @@ holding that arm's MCP request/response, status, timing, and a copy of the
 Codex transcript. Retries get their own `attempt-01/`, `attempt-02/`, etc.
 subdirectories. The CLI prints the artifact directory when it's done.
 
-Failed arms retry up to 3 times by default (set `MAX_ATTEMPTS` to change
-that). A run that exhausts its retries is marked `completed_with_failures`;
-a run that fails for infrastructure reasons is marked `failed`.
+Failed arms retry up to 3 times. A run that exhausts its retries is marked
+`completed_with_failures`; a run that fails for infrastructure reasons is
+marked `failed`.
 
-Other env vars, all optional:
+## Greg Tile (the planner)
 
-- `RESULTS_DIR` — where artifacts go (default `results`)
-- `CODEX_HOME` — where to find Codex sessions, if not `~/.codex`
-- `CODEX_IDLE_TIMEOUT_MS` — abort an arm after this much event silence
-  (default `600000`, 10m)
+The harness runs one ticket. Greg Tile climbs the whole ladder toward the North
+Star (a working GitHub clone):
 
-Then point the harness at them in `.env`:
-
-```dotenv
-CONTROL_CONTAINER=vivarium-control
-GREPTILE_CONTAINER=vivarium-greptile
+```bash
+bun run greg
 ```
+
+Same setup as the harness — `CONTROL_REPO` and `GREPTILE_REPO` — and nothing
+else to configure. The ladder is two levels: **milestones** (1, 2, 3 …) are the
+rungs, and each breaks into **subtickets** (1.1, 1.2, 1.3 …), one PR-sized step
+each. Every turn Greg plans one milestone and its subtickets, files them in
+Linear (a parent issue plus a sub-issue each), appends them to `LADDER.md`, and
+the loop mechanically runs the two-arm harness on each subticket in order.
+
+Greg is blind to the builders — amnesic on both sides. He never sees the code
+the arms wrote or whether it truly worked; his only input is the ladder of plans.
+A subticket is simply "done" once its harness run returns, and a milestone is
+done once all its subtickets have run. Then Greg plans the next milestone. If a
+harness run throws outright (an infrastructure failure), Greg records it on the
+ladder and moves on to the milestone's next subticket rather than aborting — so
+a resumed run never skips the rest of an interrupted milestone.
+
+The North Star is a direction, not a destination, so there is no natural end. To
+guard against runaway, Greg pauses after 10 subtickets for you to reconfirm (the
+current milestone always finishes first). Just re-run `bun run greg` to continue
+— he reads the ladder, so he picks up numbering where he left off. Pass
+`--unbounded` to climb without the cap:
+
+```bash
+bun run greg -- --unbounded
+```
+
+`LADDER.md` is Greg's only state — the North Star and every milestone and
+subticket planned and built so far. It is symlinked into both checkouts (the
+local stand-in for the docker bind mount), so both build arms can see where the
+work is going. Under docker isolation, bind-mount the ladder to `LADDER.md`
+inside each arm's container instead; Greg leaves any pre-existing file at that
+path untouched.
+
+The loop is deliberately mechanical: Greg (the agent) only plans, and files
+Linear tickets if a Linear MCP is configured in your Codex environment. Running
+the harness is not one of Greg's tool calls — the loop calls it directly. Each
+milestone is a fresh Codex session; each subticket writes its own
+`results/<run-id>/`.
+
+Two optional env vars, both deployment-level:
+
+- `CODEX_SANDBOX` — arm sandbox mode (default `workspace-write`; the disposable
+  VMs use `danger-full-access`)
+- `CODEX_HOME` — where to find Codex sessions, if not `~/.codex`
+
+Everything else is fixed in code: artifacts go to `results/`, arms get 3
+attempts, and the idle watchdog is 10 minutes.
 
 ## Verify
 
