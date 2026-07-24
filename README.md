@@ -1,42 +1,63 @@
 # vivarium harness
 
-Runs the same Linear ticket through two Codex workers at once — one against a
-control checkout, one against a Greptile checkout — and saves everything each
-one did.
+runs the same Linear ticket through two Codex workers at once and saves
+everything each one did, so you can compare them.
 
-Each arm's Codex runs in its own Docker container, so neither arm can read the
-other's checkout, the harness, or the host. The harness itself runs on the host
-and drives both containers over MCP.
+the two workers are called *arms*:
 
-## Prerequisites
+- **control** — a plain checkout, no Greptile.
+- **greptile** — the same checkout, but its work gets Greptile reviews fed back.
+
+both arms start from the same commit and get the exact same ticket. the only
+thing that differs is whether Greptile is in the loop, so any difference in the
+result is down to Greptile.
+
+## how it works
+
+the harness runs on your host and does four things:
+
+1. **builds one prompt** from your ticket — the same prompt for both arms.
+2. **runs both arms in parallel.** each arm is a Codex session driven over MCP.
+   the harness streams Codex's live events (files touched, commands run) as they
+   happen, so nothing is a black box.
+3. **retries a failing arm** up to 3 times. it resumes the same Codex thread
+   where it can, otherwise restarts fresh with the error as context. an arm that
+   uses up its retries is marked failed; the other arm keeps going regardless.
+4. **saves everything** to `results/<run-id>/` — the ticket, the prompt, and
+   every request, response, status, and transcript from each arm and attempt.
+
+each arm's Codex runs in its own Docker container, so one arm can't read the
+other's checkout, the harness, or the host. the harness talks to both containers
+over MCP.
+
+## prerequisites
 
 - [Bun](https://bun.sh)
 - Docker
-- An authenticated Codex CLI (`~/.codex/auth.json`; mounted read-only into each
+- an authenticated Codex CLI (`~/.codex/auth.json`, mounted read-only into each
   container)
 
-## Setup
+## setup
 
 ```bash
 bun install
 cp .env.example .env
 ```
 
-`.env` is the single place all arm configuration lives — checkouts, container
-names, and optional per-arm GitHub tokens. Both the harness and
-`scripts/arm-run.sh` read it, so nothing is passed on the command line. Point it
-at two checkouts of the same commit and give each arm a GitHub token:
+`.env` is the one place all arm config lives — checkouts, container names, and
+each arm's GitHub token. both the harness and `scripts/arm-run.sh` read it, so
+nothing goes on the command line. point it at two checkouts of the same commit:
 
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
 CONTROL_CONTAINER=vivarium-control     # already set in .env.example
 GREPTILE_CONTAINER=vivarium-greptile
-CONTROL_GH_TOKEN=ghp_...                # this arm's identity when opening PRs
+CONTROL_GH_TOKEN=ghp_...               # this arm's identity when it opens PRs
 GREPTILE_GH_TOKEN=ghp_...
 ```
 
-Build the arm image once, then start a container per arm. `arm-run.sh` takes
+build the arm image once, then start one container per arm. `arm-run.sh` takes
 only the arm name and reads the rest from `.env`:
 
 ```bash
@@ -45,92 +66,53 @@ scripts/arm-run.sh control
 scripts/arm-run.sh greptile
 ```
 
-Each container mounts only that arm's checkout at `/workspace`, mounts Codex auth
-read-only, and bind-mounts the arm's in-container Codex sessions dir out to a
-per-arm host directory (`~/.vivarium/<container>/sessions` by default) so the
-harness can copy each arm's transcript into the run artifacts. The arms never
-share a sessions directory. To relocate it, set `<ARM>_CODEX_HOME` in `.env` —
-both `arm-run.sh` and the harness read the same value.
+each container mounts only its own arm's checkout at `/workspace`, mounts Codex
+auth read-only, and writes its Codex sessions to a per-arm host directory
+(`~/.vivarium/<container>/sessions` by default) so the harness can copy each
+transcript into the run's artifacts. the arms never share a sessions directory.
+to move it, set `<ARM>_CODEX_HOME` in `.env` — both `arm-run.sh` and the harness
+read the same value.
 
-## Run
-
-```bash
-bun start -- --ticket "Your ticket description"
-```
-
-For a live TUI view of both arms as they run:
+## run
 
 ```bash
-bun run live -- --ticket "Your ticket description"
+bun start -- --ticket "your ticket description"
 ```
 
-Each run writes to `results/<run-id>/`: the ticket, generated prompt, and
-config at the top level, then a `control/` and `greptile/` directory each
-holding that arm's MCP request/response, status, timing, and a copy of the
-Codex transcript. Retries get their own `attempt-01/`, `attempt-02/`, etc.
-subdirectories. The CLI prints the artifact directory when it's done.
-
-Failed arms retry up to 3 times. A run that exhausts its retries is marked
-`completed_with_failures`; a run that fails for infrastructure reasons is
-marked `failed`.
-
-## Greg Tile (the planner)
-
-The harness runs one ticket. Greg Tile climbs the whole ladder toward the North
-Star (a working GitHub clone):
+for a live view of both arms as they work:
 
 ```bash
-bun run greg
+bun run live -- --ticket "your ticket description"
 ```
 
-Same setup as the harness — `CONTROL_REPO` and `GREPTILE_REPO` — and nothing
-else to configure. The ladder is two levels: **milestones** (1, 2, 3 …) are the
-rungs, and each breaks into **subtickets** (1.1, 1.2, 1.3 …), one PR-sized step
-each. Every turn Greg plans one milestone and its subtickets, files them in
-Linear (a parent issue plus a sub-issue each), appends them to `LADDER.md`, and
-the loop mechanically runs the two-arm harness on each subticket in order.
+when it finishes, the CLI prints the run's artifact directory.
 
-Greg is blind to the builders — amnesic on both sides. He never sees the code
-the arms wrote or whether it truly worked; his only input is the ladder of plans.
-A subticket is simply "done" once its harness run returns, and a milestone is
-done once all its subtickets have run. Then Greg plans the next milestone. If a
-harness run throws outright (an infrastructure failure), Greg records it on the
-ladder and moves on to the milestone's next subticket rather than aborting — so
-a resumed run never skips the rest of an interrupted milestone.
+## what you get
 
-The North Star is a direction, not a destination, so there is no natural end. To
-guard against runaway, Greg pauses after 10 subtickets for you to reconfirm (the
-current milestone always finishes first). Just re-run `bun run greg` to continue
-— he reads the ladder, so he picks up numbering where he left off. Pass
-`--unbounded` to climb without the cap:
+every run writes to `results/<run-id>/`:
 
-```bash
-bun run greg -- --unbounded
-```
+- the ticket, generated prompt, and config, at the top level.
+- a `control/` and a `greptile/` directory, each holding that arm's MCP
+  request and response, status, timing, and a copy of the Codex transcript.
+- one `attempt-01/`, `attempt-02/`, … subdirectory per try, so retries are kept
+  separately.
 
-`LADDER.md` is Greg's only state — the North Star and every milestone and
-subticket planned and built so far. It is symlinked into both checkouts (the
-local stand-in for the docker bind mount), so both build arms can see where the
-work is going. Under docker isolation, bind-mount the ladder to `LADDER.md`
-inside each arm's container instead; Greg leaves any pre-existing file at that
-path untouched.
+a run where every arm succeeds is `completed`; one where an arm used up its
+retries is `completed_with_failures`; a run that breaks for infrastructure
+reasons is `failed`.
 
-The loop is deliberately mechanical: Greg (the agent) only plans, and files
-Linear tickets if a Linear MCP is configured in your Codex environment. Running
-the harness is not one of Greg's tool calls — the loop calls it directly. Each
-milestone is a fresh Codex session; each subticket writes its own
-`results/<run-id>/`.
+## config
 
-Two optional env vars, both deployment-level:
+everything below is optional and lives in `.env`:
 
-- `CODEX_SANDBOX` — arm sandbox mode (default `workspace-write`; the disposable
-  VMs use `danger-full-access`)
-- `CODEX_HOME` — where to find Codex sessions, if not `~/.codex`
+- `MAX_ATTEMPTS` — tries per arm, including the first (default `3`).
+- `RESULTS_DIR` — where artifacts go (default `results`).
+- `CODEX_HOME` — where to find Codex sessions (default `~/.codex`).
+- `CODEX_IDLE_TIMEOUT_MS` — abort an arm after this much silence with no events
+  (default `600000`, 10 minutes).
+- `CODEX_SANDBOX` — Codex sandbox mode (default `workspace-write`).
 
-Everything else is fixed in code: artifacts go to `results/`, arms get 3
-attempts, and the idle watchdog is 10 minutes.
-
-## Verify
+## verify
 
 ```bash
 bun run check
