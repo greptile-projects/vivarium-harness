@@ -4,10 +4,10 @@ import { runHarness, type HarnessRunResult } from "../harness.js";
 import {
   completeSubticket,
   ensureLadderLinks,
-  errorOutcome,
   highestMilestone,
   initLadder,
   nextPendingSubticket,
+  parseSubtickets,
   readLadder,
   runOutcome,
 } from "./ladder.js";
@@ -27,10 +27,15 @@ export interface BuiltSubticket {
   number: string;
   milestone: number;
   title: string;
-  // The harness result, or `error` when the harness itself threw (an
-  // infrastructure failure, distinct from an arm failing inside a run).
-  run?: HarnessRunResult;
-  error?: string;
+  run: HarnessRunResult;
+}
+
+// One subticket Greg planned during a write-ahead run — appended to the
+// ladder, but never handed to the harness.
+export interface PlannedSubticket {
+  number: string;
+  milestone: number;
+  title: string;
 }
 
 // Injectable so the loop can be tested without spawning Greg or the arms.
@@ -49,8 +54,11 @@ export interface GregDeps {
 // ladder IS the state — Greg (the agent) plans a milestone by editing the file
 // directly, appending `### [ ]` subticket checkboxes; the loop reads the file,
 // builds the next unchecked subticket by running the harness on its description,
-// then checks its box and records the outcome. Greg is blind to the builders, so
-// a subticket is simply "built" once its harness run returns (pass or fail).
+// then checks its box and records the outcome. A subticket is only checked off
+// once its harness run actually succeeds — any failure (the harness throwing,
+// or an arm exhausting its retries) halts the loop immediately instead of
+// checking the box and moving on, so a broken rung can never look built. The
+// subticket stays unchecked and a re-run retries it.
 //
 // When no subtickets are pending, it is Greg's turn to plan the next milestone.
 // The North Star is a direction, not a destination, so the loop pauses after
@@ -101,32 +109,87 @@ export async function runGreg(
     );
 
     // Mechanical harness run — the two arms build this subticket. Greg is not in
-    // the loop here; the ladder already records the intent. Checking the box is
-    // what advances the loop, so we check it whether the run succeeds OR the
-    // harness throws (infrastructure failure) — otherwise the same subticket
-    // would rebuild forever. The outcome line preserves which happened.
+    // the loop here; the ladder already records the intent. Any failure halts
+    // the whole run loudly rather than silently checking the box and moving on:
+    // the subticket is left unchecked so a re-run retries it.
+    let run: HarnessRunResult;
     try {
-      const run = await harness({ ...base, ticket: pending.description });
-      await completeSubticket(ladderPath, pending.number, runOutcome(run));
-      log(`  ${pending.number}: ${run.status} → ${run.artifactDir}`);
-      built.push({
-        number: pending.number,
-        milestone: pending.milestone,
-        title: pending.title,
-        run,
-      });
+      run = await harness({ ...base, ticket: pending.description });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await completeSubticket(ladderPath, pending.number, errorOutcome(message));
       log(`  ${pending.number}: harness error — ${message}`);
-      built.push({
-        number: pending.number,
-        milestone: pending.milestone,
-        title: pending.title,
-        error: message,
+      throw error instanceof Error
+        ? error
+        : new Error(`harness error building ${pending.number}: ${message}`);
+    }
+
+    if (run.status === "completed_with_failures") {
+      const outcome = runOutcome(run);
+      log(`  ${pending.number}: ${outcome}`);
+      throw new Error(
+        `Greg halted: subticket ${pending.number} failed and was left unchecked — ${outcome}`,
+      );
+    }
+
+    await completeSubticket(ladderPath, pending.number, runOutcome(run));
+    log(`  ${pending.number}: ${run.status} → ${run.artifactDir}`);
+    built.push({
+      number: pending.number,
+      milestone: pending.milestone,
+      title: pending.title,
+      run,
+    });
+  }
+
+  return built;
+}
+
+// Greg without the harness: plans milestones onto the ladder — filing Linear
+// tickets and appending checkbox subtickets exactly as `runGreg` would — but
+// never builds anything. Unlike `runGreg`, this keeps planning new milestones
+// even while earlier ones are still unbuilt (`runGreg`'s "no pending subticket"
+// gate would otherwise stop it after the first). Nothing is checked off, so a
+// later `runGreg` picks up and builds every subticket queued here, oldest
+// first. `subticketLimit` caps how many subtickets get planned this run, same
+// runaway guard as `runGreg`.
+export async function planAhead(
+  base: HarnessConfig,
+  subticketLimit: number = MAX_SUBTICKETS,
+  deps: Partial<GregDeps> = {},
+  ladderPath: string = LADDER_PATH,
+): Promise<PlannedSubticket[]> {
+  const plan = deps.plan ?? planNextMilestone;
+  const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
+
+  await initLadder(ladderPath, NORTH_STAR);
+  const repos = base.arms.map((arm) => arm.repo);
+  for (const link of await ensureLadderLinks(ladderPath, repos)) {
+    log(link.message);
+  }
+
+  const planned: PlannedSubticket[] = [];
+
+  while (planned.length < subticketLimit) {
+    const ladder = await readLadder(ladderPath);
+    const before = parseSubtickets(ladder).length;
+    const milestoneNumber = highestMilestone(ladder) + 1;
+    log(`\n=== Milestone ${milestoneNumber}: planning ahead ===`);
+    await plan(base, ladderPath, ladder, milestoneNumber);
+
+    const after = parseSubtickets(await readLadder(ladderPath));
+    for (const subticket of after.slice(before)) {
+      log(
+        `  ${subticket.number} ${subticket.title}${
+          subticket.ticket ? ` (${subticket.ticket})` : ""
+        }: planned`,
+      );
+      planned.push({
+        number: subticket.number,
+        milestone: subticket.milestone,
+        title: subticket.title,
       });
     }
   }
 
-  return built;
+  return planned;
 }

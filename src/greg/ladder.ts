@@ -157,11 +157,10 @@ export function nextPendingSubticket(ladder: string): ParsedSubticket | null {
 }
 
 // Mark a subticket built: flip its checkbox to `[x]` and append the harness run
-// outcome below its description. Called by the loop after the arms have run, so
-// the ladder doubles as the build history both arms can read. Checking the box
-// is also what advances the loop — a subticket is only revisited while unchecked
-// — so an infrastructure failure still checks the box (with a failure outcome)
-// rather than looping on the same step forever.
+// outcome below its description. Called by the loop only after a successful
+// run, so the ladder doubles as the build history both arms can read. Checking
+// the box is also what advances the loop — a subticket is only revisited while
+// unchecked, so a failed run must leave it unchecked for a re-run to retry.
 export async function completeSubticket(
   ladderPath: string,
   number: string,
@@ -206,13 +205,6 @@ export function runOutcome(run: HarnessRunResult): string {
     .map((result) => result.arm);
   const detail = failed.length ? ` (failed arms: ${failed.join(", ")})` : "";
   return `Run \`${run.runId}\`: ${run.status}${detail} — \`${run.artifactDir}\``;
-}
-
-// The outcome line when the harness itself threw (infrastructure failure, as
-// opposed to an arm failing inside a run).
-export function errorOutcome(message: string): string {
-  const oneLine = message.split("\n")[0]?.trim() || "unknown error";
-  return `Run failed (infrastructure): ${oneLine}`;
 }
 
 export type LinkStatus = "created" | "exists" | "skipped-nonlink" | "error";

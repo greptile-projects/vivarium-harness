@@ -13,7 +13,6 @@ import { join, resolve } from "node:path";
 import {
   completeSubticket,
   ensureLadderLinks,
-  errorOutcome,
   highestMilestone,
   initLadder,
   nextPendingSubticket,
@@ -198,12 +197,6 @@ describe("outcome lines", () => {
     expect(outcome).toContain("Run `run-42`: completed_with_failures");
     expect(outcome).toContain("failed arms: greptile");
     expect(outcome).toContain("/results/run-42");
-  });
-
-  it("reduces an infrastructure error to its first line", () => {
-    expect(errorOutcome("docker daemon unavailable\nstack trace…")).toBe(
-      "Run failed (infrastructure): docker daemon unavailable",
-    );
   });
 });
 

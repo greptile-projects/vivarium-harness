@@ -2,7 +2,7 @@ import { basename, dirname } from "node:path";
 import type { HarnessConfig } from "../config.js";
 import type { AttemptRunner } from "../harness.js";
 import { runArmStreaming } from "../live/stream.js";
-import { nextPendingSubticket, readLadder } from "./ladder.js";
+import { parseSubtickets, readLadder } from "./ladder.js";
 
 // The one fixed goal of the experiment. Greg plans every milestone toward this.
 // It is a direction, not a milestone that gets reached — the climb never ends.
@@ -105,20 +105,20 @@ export async function planNextMilestone(
     );
   }
 
-  // Greg's reply is ignored; the file is the contract. The loop only plans when
-  // nothing is pending, so after this turn the next pending subticket must be
-  // the first rung of exactly milestone `milestoneNumber`. This one check
-  // rejects a Greg that wrote nothing, appended the wrong milestone number
-  // (e.g. 99 when asked for 2, which would resume the climb from the wrong
-  // rung), or left every box already checked.
-  const pending = nextPendingSubticket(await readLadder(ladderPath));
-  if (!pending || pending.milestone !== milestoneNumber) {
+  // Greg's reply is ignored; the file is the contract. Look for an unchecked
+  // subticket that belongs to exactly milestone `milestoneNumber` — not just
+  // whatever is next pending overall, since earlier milestones may still be
+  // unbuilt (write-ahead planning stacks up several before anything builds).
+  // This one check rejects a Greg that wrote nothing, appended the wrong
+  // milestone number (e.g. 99 when asked for 2, which would resume the climb
+  // from the wrong rung), or left every box already checked.
+  const planted = parseSubtickets(await readLadder(ladderPath)).find(
+    (subticket) => subticket.milestone === milestoneNumber && !subticket.done,
+  );
+  if (!planted) {
     throw new Error(
       `Greg did not append a buildable milestone ${milestoneNumber} to the ladder. ` +
-        `Expected a new "## Milestone ${milestoneNumber}:" section with "### [ ] ${milestoneNumber}.x" subtickets` +
-        (pending
-          ? `, but the next pending subticket is ${pending.number} (milestone ${pending.milestone}).`
-          : "."),
+        `Expected a new "## Milestone ${milestoneNumber}:" section with "### [ ] ${milestoneNumber}.x" subtickets.`,
     );
   }
 }

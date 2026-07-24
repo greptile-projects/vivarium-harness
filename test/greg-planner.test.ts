@@ -117,6 +117,28 @@ describe("planNextMilestone", () => {
 
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner),
-    ).rejects.toThrow(/next pending subticket is 99\.1 \(milestone 99\)/);
+    ).rejects.toThrow(/did not append a buildable milestone 2/);
+  });
+
+  it("accepts a milestone even while an earlier one is still unbuilt (write-ahead)", async () => {
+    const ladderPath = await scratchLadder();
+    // Milestone 1 was planned but never built — the write-ahead case.
+    await appendFile(
+      ladderPath,
+      "\n## Milestone 1: First\n\n### [ ] 1.1 Skeleton\n\nbody\n",
+      "utf8",
+    );
+    const runner: AttemptRunner = async () => {
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 2: Second\n\n### [ ] 2.1 Next\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner);
+
+    expect(await readLadder(ladderPath)).toContain("## Milestone 2: Second");
   });
 });
