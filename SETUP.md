@@ -28,9 +28,19 @@ via API/CLI. Create both, then store them as **secrets in `vivarium-harness`**.
     repo, *not* a 403/permission error. If the pipeline logs 404s against
     `makors/vivarium-b-mirror`, the resource owner is wrong.
 - Repository access: **only** `makors/vivarium-b-mirror`.
-- Permissions: **Contents: Read and write**, **Pull requests: Read and write**.
-  (If adding the `review-timeout` label ever 403s, also grant **Issues: Read and
-  write** — label writes can route through the issues endpoint.)
+- Permissions: **Contents: Read and write**, **Pull requests: Read and write**,
+  **Workflows: Read and write**.
+  - ⚠️ **Workflows: Read and write is mandatory**, not optional. Arm B's tree
+    contains `.github/workflows/*` files (its own app workflows, plus the
+    `main-sync.yml` dispatch file). Tree identity forces those into every synced
+    mirror state, and GitHub **rejects any push that creates/updates a file under
+    `.github/workflows/` unless the token can write workflows** — the error is
+    literally `refusing to allow a Personal Access Token to create or update
+    workflow ... without workflow scope`, and the whole sync fails at the push
+    step. This is safe: the mirror has GitHub Actions **disabled**, so those
+    workflow files stay inert.
+  - (If adding the `review-timeout` label ever 403s, also grant **Issues: Read
+    and write** — label writes can route through the issues endpoint.)
 
 ### 2. `HARNESS_ORG_TOKEN`
 
