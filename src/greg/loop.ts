@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { HarnessConfig } from "../config.js";
+import { MAX_MILESTONES, type HarnessConfig } from "../config.js";
 import { runHarness, type HarnessRunResult } from "../harness.js";
 import {
   completeSubticket,
@@ -11,16 +11,21 @@ import {
   readLadder,
   runOutcome,
 } from "./ladder.js";
+import {
+  closeSubticketInLinear,
+  fileMilestoneInLinear,
+  type MilestoneFiler,
+  type SubticketCloser,
+} from "./linear.js";
 import { NORTH_STAR, planNextMilestone } from "./planner.js";
 
 // The one shared ladder, mounted into both checkouts.
 export const LADDER_PATH = resolve("LADDER.md");
 
-// Runaway guard: Greg pauses once he has built this many subtickets (harness
-// runs) so a human reconfirms before he climbs further. Checked per subticket,
-// so it holds no matter how many subtickets a milestone contains. Re-running
-// continues from the ladder; --unbounded (Infinity) removes the cap.
-export const MAX_SUBTICKETS = 10;
+// The runaway guard (defined in config.ts with the other fixed constants) is
+// counted in milestones: a run always finishes the rung it is on and pauses
+// between rungs. Re-running continues from the ladder; --unbounded (Infinity)
+// removes the cap.
 
 // One subticket the loop built this run, tagged with its milestone.
 export interface BuiltSubticket {
@@ -46,8 +51,33 @@ export interface GregDeps {
     ladder: string,
     milestoneNumber: number,
   ) => Promise<void>;
+  // Files the freshly planned milestone in Linear (rung milestone + chained
+  // issues) and stamps the ids onto the ladder headings. Mechanical, so it
+  // belongs to the loop — Greg's headless session cannot do it (codex blocks
+  // destructive MCP tool calls on an approval no headless session can answer).
+  file: MilestoneFiler;
+  // Moves a built subticket's Linear issue to Done after its box is checked.
+  // Fails CLOSED (halts the run) — see closeSubticketInLinear.
+  close: SubticketCloser;
   harness: (config: HarnessConfig) => Promise<HarnessRunResult>;
   log: (message: string) => void;
+}
+
+// Ticket ids are bookkeeping, not build state: a filing failure logs and the
+// climb continues. The filer itself already swallows Linear errors; this guard
+// also covers an injected filer that throws.
+async function fileSafely(
+  file: MilestoneFiler,
+  ladderPath: string,
+  milestoneNumber: number,
+  log: (message: string) => void,
+): Promise<void> {
+  try {
+    await file(ladderPath, milestoneNumber, log);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`  Linear filing failed (continuing without ids): ${message}`);
+  }
 }
 
 // The whole of Greg Tile: a todo-runner over one markdown ladder file. The
@@ -62,16 +92,21 @@ export interface GregDeps {
 //
 // When no subtickets are pending, it is Greg's turn to plan the next milestone.
 // The North Star is a direction, not a destination, so the loop pauses after
-// `subticketLimit` subtickets (default 10) for a human to reconfirm, or runs
-// unbounded when passed Infinity. Everything is resumable: a re-run reads the
-// ladder and continues from the first unchecked box.
+// `milestoneLimit` milestones (default 2) for a human to reconfirm, or runs
+// unbounded when passed Infinity. The pause is per rung: a run always finishes
+// the milestone it is building (resuming counts the resumed rung as one), and
+// stops before planning or starting a rung beyond the limit. Everything is
+// resumable: a re-run reads the ladder and continues from the first unchecked
+// box.
 export async function runGreg(
   base: HarnessConfig,
-  subticketLimit: number = MAX_SUBTICKETS,
+  milestoneLimit: number = MAX_MILESTONES,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
 ): Promise<BuiltSubticket[]> {
   const plan = deps.plan ?? planNextMilestone;
+  const file = deps.file ?? fileMilestoneInLinear;
+  const close = deps.close ?? closeSubticketInLinear;
   const harness = deps.harness ?? runHarness;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
 
@@ -82,17 +117,23 @@ export async function runGreg(
   }
 
   const built: BuiltSubticket[] = [];
+  // Distinct milestones this run has built subtickets under — the unit the
+  // pause counts.
+  const milestonesTouched = new Set<number>();
 
-  while (built.length < subticketLimit) {
+  for (;;) {
     const ladder = await readLadder(ladderPath);
     const pending = nextPendingSubticket(ladder);
 
     // Nothing left to build — Greg plans the next rung by editing the ladder,
-    // then we loop back and pick up the subtickets he appended.
+    // then we loop back and pick up the subtickets he appended. Unless this
+    // run has already spent its rung budget: then it pauses instead.
     if (!pending) {
+      if (milestonesTouched.size >= milestoneLimit) break;
       const milestoneNumber = highestMilestone(ladder) + 1;
       log(`\n=== Milestone ${milestoneNumber}: planning ===`);
       await plan(base, ladderPath, ladder, milestoneNumber);
+      await fileSafely(file, ladderPath, milestoneNumber, log);
       const planned = nextPendingSubticket(await readLadder(ladderPath));
       log(
         `Milestone ${milestoneNumber} planned${
@@ -100,6 +141,15 @@ export async function runGreg(
         }`,
       );
       continue;
+    }
+
+    // The next pending subticket opens a rung beyond this run's budget (its
+    // milestone was planned ahead of time) — pause here, between milestones.
+    if (
+      !milestonesTouched.has(pending.milestone) &&
+      milestonesTouched.size >= milestoneLimit
+    ) {
+      break;
     }
 
     log(
@@ -133,6 +183,11 @@ export async function runGreg(
 
     await completeSubticket(ladderPath, pending.number, runOutcome(run));
     log(`  ${pending.number}: ${run.status} → ${run.artifactDir}`);
+    // Close the built subticket's Linear issue. Deliberately NOT fail-open
+    // like filing: a throw here halts the climb (the box stays checked — the
+    // build itself succeeded), so the board can never silently drift.
+    await close(pending.ticket, pending.number, log);
+    milestonesTouched.add(pending.milestone);
     built.push({
       number: pending.number,
       milestone: pending.milestone,
@@ -150,15 +205,16 @@ export async function runGreg(
 // even while earlier ones are still unbuilt (`runGreg`'s "no pending subticket"
 // gate would otherwise stop it after the first). Nothing is checked off, so a
 // later `runGreg` picks up and builds every subticket queued here, oldest
-// first. `subticketLimit` caps how many subtickets get planned this run, same
-// runaway guard as `runGreg`.
+// first. `milestoneLimit` caps how many milestones get planned this run, same
+// per-rung runaway guard as `runGreg`.
 export async function planAhead(
   base: HarnessConfig,
-  subticketLimit: number = MAX_SUBTICKETS,
+  milestoneLimit: number = MAX_MILESTONES,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
 ): Promise<PlannedSubticket[]> {
   const plan = deps.plan ?? planNextMilestone;
+  const file = deps.file ?? fileMilestoneInLinear;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
 
   await initLadder(ladderPath, NORTH_STAR);
@@ -169,12 +225,17 @@ export async function planAhead(
 
   const planned: PlannedSubticket[] = [];
 
-  while (planned.length < subticketLimit) {
+  for (
+    let milestonesPlanned = 0;
+    milestonesPlanned < milestoneLimit;
+    milestonesPlanned += 1
+  ) {
     const ladder = await readLadder(ladderPath);
     const before = parseSubtickets(ladder).length;
     const milestoneNumber = highestMilestone(ladder) + 1;
     log(`\n=== Milestone ${milestoneNumber}: planning ahead ===`);
     await plan(base, ladderPath, ladder, milestoneNumber);
+    await fileSafely(file, ladderPath, milestoneNumber, log);
 
     const after = parseSubtickets(await readLadder(ladderPath));
     for (const subticket of after.slice(before)) {

@@ -3,10 +3,20 @@ import { join } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 
 // Fixed for the experiment — not configurable. Artifacts always land in
-// ./results, each arm gets three autonomous attempts, and a stalled arm is
-// aborted after ten minutes of event silence.
+// ./results and each arm gets three autonomous attempts.
 export const RESULTS_DIR = "results";
 export const MAX_ATTEMPTS = 3;
+// Runaway guard for the ladder loop: pause once this many milestones (rungs)
+// have been built (or planned, under --plan-only) so a human reconfirms the
+// direction before more Codex runs are spent. The run always finishes the
+// rung it is on — the pause lands between milestones, never mid-milestone.
+// Lifted by --unbounded. It lives here beside the other fixed experiment
+// constants, and because the usage text quotes it.
+export const MAX_MILESTONES = 2;
+// Default for the activity watchdog: abort a session after this much
+// codex/event silence. Overridable via the IDLE_TIMEOUT_MS env var (0
+// disables) — a hung external tool call otherwise holds a run for the full
+// default before anything notices.
 export const IDLE_TIMEOUT_MS = 600_000;
 
 export type ArmName = "control" | "greptile";
@@ -64,6 +74,17 @@ function sandboxFromEnv(
     );
   }
   return sandbox;
+}
+
+function idleTimeoutFromEnv(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") return IDLE_TIMEOUT_MS;
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new Error(
+      "IDLE_TIMEOUT_MS must be a non-negative number of milliseconds",
+    );
+  }
+  return ms;
 }
 
 // A containerized arm writes its Codex sessions inside the container, so they
@@ -124,7 +145,56 @@ export function parseArgs(
     resultsDir: RESULTS_DIR,
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
     maxAttempts: MAX_ATTEMPTS,
-    idleTimeoutMs: IDLE_TIMEOUT_MS,
+    idleTimeoutMs: idleTimeoutFromEnv(env.IDLE_TIMEOUT_MS),
+  };
+}
+
+// How a single `bun start` invocation should behave. Every option is a
+// modifier on the one loop, so resolving them is pure argv reading — kept here
+// beside parseArgs (and out of the entrypoint's main()) so it is testable.
+export interface RunMode {
+  // "ladder" is the experiment: plan a rung, build its subtickets, repeat.
+  // "ticket" runs one ad-hoc ticket; "demo" is "ticket" against temp dirs.
+  kind: "ladder" | "ticket" | "demo";
+  planOnly: boolean;
+  unbounded: boolean;
+  ticket?: string;
+  useTui: boolean;
+  json: boolean;
+}
+
+export function parseRunMode(args: string[], isTty: boolean): RunMode {
+  const json = args.includes("--json");
+  const planOnly = args.includes("--plan-only");
+  const unbounded = args.includes("--unbounded");
+  const demo = args.includes("--demo");
+  const ticket = valueAfter(args, "--ticket");
+  const kind = demo ? "demo" : ticket !== undefined ? "ticket" : "ladder";
+
+  // Reject combinations that could only be honoured by silently ignoring one
+  // of the flags the caller typed.
+  if (kind !== "ladder" && planOnly) {
+    throw new Error(
+      "--plan-only plans ladder rungs; it cannot be combined with --ticket or --demo",
+    );
+  }
+  if (kind !== "ladder" && unbounded) {
+    throw new Error(
+      "--unbounded lifts the ladder's milestone cap; it has no meaning with --ticket or --demo",
+    );
+  }
+  return {
+    kind,
+    planOnly,
+    unbounded,
+    ticket,
+    // --json is for machines; never fight it for the terminal.
+    useTui: args.includes("--tui")
+      ? true
+      : args.includes("--no-tui") || json
+        ? false
+        : isTty,
+    json,
   };
 }
 
@@ -156,7 +226,30 @@ export async function validateConfig(
 }
 
 export const usage = `Usage:
-  bun start -- --ticket <linear-ticket-description>
+  bun start                              climb the ladder: plan the next rung,
+                                         then build its subtickets through both
+                                         arms. Pauses after ${MAX_MILESTONES} milestones.
+  bun start -- [options]
+
+Options:
+  --unbounded             Do not pause after ${MAX_MILESTONES} milestones (never returns).
+  --plan-only             Plan rungs onto the ladder and file their Linear
+                          tickets; build nothing. A later \`bun start\` builds
+                          everything queued this way.
+  --ticket <description>  Skip the ladder: run this one ticket through both
+                          arms and exit. For debugging the harness itself.
+  --demo                  One throwaway read-only run against temp checkouts,
+                          to exercise the plumbing without the experiment repos.
+                          The live view stays up when it finishes — press q.
+  --tui / --no-tui        Force the live view on/off (default: on when stdout
+                          is a TTY). Both write results/live-<ts>/progress.log.
+  --json                  Print the machine-readable result; implies --no-tui.
+  --help                  This message.
+
+In the live view: tab / arrows switch tabs, 1-9 jump straight to one, up/down
+scroll the ladder and log tabs (g returns to live), q quits.
+
+Exit code is 1 whenever an arm exhausts its retries or the run throws.
 
 Required environment:
   CONTROL_REPO=<path>     Checkout without access to Greptile comments
@@ -174,7 +267,9 @@ Optional environment:
                           ~/.vivarium/<container>; host arms use CODEX_HOME.
   CODEX_SANDBOX=<mode>    Defaults to workspace-write
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts
+  IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
+                          Defaults to 600000 (10m); 0 disables the watchdog.
 
 The caller supplies only --ticket. Repository and tool isolation are deployment
-configuration, not per-ticket orchestration inputs. Results dir (./results),
-attempts per arm (3), and the idle watchdog (10m) are fixed constants.`;
+configuration, not per-ticket orchestration inputs. Results dir (./results) and
+attempts per arm (3) are fixed constants.`;

@@ -1,16 +1,38 @@
-# vivarium harness
+<div align="center">
 
-runs the same Linear ticket through two Codex workers at once and saves
-everything each one did, so you can compare them.
+<h1>vivarium harness</h1>
 
-the two workers are called *arms*:
+<p><strong>Two reptiles. One ticket. Every move recorded.</strong></p>
 
-- **control** — a plain checkout, no Greptile.
-- **greptile** — the same checkout, but its work gets Greptile reviews fed back.
+<p>
+  Run the same Linear ticket through two isolated Codex workers, watch them
+  build in parallel, and keep the complete evidence trail.
+</p>
 
-both arms start from the same commit and get the exact same ticket. the only
-thing that differs is whether Greptile is in the loop, so any difference in the
-result is down to Greptile.
+<img
+  src="./docs/assets/vivarium-live.png"
+  alt="Vivarium live view showing Tuatara first and Komodo second"
+  width="900"
+/>
+
+<p><sub>The live experiment view. Tuatara is always presented first.</sub></p>
+
+</div>
+
+## meet the arms
+
+- **Tuatara** works in the checkout where Greptile review feedback is
+  available.
+- **Komodo** works in the matching plain checkout without that feedback.
+
+Both start from the same commit and receive the exact same ticket. Every other
+input is held constant, so differences in their results can be attributed to
+the review feedback.
+
+The experiment and UI use **Tuatara** and **Komodo**. Existing deployment and
+artifact identifiers remain `GREPTILE`/`greptile` for Tuatara and
+`CONTROL`/`control` for Komodo, keeping old configuration and run data
+compatible.
 
 ## how it works
 
@@ -75,25 +97,47 @@ read the same value.
 
 ## run
 
-```bash
-bun start -- --ticket "your ticket description"
-```
-
-for a live view of both arms as they work:
+one command. bare `bun start` runs the experiment: greg plans the next rung onto
+`LADDER.md`, both arms build its subtickets, repeat — pausing every 2 milestones
+so you can reconfirm the direction.
 
 ```bash
-bun run live -- --ticket "your ticket description"
+bun start
 ```
 
-when it finishes, the CLI prints the run's artifact directory.
+options on that same loop:
+
+```bash
+bun start -- --unbounded      # don't pause every 2 milestones
+bun start -- --plan-only      # plan rungs onto the ladder, build nothing
+bun start -- --ticket "..."   # skip the ladder, run one ad-hoc ticket, exit
+bun start -- --demo           # throwaway read-only run, no experiment repos needed
+                              # (its view waits on the final frame until you press q)
+bun start -- --no-tui --json  # machine-readable output for scripts
+bun start -- --help           # every option, plus the env reference
+```
+
+there's a live view by default when stdout is a terminal: a fullscreen, tabbed
+view of whatever codex sessions are running — greg while planning, the two arms
+while building. tabs are an **overview** of every session, one **per session**
+with its context meter, what it's been doing and its answer, greg's **ladder**
+notes, and the raw **log**. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll the lists,
+`q` quits. it runs on the alternate screen and gives your terminal back
+untouched when it's done.
+
+without a terminal (or with `--no-tui`) the same feed is tee'd line by line.
+either way it lands in `results/live-<ts>/progress.log`, and the CLI prints the
+run summary and artifact directory when it finishes. the exit code is 1 if an
+arm exhausts its retries.
 
 ## what you get
 
 every run writes to `results/<run-id>/`:
 
 - the ticket, generated prompt, and config, at the top level.
-- a `control/` and a `greptile/` directory, each holding that arm's MCP
-  request and response, status, timing, and a copy of the Codex transcript.
+- a `greptile/` (Tuatara) and a `control/` (Komodo) directory, each holding
+  that arm's MCP request and response, status, timing, and a copy of the Codex
+  transcript.
 - one `attempt-01/`, `attempt-02/`, … subdirectory per try, so retries are kept
   separately.
 
@@ -105,12 +149,15 @@ reasons is `failed`.
 
 everything below is optional and lives in `.env`:
 
-- `MAX_ATTEMPTS` — tries per arm, including the first (default `3`).
-- `RESULTS_DIR` — where artifacts go (default `results`).
 - `CODEX_HOME` — where to find Codex sessions (default `~/.codex`).
-- `CODEX_IDLE_TIMEOUT_MS` — abort an arm after this much silence with no events
-  (default `600000`, 10 minutes).
+- `IDLE_TIMEOUT_MS` — abort an arm after this much silence with no events
+  (default `600000`, 10 minutes; `0` disables the watchdog).
 - `CODEX_SANDBOX` — Codex sandbox mode (default `workspace-write`).
+- `LINEAR_API_KEY` — bearer token for the `linear` MCP server greg files
+  milestones and sub-issues through. unset means he skips linear.
+
+tries per arm (`3`), the artifacts directory (`results`), and the ladder's
+2-milestone pause are fixed constants in `src/config.ts`, not env vars.
 
 ## verify
 

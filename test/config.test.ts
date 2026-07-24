@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   parseArgs,
+  parseRunMode,
   IDLE_TIMEOUT_MS,
   MAX_ATTEMPTS,
   RESULTS_DIR,
@@ -41,6 +42,63 @@ describe("parseArgs", () => {
     expect(config.maxAttempts).toBe(MAX_ATTEMPTS);
     expect(config.resultsDir).toBe(RESULTS_DIR);
     expect(config.idleTimeoutMs).toBe(IDLE_TIMEOUT_MS);
+  });
+});
+
+describe("run mode", () => {
+  it("defaults to the ladder loop with no arguments", () => {
+    const mode = parseRunMode([], true);
+
+    expect(mode.kind).toBe("ladder");
+    expect(mode.planOnly).toBe(false);
+    expect(mode.unbounded).toBe(false);
+    expect(mode.ticket).toBeUndefined();
+  });
+
+  it("treats --ticket and --demo as one-ticket runs", () => {
+    expect(parseRunMode(["--ticket", "ENG-1"], true)).toMatchObject({
+      kind: "ticket",
+      ticket: "ENG-1",
+    });
+    expect(parseRunMode(["--demo"], true).kind).toBe("demo");
+  });
+
+  it("keeps --plan-only and --unbounded on the ladder", () => {
+    const mode = parseRunMode(["--plan-only", "--unbounded"], true);
+
+    expect(mode.kind).toBe("ladder");
+    expect(mode.planOnly).toBe(true);
+    expect(mode.unbounded).toBe(true);
+  });
+
+  // Silently ignoring one of two typed flags is the failure mode worth
+  // guarding: it would look like the run honoured both.
+  it("rejects ladder options combined with a one-ticket run", () => {
+    expect(() => parseRunMode(["--ticket", "ENG-1", "--plan-only"], true)).toThrow(
+      /--plan-only/,
+    );
+    expect(() => parseRunMode(["--demo", "--unbounded"], true)).toThrow(
+      /--unbounded/,
+    );
+  });
+
+  it("rejects --ticket without a value instead of falling back to the ladder", () => {
+    expect(() => parseRunMode(["--ticket", "--json"], true)).toThrow(
+      /--ticket requires a value/,
+    );
+  });
+
+  it("resolves the view from the flags, then the terminal", () => {
+    expect(parseRunMode([], true).useTui).toBe(true);
+    expect(parseRunMode([], false).useTui).toBe(false);
+    expect(parseRunMode(["--tui"], false).useTui).toBe(true);
+    expect(parseRunMode(["--no-tui"], true).useTui).toBe(false);
+    // --json is for machines; it must not fight the TUI for the terminal.
+    expect(parseRunMode(["--json"], true)).toMatchObject({
+      json: true,
+      useTui: false,
+    });
+    expect(parseRunMode(["--json", "--tui"], false).useTui).toBe(true);
   });
 });
 
