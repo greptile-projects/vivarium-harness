@@ -1,89 +1,122 @@
-import { describe, expect, it } from "bun:test";
-import { parseMilestone, plannerPrompt } from "../src/greg/planner.js";
+import { afterEach, describe, expect, it } from "bun:test";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { HarnessConfig } from "../src/config.js";
+import type { AttemptRunner } from "../src/harness.js";
+import { initLadder, readLadder } from "../src/greg/ladder.js";
+import { planNextMilestone, plannerPrompt } from "../src/greg/planner.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
+    ),
+  );
+});
+
+async function scratchLadder(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "greg-planner-"));
+  temporaryDirectories.push(root);
+  const ladderPath = join(root, "LADDER.md");
+  await initLadder(ladderPath, "goal");
+  return ladderPath;
+}
+
+const base = {
+  codexHome: "/tmp/codex",
+  idleTimeoutMs: 600_000,
+} as unknown as HarnessConfig;
 
 describe("plannerPrompt", () => {
-  it("embeds the North Star, ladder, blindness, and output contract", () => {
-    const prompt = plannerPrompt("## Milestone 1: Repo hosting", 2);
+  it("embeds the North Star, ladder, blindness, and direct-edit contract", () => {
+    const prompt = plannerPrompt("## Milestone 1: Repo hosting", 2, "LADDER.md");
     expect(prompt).toContain("clone of GitHub");
     expect(prompt).toContain("direction, not a finish line");
     expect(prompt).toContain("blind to the builders");
     expect(prompt).toContain("## Milestone 1: Repo hosting");
     expect(prompt).toContain("milestone 2");
-    expect(prompt).toContain("2.1");
-    expect(prompt).toContain("<<<MILESTONE>>>");
+    // The contract is now: edit the ladder file directly with checkbox headings.
+    expect(prompt).toContain("editing the file directly");
+    expect(prompt).toContain("### [ ] 2.1");
+    expect(prompt).toContain("LADDER.md");
+    // No more JSON hand-off.
+    expect(prompt).not.toContain("<<<MILESTONE>>>");
   });
 
   it("marks the first turn when the ladder is empty", () => {
-    expect(plannerPrompt("   ", 1)).toContain("very first");
+    expect(plannerPrompt("   ", 1, "LADDER.md")).toContain("very first");
   });
 });
 
-describe("parseMilestone", () => {
-  it("parses a well-formed milestone block", () => {
-    const output = `Here is my plan.
+describe("planNextMilestone", () => {
+  it("runs Greg with write access and accepts the milestone he appends", async () => {
+    const ladderPath = await scratchLadder();
+    const specs: Array<{ sandbox: string; cwd: string }> = [];
 
-<<<MILESTONE>>>
-{"title": "Repo hosting", "ticket": "ENG-10", "summary": "host repos", "subtickets": [{"title": "Skeleton", "ticket": "ENG-11", "description": "Scaffold the app."}, {"title": "Storage", "description": "Add git storage."}]}
-<<<MILESTONE_END>>>`;
-
-    expect(parseMilestone(output)).toEqual({
-      title: "Repo hosting",
-      ticket: "ENG-10",
-      summary: "host repos",
-      subtickets: [
-        { title: "Skeleton", ticket: "ENG-11", description: "Scaffold the app." },
-        { title: "Storage", ticket: undefined, description: "Add git storage." },
-      ],
-    });
-  });
-
-  it("takes the last block when the contract is quoted earlier", () => {
-    const output = `The contract says to emit <<<MILESTONE>>> ... <<<MILESTONE_END>>>.
-
-<<<MILESTONE>>>
-{"title": "Real milestone", "subtickets": [{"title": "S1", "description": "do 1"}, {"title": "S2", "description": "do 2"}]}
-<<<MILESTONE_END>>>`;
-
-    const milestone = parseMilestone(output);
-    expect(milestone.title).toBe("Real milestone");
-    expect(milestone.ticket).toBeUndefined();
-    expect(milestone.subtickets).toHaveLength(2);
-  });
-
-  it("throws when no milestone block is present", () => {
-    expect(() => parseMilestone("just some prose")).toThrow(/no milestone block/);
-  });
-
-  it("throws on invalid JSON", () => {
-    expect(() =>
-      parseMilestone("<<<MILESTONE>>>\nnot json\n<<<MILESTONE_END>>>"),
-    ).toThrow(/not valid JSON/);
-  });
-
-  it("enforces the 2–5 subticket bounds so the runaway cap holds", () => {
-    const block = (count: number): string => {
-      const subs = Array.from({ length: count }, (_, index) => ({
-        title: `S${index}`,
-        description: `do ${index}`,
-      }));
-      return `<<<MILESTONE>>>\n${JSON.stringify({ title: "M", subtickets: subs })}\n<<<MILESTONE_END>>>`;
+    const runner: AttemptRunner = async (spec) => {
+      specs.push({ sandbox: spec.sandbox, cwd: spec.cwd });
+      // Greg edits the file directly instead of returning structured data.
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 1: Repo hosting\n\n### [ ] 1.1 Skeleton — ENG-11\n\nScaffold it.\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
     };
 
-    // Below the floor (0 or 1) and above the ceiling (6+) are rejected.
-    expect(() => parseMilestone(block(0))).toThrow(/2–5 subtickets, got 0/);
-    expect(() => parseMilestone(block(1))).toThrow(/2–5 subtickets, got 1/);
-    expect(() => parseMilestone(block(6))).toThrow(/2–5 subtickets, got 6/);
+    await planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner);
 
-    // The full valid range parses.
-    expect(parseMilestone(block(2)).subtickets).toHaveLength(2);
-    expect(parseMilestone(block(5)).subtickets).toHaveLength(5);
+    // Greg gets write access (so he can edit the ladder) in the ladder's dir.
+    expect(specs[0].sandbox).toBe("workspace-write");
+    expect(specs[0].cwd).toBe(join(ladderPath, ".."));
+    expect(await readLadder(ladderPath)).toContain("## Milestone 1: Repo hosting");
   });
 
-  it("throws when a subticket is missing its description", () => {
-    expect(() =>
-      parseMilestone(
-        '<<<MILESTONE>>>\n{"title": "M", "subtickets": [{"title": "S"}]}\n<<<MILESTONE_END>>>',
-      ),
-    ).toThrow(/missing a title or description/);
+  it("throws when Greg's session errors", async () => {
+    const ladderPath = await scratchLadder();
+    const runner: AttemptRunner = async () => ({
+      output: "boom",
+      isError: true,
+      timedOut: false,
+    });
+
+    await expect(
+      planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
+    ).rejects.toThrow(/Greg failed to plan milestone 1/);
+  });
+
+  it("throws when Greg appends no buildable milestone", async () => {
+    const ladderPath = await scratchLadder();
+    // Greg's session succeeds but leaves the ladder unchanged (no new milestone).
+    const runner: AttemptRunner = async () => ({
+      output: "I thought about it",
+      isError: false,
+      timedOut: false,
+    });
+
+    await expect(
+      planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
+    ).rejects.toThrow(/did not append a buildable milestone 1/);
+  });
+
+  it("rejects a milestone appended under the wrong number", async () => {
+    const ladderPath = await scratchLadder();
+    // Asked for milestone 2, Greg appends milestone 99 — accepting it would
+    // resume the climb from the wrong rung, so the guard must reject it.
+    const runner: AttemptRunner = async () => {
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 99: Way ahead\n\n### [ ] 99.1 Skip ahead\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await expect(
+      planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner),
+    ).rejects.toThrow(/next pending subticket is 99\.1 \(milestone 99\)/);
   });
 });

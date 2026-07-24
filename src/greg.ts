@@ -26,13 +26,10 @@ async function main(): Promise<void> {
     );
 
     // Unbounded never returns; the capped run pauses for a human to reconfirm.
-    const milestones = await runGreg(base, unbounded ? Infinity : MAX_SUBTICKETS);
-    const subtickets = milestones.reduce(
-      (total, milestone) => total + milestone.subtickets.length,
-      0,
-    );
+    const built = await runGreg(base, unbounded ? Infinity : MAX_SUBTICKETS);
+    const milestones = new Set(built.map((subticket) => subticket.milestone)).size;
     process.stdout.write(
-      `\nGreg paused after ${subtickets} subticket(s) across ${milestones.length} milestone(s). Re-run \`bun run greg\` to climb further, or \`bun run greg -- --unbounded\` to run without a cap.\n`,
+      `\nGreg paused after ${built.length} subticket(s) across ${milestones} milestone(s). Re-run \`bun run greg\` to climb further, or \`bun run greg -- --unbounded\` to run without a cap.\n`,
     );
   } catch (error) {
     if (error instanceof Error && error.message === "HELP") {

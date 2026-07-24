@@ -2,72 +2,68 @@ import { resolve } from "node:path";
 import type { HarnessConfig } from "../config.js";
 import { runHarness, type HarnessRunResult } from "../harness.js";
 import {
-  appendMilestone,
-  appendSubticket,
-  appendSubticketError,
-  appendSubticketOutcome,
-  countMilestones,
+  completeSubticket,
   ensureLadderLinks,
+  errorOutcome,
+  highestMilestone,
   initLadder,
+  nextPendingSubticket,
   readLadder,
-  type Milestone,
-  type Subticket,
+  runOutcome,
 } from "./ladder.js";
-import {
-  NORTH_STAR,
-  proposeMilestone,
-  type PlannedMilestone,
-} from "./planner.js";
+import { NORTH_STAR, planNextMilestone } from "./planner.js";
 
 // The one shared ladder, mounted into both checkouts.
 export const LADDER_PATH = resolve("LADDER.md");
 
 // Runaway guard: Greg pauses once he has built this many subtickets (harness
-// runs) so a human reconfirms before he climbs further. The cap is checked at
-// milestone boundaries, so the current milestone always finishes — overshoot is
-// bounded because parseMilestone caps a milestone at MAX_SUBTICKETS_PER_MILESTONE.
-// Re-running continues from the ladder; --unbounded (Infinity) removes the cap.
+// runs) so a human reconfirms before he climbs further. Checked per subticket,
+// so it holds no matter how many subtickets a milestone contains. Re-running
+// continues from the ladder; --unbounded (Infinity) removes the cap.
 export const MAX_SUBTICKETS = 10;
 
-export interface SubticketRun {
-  subticket: Subticket;
+// One subticket the loop built this run, tagged with its milestone.
+export interface BuiltSubticket {
+  number: string;
+  milestone: number;
+  title: string;
   // The harness result, or `error` when the harness itself threw (an
   // infrastructure failure, distinct from an arm failing inside a run).
   run?: HarnessRunResult;
   error?: string;
 }
 
-export interface MilestoneResult {
-  milestone: Milestone;
-  subtickets: SubticketRun[];
-}
-
 // Injectable so the loop can be tested without spawning Greg or the arms.
 export interface GregDeps {
-  propose: (
+  plan: (
     base: HarnessConfig,
     ladderPath: string,
     ladder: string,
     milestoneNumber: number,
-  ) => Promise<PlannedMilestone>;
+  ) => Promise<void>;
   harness: (config: HarnessConfig) => Promise<HarnessRunResult>;
   log: (message: string) => void;
 }
 
-// The whole of Greg Tile: a mechanical loop, not an agent that decides. Greg
-// (the agent) only plans a milestone and its subtickets; the loop appends them
-// to the ladder and runs the harness on each subticket directly — never as one
-// of Greg's tool calls. Greg is blind to the builders, so a subticket is simply
-// "done" once its harness run returns. The North Star is a direction, not a
-// destination, so the loop pauses after `subticketLimit` subtickets (default
-// 10) for a human to reconfirm, or runs unbounded when passed Infinity.
+// The whole of Greg Tile: a todo-runner over one markdown ladder file. The
+// ladder IS the state — Greg (the agent) plans a milestone by editing the file
+// directly, appending `### [ ]` subticket checkboxes; the loop reads the file,
+// builds the next unchecked subticket by running the harness on its description,
+// then checks its box and records the outcome. Greg is blind to the builders, so
+// a subticket is simply "built" once its harness run returns (pass or fail).
+//
+// When no subtickets are pending, it is Greg's turn to plan the next milestone.
+// The North Star is a direction, not a destination, so the loop pauses after
+// `subticketLimit` subtickets (default 10) for a human to reconfirm, or runs
+// unbounded when passed Infinity. Everything is resumable: a re-run reads the
+// ladder and continues from the first unchecked box.
 export async function runGreg(
   base: HarnessConfig,
   subticketLimit: number = MAX_SUBTICKETS,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
-): Promise<MilestoneResult[]> {
-  const propose = deps.propose ?? proposeMilestone;
+): Promise<BuiltSubticket[]> {
+  const plan = deps.plan ?? planNextMilestone;
   const harness = deps.harness ?? runHarness;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
 
@@ -77,68 +73,60 @@ export async function runGreg(
     log(link.message);
   }
 
-  const results: MilestoneResult[] = [];
-  let built = 0;
-  // Continue numbering after any milestones a previous run already recorded.
-  let milestoneNumber = countMilestones(await readLadder(ladderPath));
+  const built: BuiltSubticket[] = [];
 
-  // Checked at milestone boundaries: the current milestone always builds fully.
-  while (built < subticketLimit) {
-    milestoneNumber += 1;
-    log(`\n=== Milestone ${milestoneNumber}: planning ===`);
+  while (built.length < subticketLimit) {
     const ladder = await readLadder(ladderPath);
-    const planned = await propose(base, ladderPath, ladder, milestoneNumber);
+    const pending = nextPendingSubticket(ladder);
 
-    const milestone: Milestone = {
-      number: milestoneNumber,
-      title: planned.title,
-      ticket: planned.ticket,
-      summary: planned.summary,
-    };
-    await appendMilestone(ladderPath, milestone);
-    log(
-      `Milestone ${milestoneNumber}: ${milestone.title}${
-        milestone.ticket ? ` (${milestone.ticket})` : ""
-      } — ${planned.subtickets.length} subtickets`,
-    );
-
-    const subtickets: SubticketRun[] = [];
-    for (let index = 0; index < planned.subtickets.length; index += 1) {
-      const planSub = planned.subtickets[index];
-      const subticket: Subticket = {
-        number: `${milestoneNumber}.${index + 1}`,
-        title: planSub.title,
-        ticket: planSub.ticket,
-        description: planSub.description,
-      };
-      await appendSubticket(ladderPath, subticket);
+    // Nothing left to build — Greg plans the next rung by editing the ladder,
+    // then we loop back and pick up the subtickets he appended.
+    if (!pending) {
+      const milestoneNumber = highestMilestone(ladder) + 1;
+      log(`\n=== Milestone ${milestoneNumber}: planning ===`);
+      await plan(base, ladderPath, ladder, milestoneNumber);
+      const planned = nextPendingSubticket(await readLadder(ladderPath));
       log(
-        `  ${subticket.number} ${subticket.title}${
-          subticket.ticket ? ` (${subticket.ticket})` : ""
-        }: building…`,
+        `Milestone ${milestoneNumber} planned${
+          planned ? ` — first subticket ${planned.number}` : ""
+        }`,
       );
-
-      // Mechanical harness run — the two arms build this subticket. Greg is not
-      // in the loop here; the ladder already records the intent above. If the
-      // harness throws (infrastructure failure), record it and keep going: the
-      // milestone must finish so its header on the ladder is not left standing
-      // over un-built subtickets that a resumed run would skip.
-      try {
-        const run = await harness({ ...base, ticket: subticket.description });
-        await appendSubticketOutcome(ladderPath, run);
-        log(`  ${subticket.number}: ${run.status} → ${run.artifactDir}`);
-        subtickets.push({ subticket, run });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await appendSubticketError(ladderPath, message);
-        log(`  ${subticket.number}: harness error — ${message}`);
-        subtickets.push({ subticket, error: message });
-      }
-      built += 1;
+      continue;
     }
 
-    results.push({ milestone, subtickets });
+    log(
+      `  ${pending.number} ${pending.title}${
+        pending.ticket ? ` (${pending.ticket})` : ""
+      }: building…`,
+    );
+
+    // Mechanical harness run — the two arms build this subticket. Greg is not in
+    // the loop here; the ladder already records the intent. Checking the box is
+    // what advances the loop, so we check it whether the run succeeds OR the
+    // harness throws (infrastructure failure) — otherwise the same subticket
+    // would rebuild forever. The outcome line preserves which happened.
+    try {
+      const run = await harness({ ...base, ticket: pending.description });
+      await completeSubticket(ladderPath, pending.number, runOutcome(run));
+      log(`  ${pending.number}: ${run.status} → ${run.artifactDir}`);
+      built.push({
+        number: pending.number,
+        milestone: pending.milestone,
+        title: pending.title,
+        run,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await completeSubticket(ladderPath, pending.number, errorOutcome(message));
+      log(`  ${pending.number}: harness error — ${message}`);
+      built.push({
+        number: pending.number,
+        milestone: pending.milestone,
+        title: pending.title,
+        error: message,
+      });
+    }
   }
 
-  return results;
+  return built;
 }
