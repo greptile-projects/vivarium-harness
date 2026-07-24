@@ -47,6 +47,38 @@ export interface StreamResult {
   raw?: unknown;
 }
 
+// Codex's `codex_apps` connectors (Linear, GitHub, …) are **account**-scoped:
+// they ride in on `$CODEX_HOME/auth.json` alone, not on anything in
+// config.toml. arm-run.sh mounts the host's auth.json into every arm container,
+// so without this an "isolated" arm can still read the experiment's own Linear
+// board and reach the account's GitHub — around its per-arm GH_TOKEN. Neither a
+// bare CODEX_HOME nor a second auth file for the same account withholds them;
+// only the `apps` feature flag does.
+//
+// It has to be set *here*, in the tool call. On the `codex mcp-server` path the
+// process-level switches are silently ignored — `--disable apps` and
+// `-c features.apps=false` on the argv both leave the connectors live (verified
+// against codex 0.145.0; they do work for `codex exec`, which is the trap).
+// What the session actually honours is `config`, the per-call override of
+// CODEX_HOME/config.toml. `codex-reply` needs no equivalent: it continues a
+// thread that was already created with this override.
+const CONNECTORS_OFF = { features: { apps: false } } as const;
+
+// Arguments for a fresh `codex` tool call. Pure and exported so a test can pin
+// the connector kill-switch — the rest of this module spawns real processes and
+// cannot be exercised offline.
+export function codexToolArguments(
+  params: Pick<StreamParams, "prompt" | "cwd" | "sandbox">,
+): Record<string, unknown> {
+  return {
+    prompt: params.prompt,
+    cwd: params.cwd,
+    sandbox: params.sandbox,
+    "approval-policy": "never",
+    config: CONNECTORS_OFF,
+  };
+}
+
 function cleanEnv(codexHome?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -138,12 +170,7 @@ export async function runArmStreaming(
         name: continuing ? "codex-reply" : "codex",
         arguments: continuing
           ? { threadId: params.threadId, prompt: params.prompt }
-          : {
-              prompt: params.prompt,
-              cwd: params.cwd,
-              sandbox: params.sandbox,
-              "approval-policy": "never",
-            },
+          : codexToolArguments(params),
         _meta: { progressToken: `${params.arm}-progress` },
       },
       undefined,
