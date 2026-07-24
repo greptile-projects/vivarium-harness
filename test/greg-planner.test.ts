@@ -101,4 +101,22 @@ describe("planNextMilestone", () => {
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
     ).rejects.toThrow(/did not append a buildable milestone 1/);
   });
+
+  it("rejects a milestone appended under the wrong number", async () => {
+    const ladderPath = await scratchLadder();
+    // Asked for milestone 2, Greg appends milestone 99 — accepting it would
+    // resume the climb from the wrong rung, so the guard must reject it.
+    const runner: AttemptRunner = async () => {
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 99: Way ahead\n\n### [ ] 99.1 Skip ahead\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await expect(
+      planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner),
+    ).rejects.toThrow(/next pending subticket is 99\.1 \(milestone 99\)/);
+  });
 });
