@@ -47,26 +47,42 @@ export interface StreamResult {
   raw?: unknown;
 }
 
-// Codex's `codex_apps` connectors (Linear, GitHub, …) are **account**-scoped:
-// they ride in on `$CODEX_HOME/auth.json` alone, not on anything in
-// config.toml. arm-run.sh mounts the host's auth.json into every arm container,
-// so without this an "isolated" arm can still read the experiment's own Linear
-// board and reach the account's GitHub — around its per-arm GH_TOKEN. Neither a
-// bare CODEX_HOME nor a second auth file for the same account withholds them;
-// only the `apps` feature flag does.
+// Whatever the host's Codex is set up with, a harness session gets neither
+// account connectors nor plugins:
 //
-// It has to be set *here*, in the tool call. On the `codex mcp-server` path the
-// process-level switches are silently ignored — `--disable apps` and
+//   apps    — the `codex_apps` connectors (Linear, GitHub, …) are **account**-
+//             scoped: they ride in on `$CODEX_HOME/auth.json` alone, not on
+//             anything in config.toml. arm-run.sh mounts the host's auth.json
+//             into every arm container, so without this an "isolated" arm can
+//             still read the experiment's own Linear board and reach the
+//             account's GitHub — around its per-arm GH_TOKEN. Neither a bare
+//             CODEX_HOME nor a second auth file for the same account withholds
+//             them; only this flag does.
+//   plugins — whatever the operator happens to have installed (greptile,
+//             github@openai-curated, the bundled sites/browser/computer-use
+//             set) would otherwise be an uncontrolled variable in the
+//             experiment, and would hand Greg tools the plan is supposed to be
+//             blind to. Containerized arms have no config.toml and so no
+//             plugins anyway; this closes the host-mode path and Greg's, which
+//             always runs on the host against the operator's real CODEX_HOME.
+//
+// `mcp_servers` from config.toml are deliberately **left alone** — they are
+// explicit deployment configuration, not ambient account state.
+//
+// This has to be set *here*, in the tool call. On the `codex mcp-server` path
+// the process-level switches are silently ignored — `--disable apps` and
 // `-c features.apps=false` on the argv both leave the connectors live (verified
 // against codex 0.145.0; they do work for `codex exec`, which is the trap).
 // What the session actually honours is `config`, the per-call override of
 // CODEX_HOME/config.toml. `codex-reply` needs no equivalent: it continues a
 // thread that was already created with this override.
-const CONNECTORS_OFF = { features: { apps: false } } as const;
+const AMBIENT_TOOLING_OFF = {
+  features: { apps: false, plugins: false },
+} as const;
 
 // Arguments for a fresh `codex` tool call. Pure and exported so a test can pin
-// the connector kill-switch — the rest of this module spawns real processes and
-// cannot be exercised offline.
+// the kill-switches — the rest of this module spawns real processes and cannot
+// be exercised offline.
 export function codexToolArguments(
   params: Pick<StreamParams, "prompt" | "cwd" | "sandbox">,
 ): Record<string, unknown> {
@@ -75,7 +91,7 @@ export function codexToolArguments(
     cwd: params.cwd,
     sandbox: params.sandbox,
     "approval-policy": "never",
-    config: CONNECTORS_OFF,
+    config: AMBIENT_TOOLING_OFF,
   };
 }
 

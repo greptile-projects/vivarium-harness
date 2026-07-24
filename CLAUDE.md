@@ -96,16 +96,22 @@ with the live view tapping the same event stream.
   feeds both the TUI and the watchdog) rather than discarded; (2) an **activity
   watchdog** aborts an arm after `idleTimeoutMs` of event silence (default 10m),
   independent of the 24h hard ceiling; (3) every fresh session is started with
-  **`config: {features: {apps: false}}`** (`codexToolArguments`, the one pure,
-  tested part of this module). Codex's `codex_apps` connectors — Linear, GitHub
-  — are *account*-scoped and arrive via `$CODEX_HOME/auth.json` alone, which
+  **`config: {features: {apps: false, plugins: false}}`** (`codexToolArguments`,
+  the one pure, tested part of this module) — no ambient account tooling, in
+  either arm or in Greg. `codex_apps` connectors (Linear, GitHub) are
+  *account*-scoped and arrive via `$CODEX_HOME/auth.json` alone, which
   `arm-run.sh` mounts into every container, so an arm would otherwise read the
   experiment's own Linear board and reach the account's GitHub from inside its
-  "isolated" checkout, around its per-arm `GH_TOKEN`. Neither a bare
-  `CODEX_HOME` nor a second auth file for the same account withholds them. It
-  must be set in the **tool call**: on the `mcp-server` path `--disable apps`
-  and `-c features.apps=false` on the argv are silently ignored (they work for
-  `codex exec` — that is the trap). When an `exec` prefix is present it spawns
+  "isolated" checkout, around its per-arm `GH_TOKEN`; neither a bare
+  `CODEX_HOME` nor a second auth file for the same account withholds them.
+  Plugins are whatever the operator has installed (greptile,
+  `github@openai-curated`, the bundled set) — an uncontrolled variable, and
+  tools Greg's plan is meant to be blind to. Configured `mcp_servers` are
+  deliberately **left alone**: explicit deployment config, not ambient state.
+  The override must be set in the **tool call**: on the `mcp-server` path
+  `--disable apps` and `-c features.apps=false` on the argv are silently
+  ignored (they work for `codex exec` — that is the trap). When an `exec`
+  prefix is present it spawns
   `docker exec … codex mcp-server` and does **not** anchor the host spawn cwd
   (the cwd is an in-container path).
 

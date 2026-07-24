@@ -22,13 +22,21 @@ describe("codexToolArguments", () => {
   // The isolation guarantee, stated as a test. codex_apps connectors (Linear,
   // GitHub) are account-scoped and arrive with the auth.json that arm-run.sh
   // mounts into every container, so no config.toml — and no second auth file
-  // for the same account — can withhold them. Only this override can, and only
-  // here: on the mcp-server path `--disable apps` and `-c features.apps=false`
-  // on the argv are both ignored. Drop this and every arm silently regains the
-  // experiment's own Linear board.
-  test("disables account connectors for every session", () => {
+  // for the same account — can withhold them. Plugins are whatever the operator
+  // happens to have installed, which is an uncontrolled variable in an A/B
+  // experiment. Only this override withholds either, and only here: on the
+  // mcp-server path `--disable apps` and `-c features.apps=false` on the argv
+  // are both ignored. Drop this and every arm silently regains the experiment's
+  // own Linear board, and Greg regains the operator's plugins.
+  test("disables account connectors and plugins for every session", () => {
     expect(codexToolArguments(params).config).toEqual({
-      features: { apps: false },
+      features: { apps: false, plugins: false },
     });
+  });
+
+  // config.toml `mcp_servers` are explicit deployment configuration, not
+  // ambient account state — the override must not touch them.
+  test("leaves configured mcp_servers alone", () => {
+    expect(codexToolArguments(params).config).not.toHaveProperty("mcp_servers");
   });
 });
