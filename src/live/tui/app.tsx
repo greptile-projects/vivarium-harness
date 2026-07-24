@@ -8,7 +8,11 @@ import {
   stripLogTimestamp,
   truncate,
 } from "./format.js";
-import { enterFullscreen, useTerminalSize } from "./fullscreen.js";
+import {
+  enterFullscreen,
+  restoreOnExit,
+  useTerminalSize,
+} from "./fullscreen.js";
 import { ArmDetail, Feed, Overview } from "./panes.js";
 import { scrollAnchor, viewportRows, type Anchor } from "./scroll.js";
 import {
@@ -252,6 +256,14 @@ export function LiveApp({
 // Mount the fullscreen view and return a handle that restores the terminal.
 // Callers await `waitUntilExit()` before printing anything to the normal
 // buffer, so the summary always lands after the alternate screen is gone.
+//
+// The restore is wired to Ink's exit *here, at mount* — not inside
+// `waitUntilExit`. Callers only await that handle once the run is over, but the
+// view can exit long before then: `q` or Ctrl-C five minutes into a three-hour
+// climb unmounts the UI immediately. Restoring on the caller's await would
+// strand the terminal on the alternate screen with a hidden cursor for the rest
+// of the run — the view gone, the shell unusable, nothing to type into. The
+// terminal has to come back the moment the view does.
 export function mountLive(
   model: LiveModel,
   options: { logPath?: string },
@@ -260,13 +272,5 @@ export function mountLive(
   const app = render(<LiveApp model={model} logPath={options.logPath} />, {
     exitOnCtrlC: true,
   });
-  return {
-    waitUntilExit: async () => {
-      try {
-        await app.waitUntilExit();
-      } finally {
-        restore();
-      }
-    },
-  };
+  return { waitUntilExit: restoreOnExit(app.waitUntilExit(), restore) };
 }
