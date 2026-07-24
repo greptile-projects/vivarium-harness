@@ -37,6 +37,11 @@ export interface StreamParams {
   // When set, continue an existing Codex thread (codex-reply) instead of
   // starting a fresh session.
   threadId?: string;
+  // Tear this session down from outside — the human quitting the live view
+  // under --abort-on-quit. It joins the same abort path the watchdog uses, so
+  // the MCP client is closed and its codex subprocess dies with it rather than
+  // being orphaned by a bare process exit.
+  signal?: AbortSignal;
 }
 
 export interface StreamResult {
@@ -107,6 +112,18 @@ export async function runArmStreaming(
   const controller = new AbortController();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+
+  // An external abort (the human quitting under --abort-on-quit) funnels into
+  // the same controller the watchdog uses, so there is one teardown path
+  // rather than two. `aborted` is tracked separately from `timedOut` so the
+  // recorded error says which of the two stopped the session.
+  let aborted = false;
+  const onExternalAbort = (): void => {
+    aborted = true;
+    controller.abort(params.signal?.reason);
+  };
+  if (params.signal?.aborted) onExternalAbort();
+  else params.signal?.addEventListener("abort", onExternalAbort, { once: true });
   const bumpWatchdog = (): void => {
     if (idleTimeoutMs <= 0) return;
     if (idleTimer) clearTimeout(idleTimer);
@@ -162,6 +179,9 @@ export async function runArmStreaming(
       raw: result,
     };
   } catch (error) {
+    if (aborted) {
+      throw new Error(`${params.arm} aborted: the live view was quit`);
+    }
     if (timedOut) {
       throw new Error(
         `watchdog aborted ${params.arm}: no activity for ${idleTimeoutMs}ms`,
@@ -170,6 +190,7 @@ export async function runArmStreaming(
     throw error;
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
+    params.signal?.removeEventListener("abort", onExternalAbort);
     // Best-effort cleanup; never let a close error mask the original outcome.
     try {
       await client.close();

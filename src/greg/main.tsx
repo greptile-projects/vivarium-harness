@@ -6,6 +6,7 @@ import {
 } from "../harness.js";
 import { attachLive } from "../live/attach.js";
 import { LiveModel } from "../live/model.js";
+import { onViewClosed } from "../live/quit.js";
 import { runArmStreaming } from "../live/stream.js";
 import { mountLive } from "../live/tui/app.js";
 import { planAhead, runGreg, type GregDeps } from "./loop.js";
@@ -29,7 +30,7 @@ export async function runGregLive(
   base: HarnessConfig,
   limit: number,
   writeAhead: boolean,
-  options: { useTui: boolean; logPath?: string },
+  options: { useTui: boolean; logPath?: string; abortOnQuit?: boolean },
 ): Promise<GregSubticketSummary[]> {
   const { useTui } = options;
   // The climb's log lines are its own tab ("ladder"), separate from the raw
@@ -41,9 +42,15 @@ export async function runGregLive(
   });
   const onEvent: ArmEventSink = sinks.onEvent;
 
+  // Quitting the view under --abort-on-quit stops every Codex session this
+  // loop owns — Greg's planning session as much as the builders'.
+  const controller = new AbortController();
+
   // The planner's own Codex session, surfaced as a "greg" tab.
   const plannerRunner: AttemptRunner = (params) =>
-    runArmStreaming(params, (msg) => onEvent(params.arm, msg));
+    runArmStreaming({ ...params, signal: controller.signal }, (msg) =>
+      onEvent(params.arm, msg),
+    );
 
   // `file` is left to the loop's default (the mechanical Linear filer).
   const deps: Partial<GregDeps> = {
@@ -70,7 +77,12 @@ export async function runGregLive(
         `building · ${config.ticket.replace(/\s+/g, " ").slice(0, 80)}`,
         config.arms.map((arm) => arm.name),
       );
-      return runHarness(config, onEvent, sinks.onArmComplete);
+      return runHarness(
+        config,
+        onEvent,
+        sinks.onArmComplete,
+        controller.signal,
+      );
     },
     log: (message) => {
       if (useTui) model.note(message);
@@ -78,7 +90,12 @@ export async function runGregLive(
     },
   };
 
-  const app = useTui ? mountLive(model, options) : undefined;
+  const app = useTui
+    ? mountLive(model, {
+        ...options,
+        onExit: () => onViewClosed(model, controller, options),
+      })
+    : undefined;
 
   let halted = true;
   try {

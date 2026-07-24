@@ -66,6 +66,10 @@ export async function runArm(
   artifacts: RunArtifacts,
   runner: AttemptRunner = runArmStreaming,
   onEvent: ArmEventSink = () => {},
+  // Abort the whole arm, retries included. Without the check in the loop below
+  // an abort would only kill the attempt in flight and the retry loop would
+  // immediately start another one — the opposite of stopping.
+  signal?: AbortSignal,
 ): Promise<ArmResult> {
   let threadId: string | undefined;
   let previousError = "The previous attempt did not complete.";
@@ -81,6 +85,10 @@ export async function runArm(
     : undefined;
 
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+    // Aborted between attempts: stop here rather than spending a retry on a
+    // run the human has already asked to end.
+    if (signal?.aborted) break;
+
     const startedAt = new Date();
     const recovery = retryPrompt(
       previousError,
@@ -130,6 +138,7 @@ export async function runArm(
           idleTimeoutMs: config.idleTimeoutMs,
           threadId,
           exec,
+          signal,
         },
         (msg) => onEvent(arm.name, msg),
       );
@@ -176,7 +185,11 @@ export async function runArm(
   }
 
   if (!finalResult) {
-    throw new Error(`${arm.name} arm completed without a result`);
+    throw new Error(
+      signal?.aborted
+        ? `${arm.name} aborted before its first attempt started`
+        : `${arm.name} arm completed without a result`,
+    );
   }
   return finalResult;
 }
@@ -185,6 +198,8 @@ export async function runHarness(
   config: HarnessConfig,
   onEvent: ArmEventSink = () => {},
   onArmComplete: ArmCompleteSink = () => {},
+  // Tears down every arm at once — see runArm.
+  signal?: AbortSignal,
 ): Promise<HarnessRunResult> {
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
@@ -192,12 +207,18 @@ export async function runHarness(
   try {
     const results = await Promise.all(
       config.arms.map((arm) =>
-        runArm(arm, prompt, config, artifacts, runArmStreaming, onEvent).then(
-          (result) => {
-            onArmComplete(result);
-            return result;
-          },
-        ),
+        runArm(
+          arm,
+          prompt,
+          config,
+          artifacts,
+          runArmStreaming,
+          onEvent,
+          signal,
+        ).then((result) => {
+          onArmComplete(result);
+          return result;
+        }),
       ),
     );
     await artifacts.complete(results);

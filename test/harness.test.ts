@@ -138,3 +138,89 @@ describe("autonomous arm retries", () => {
     ).toContain("watchdog aborted");
   });
 });
+
+describe("aborting an arm", () => {
+  // The point of --abort-on-quit is that the run stops. Aborting only the
+  // attempt in flight would hand straight back to the retry loop, which would
+  // start another one — so the loop has to check the signal between attempts.
+  it("does not spend a retry once the run has been aborted", async () => {
+    const { config, artifacts } = await makeConfig();
+    const controller = new AbortController();
+    const calls: StreamParams[] = [];
+    const runner: AttemptRunner = async (params) => {
+      calls.push(params);
+      // What the human quitting the view does mid-attempt.
+      controller.abort(new Error("the live view was quit"));
+      throw new Error("control aborted: the live view was quit");
+    };
+
+    const result = await runArm(
+      config.arms[0],
+      "original prompt",
+      config,
+      artifacts,
+      runner,
+      () => {},
+      controller.signal,
+    );
+
+    expect(config.maxAttempts).toBe(3);
+    expect(calls).toHaveLength(1); // not 3
+    expect(result.status).toBe("failed");
+    expect(result.attempt).toBe(1);
+    expect(result.error).toContain("the live view was quit");
+  });
+
+  it("hands the signal to the session so it can tear the process down", async () => {
+    const { config, artifacts } = await makeConfig();
+    const controller = new AbortController();
+    const calls: StreamParams[] = [];
+    const runner: AttemptRunner = async (params) => {
+      calls.push(params);
+      return {
+        isError: false,
+        output: "done",
+        threadId: "retry-thread",
+        timedOut: false,
+      };
+    };
+
+    await runArm(
+      config.arms[0],
+      "original prompt",
+      config,
+      artifacts,
+      runner,
+      () => {},
+      controller.signal,
+    );
+
+    expect(calls[0].signal).toBe(controller.signal);
+  });
+
+  it("still retries normally when no signal is passed", async () => {
+    const { config, artifacts } = await makeConfig();
+    let call = 0;
+    const runner: AttemptRunner = async () => {
+      call += 1;
+      if (call === 1) throw new Error("transient");
+      return {
+        isError: false,
+        output: "recovered",
+        threadId: "retry-thread",
+        timedOut: false,
+      };
+    };
+
+    const result = await runArm(
+      config.arms[0],
+      "original prompt",
+      config,
+      artifacts,
+      runner,
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(result.attempt).toBe(2);
+  });
+});

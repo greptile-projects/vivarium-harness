@@ -2,6 +2,7 @@ import type { HarnessConfig } from "../config.js";
 import { runHarness, type HarnessRunResult } from "../harness.js";
 import { attachLive } from "./attach.js";
 import { LiveModel } from "./model.js";
+import { onViewClosed } from "./quit.js";
 import type { LiveStore } from "./store.js";
 import { mountLive } from "./tui/app.js";
 
@@ -17,7 +18,13 @@ export async function runTicketLive(
   config: HarnessConfig,
   // `hold` keeps the view up after the arms settle instead of unmounting into
   // the closing summary — the demo's whole purpose is the view itself.
-  options: { useTui: boolean; logPath?: string; hold?: boolean },
+  // `abortOnQuit` makes closing the view stop the run rather than outlive it.
+  options: {
+    useTui: boolean;
+    logPath?: string;
+    hold?: boolean;
+    abortOnQuit?: boolean;
+  },
 ): Promise<TicketRunResult> {
   const model = new LiveModel("vivarium", config.ticket);
   for (const arm of config.arms) model.live.register(arm.name);
@@ -26,10 +33,21 @@ export async function runTicketLive(
     ...options,
     onLine: (line) => model.appendLog(line),
   });
-  const app = options.useTui ? mountLive(model, options) : undefined;
+  const controller = new AbortController();
+  const app = options.useTui
+    ? mountLive(model, {
+        ...options,
+        onExit: () => onViewClosed(model, controller, options),
+      })
+    : undefined;
 
   try {
-    const run = await runHarness(config, sinks.onEvent, sinks.onArmComplete);
+    const run = await runHarness(
+      config,
+      sinks.onEvent,
+      sinks.onArmComplete,
+      controller.signal,
+    );
     if (app) {
       // The ticket stays on screen — the per-arm statuses already carry the
       // outcome, and the entrypoint prints it again once the terminal is back.

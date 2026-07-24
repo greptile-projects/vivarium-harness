@@ -100,6 +100,31 @@ describe("run mode", () => {
     });
     expect(parseRunMode(["--json", "--tui"], false).useTui).toBe(true);
   });
+
+  it("leaves the run alive when the view is quit unless asked otherwise", () => {
+    // The default matters: `q` is how you stop watching a climb meant to run
+    // for days, and it must not also kill hours of arm work.
+    expect(parseRunMode([], true).abortOnQuit).toBe(false);
+    expect(parseRunMode(["--abort-on-quit"], true).abortOnQuit).toBe(true);
+  });
+
+  it("rejects --abort-on-quit when there is no view to quit", () => {
+    // The flag arms a key in a view that will not exist, so the run it was
+    // meant to be able to kill would run to completion regardless.
+    expect(() => parseRunMode(["--abort-on-quit", "--no-tui"], true)).toThrow(
+      /no live view/,
+    );
+    expect(() => parseRunMode(["--abort-on-quit", "--json"], true)).toThrow(
+      /no live view/,
+    );
+    expect(() => parseRunMode(["--abort-on-quit"], false)).toThrow(
+      /no live view/,
+    );
+    // Explicitly asking for the view makes it coherent again.
+    expect(
+      parseRunMode(["--abort-on-quit", "--tui"], false).abortOnQuit,
+    ).toBe(true);
+  });
 });
 
 describe("worker fan-out", () => {

@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     }
 
     const mode = parseRunMode(argv, Boolean(process.stdout.isTTY));
-    const { json, useTui, planOnly } = mode;
+    const { json, useTui, planOnly, abortOnQuit } = mode;
 
     // Every mode writes its human-readable feed to the same place. Created
     // only once a run is actually about to start, so a config error does not
@@ -84,6 +84,7 @@ async function main(): Promise<void> {
         useTui,
         logPath,
         hold: mode.kind === "demo",
+        abortOnQuit,
       });
 
       // The summary prints in every non-JSON mode, including the TUI: the
@@ -122,6 +123,7 @@ async function main(): Promise<void> {
     const subtickets = await runGregLive(base, limit, planOnly, {
       useTui,
       logPath,
+      abortOnQuit,
     });
     const milestones = new Set(
       subtickets.map((subticket) => subticket.milestone),

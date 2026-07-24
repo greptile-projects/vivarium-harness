@@ -125,6 +125,12 @@ notes, and the raw **log**. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll th
 `q` quits. it runs on the alternate screen and gives your terminal back
 untouched when it's done.
 
+quitting closes the view, not the run — a climb is meant to run for days, and
+`q` is how you stop watching one. if sessions are still working when you quit,
+the CLI says so and names them; they keep going and the feed keeps landing in
+`progress.log`. if you did mean to stop everything, `--abort-on-quit` makes `q`
+(and ctrl-c) tear the run down and exit 1.
+
 without a terminal (or with `--no-tui`) the same feed is tee'd line by line.
 either way it lands in `results/live-<ts>/progress.log`, and the CLI prints the
 run summary and artifact directory when it finishes. the exit code is 1 if an

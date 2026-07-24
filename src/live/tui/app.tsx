@@ -266,11 +266,21 @@ export function LiveApp({
 // terminal has to come back the moment the view does.
 export function mountLive(
   model: LiveModel,
-  options: { logPath?: string },
+  // `onExit` runs once the terminal is back, so anything it prints lands on the
+  // normal buffer instead of the alternate screen that is being torn down. It
+  // fires on *every* exit, including the ordinary end-of-run unmount — telling
+  // "the human quit early" from "the run ended" is the caller's job, and it
+  // reads that off the model rather than off the keypress.
+  options: { logPath?: string; onExit?: () => void },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
   const app = render(<LiveApp model={model} logPath={options.logPath} />, {
     exitOnCtrlC: true,
   });
-  return { waitUntilExit: restoreOnExit(app.waitUntilExit(), restore) };
+  return {
+    waitUntilExit: restoreOnExit(app.waitUntilExit(), () => {
+      restore();
+      options.onExit?.();
+    }),
+  };
 }

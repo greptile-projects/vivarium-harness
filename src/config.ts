@@ -161,6 +161,10 @@ export interface RunMode {
   ticket?: string;
   useTui: boolean;
   json: boolean;
+  // Quitting the live view tears the run down instead of leaving it running.
+  // Off by default: `q` is how you stop *watching* a climb that is meant to
+  // run for days, and making it also kill hours of arm work would be a trap.
+  abortOnQuit: boolean;
 }
 
 export function parseRunMode(args: string[], isTty: boolean): RunMode {
@@ -168,6 +172,7 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
   const planOnly = args.includes("--plan-only");
   const unbounded = args.includes("--unbounded");
   const demo = args.includes("--demo");
+  const abortOnQuit = args.includes("--abort-on-quit");
   const ticket = valueAfter(args, "--ticket");
   const kind = demo ? "demo" : ticket !== undefined ? "ticket" : "ladder";
 
@@ -183,19 +188,22 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
       "--unbounded lifts the ladder's milestone cap; it has no meaning with --ticket or --demo",
     );
   }
-  return {
-    kind,
-    planOnly,
-    unbounded,
-    ticket,
-    // --json is for machines; never fight it for the terminal.
-    useTui: args.includes("--tui")
-      ? true
-      : args.includes("--no-tui") || json
-        ? false
-        : isTty,
-    json,
-  };
+  // --json is for machines; never fight it for the terminal.
+  const useTui = args.includes("--tui")
+    ? true
+    : args.includes("--no-tui") || json
+      ? false
+      : isTty;
+
+  // --abort-on-quit arms a key in a view that will not exist, so the run it was
+  // meant to be able to kill would run to completion regardless.
+  if (abortOnQuit && !useTui) {
+    throw new Error(
+      "--abort-on-quit makes quitting the live view stop the run; there is no live view with --no-tui or --json",
+    );
+  }
+
+  return { kind, planOnly, unbounded, ticket, useTui, json, abortOnQuit };
 }
 
 export async function validateConfig(
@@ -243,11 +251,20 @@ Options:
                           The live view stays up when it finishes — press q.
   --tui / --no-tui        Force the live view on/off (default: on when stdout
                           is a TTY). Both write results/live-<ts>/progress.log.
+  --abort-on-quit         Make q (and Ctrl-C) stop the run itself, not just the
+                          view: every running session is torn down and the
+                          process exits 1. Without it, quitting only closes the
+                          view and the sessions keep working in the background.
   --json                  Print the machine-readable result; implies --no-tui.
   --help                  This message.
 
 In the live view: tab / arrows switch tabs, 1-9 jump straight to one, up/down
 scroll the ladder and log tabs (g returns to live), q quits.
+
+Quitting closes the view; it does not stop the run. If sessions are still
+working when you quit, the CLI says so and names them — they keep going, and
+the feed keeps landing in progress.log. Use --abort-on-quit to make q kill them
+instead.
 
 Exit code is 1 whenever an arm exhausts its retries or the run throws.
 
