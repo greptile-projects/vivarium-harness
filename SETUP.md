@@ -9,7 +9,7 @@ Pieces:
 
 | Where | File | Role |
 |-------|------|------|
-| `vivarium-komodo` | `.github/workflows/main-sync.yml` | fires a `repository_dispatch` (`armb-main-push`) on every push to `main`. Fire-and-forget; neutral naming. |
+| `vivarium-komodo` | `.github/workflows/main-sync.yml` | fires a `repository_dispatch` (`komodo-main-push`) on every push to `main`. Fire-and-forget; neutral naming. |
 | `vivarium-harness` | `.github/workflows/mirror-sync.yml` | the sequential sync job (dispatch + daily cron + manual). |
 | `vivarium-harness` | `scripts/mirror_sync.sh` | the state-based sync loop. |
 | `makors/vivarium-komodo-mirror` | — | private mirror. `main` tree byte-identical to Komodo; disclosure README on `docs`; **GitHub Actions disabled**. |
@@ -140,3 +140,11 @@ To re-verify or run manually: **Actions → mirror-sync → Run workflow**
   PR is detected and finished; already-merged states advance without a dup PR).
 - **Tree identity**: after every merge, `git diff <source-sha> mirror/main` must
   be empty or the run fails loudly.
+- **Dispatch event name (transitional)**: `mirror-sync.yml` currently listens for
+  **both** `armb-main-push` and `komodo-main-push`. The sender lives in a
+  different repo, so a single-name switch would drop dispatches in whichever
+  direction merged first — and it would do so *silently*, since the sender step
+  is `continue-on-error` with a trailing `|| true` (the daily cron is the only
+  thing that would catch it). Once `vivarium-komodo`'s `main-sync.yml` is
+  confirmed sending `komodo-main-push`, drop `armb-main-push` from the `types:`
+  list.
