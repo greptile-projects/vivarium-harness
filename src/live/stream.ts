@@ -37,8 +37,7 @@ export interface StreamParams {
   // When set, continue an existing Codex thread (codex-reply) instead of
   // starting a fresh session.
   threadId?: string;
-  // Tear this session down from outside — the human quitting the live view
-  // under --abort-on-quit. It joins the same abort path the watchdog uses, so
+  // Tear this session down from outside — the human quitting the live view. It joins the same abort path the watchdog uses, so
   // the MCP client is closed and its codex subprocess dies with it rather than
   // being orphaned by a bare process exit.
   signal?: AbortSignal;
@@ -161,7 +160,7 @@ export async function runArmStreaming(
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
 
-  // An external abort (the human quitting under --abort-on-quit) funnels into
+  // An external abort (the human quitting the live view) funnels into
   // the same controller the watchdog uses, so there is one teardown path
   // rather than two. `aborted` is tracked separately from `timedOut` so the
   // recorded error says which of the two stopped the session.

@@ -3,69 +3,80 @@ import type { LiveModel } from "./model.js";
 import type { ArmState } from "./store.js";
 
 // What happens when the human closes the live view while sessions are still
-// working.
+// working: the run goes with it.
 //
-// Quitting the view is not quitting the run, and it must not become that by
-// accident: a climb is meant to run for days, and `q` is how you stop watching
-// one. But a view that vanishes leaving hours of work running invisibly is its
-// own trap — the terminal comes back, the prompt returns, and nothing says the
-// arms are still going. So the quit path says so, names them, and points at the
-// log that keeps filling. `--abort-on-quit` is for when you did mean to stop
-// everything.
+// The alternative — a view that vanishes leaving hours of work running
+// invisibly — is the worse trap, because nothing afterwards says so: the
+// terminal comes back, the prompt returns, and the arms keep burning tokens
+// behind a shell that looks idle. Quitting therefore means quitting, and the
+// safety is a confirmation rather than a flag: `q` names what would be stopped
+// and waits for `y`, so the key that ends a three-hour climb is never one
+// keystroke. Ctrl-C skips the question — it has one meaning everywhere else,
+// and it should not acquire a second one here.
 
 // Sessions that have not settled. "starting" counts: the process is up and
-// about to work, and a human who quits now still leaves something running.
+// about to work, and a human who quits now still stops something.
 export function stillRunning(arms: ArmState[]): ArmState[] {
   return armsForDisplay(arms).filter(
     (arm) => arm.status === "starting" || arm.status === "working",
   );
 }
 
-// The notice shown when the view is closed early, or null when nothing was
-// left running — the ordinary end-of-run unmount, where the closing summary
-// says everything worth saying and a second message would only be noise.
+// Whether `q` has to ask before it unmounts. Only when something would be torn
+// down: once every arm has settled the view is a report, and confirming the
+// closing of a report is noise.
+export function needsQuitConfirm(arms: ArmState[]): boolean {
+  return stillRunning(arms).length > 0;
+}
+
+function describe(running: ArmState[]): { count: string; names: string } {
+  return {
+    count: `${running.length} session${running.length === 1 ? "" : "s"}`,
+    names: running.map((arm) => armDisplayName(arm.arm)).join(", "),
+  };
+}
+
+// The in-view question. Names the arms rather than counting them: "stop 2
+// sessions" and "stop tuatara, komodo" cost the same row, and only one of them
+// tells the human what they are about to lose.
+export function confirmQuitPrompt(arms: ArmState[]): string {
+  const running = stillRunning(arms);
+  const { count, names } = describe(running);
+  return `stop ${count} (${names}) and quit?  y / n`;
+}
+
+// The notice printed once the terminal is back, or null when nothing was left
+// running — the ordinary end-of-run unmount, where the closing summary says
+// everything worth saying and a second message would only be noise.
 export function quitNotice(
   arms: ArmState[],
-  options: { logDir?: string; aborting: boolean },
+  options: { logDir?: string },
 ): string | null {
   const running = stillRunning(arms);
   if (running.length === 0) return null;
 
-  const names = running.map((arm) => armDisplayName(arm.arm)).join(", ");
-  const count = `${running.length} session${running.length === 1 ? "" : "s"}`;
-
-  if (options.aborting) {
-    return `\nstopping ${count} (${names}) — --abort-on-quit\n`;
-  }
-
-  const lines = [
+  const { count, names } = describe(running);
+  return [
     "",
-    `live view closed · ${count} still running (${names})`,
-    "the run continues in the background; its feed keeps landing in",
+    `quit · stopping ${count} (${names})`,
+    "what they wrote before the stop is under",
     `  ${options.logDir ?? "results/live-<ts>"}/<arm>/progress.log`,
-    "re-run with --abort-on-quit if you meant to stop the run itself.",
     "",
-  ];
-  return lines.join("\n");
+  ].join("\n");
 }
 
 // The quit path both run modes share, called once the terminal is back. Reads
 // what is still running off the model rather than off the keypress, so the
 // ordinary end-of-run unmount — where nothing is left running — falls through
-// silently and leaves the closing summary to speak for itself.
+// silently, aborts nothing, and leaves the closing summary to speak for itself.
 export function onViewClosed(
   model: LiveModel,
   controller: AbortController,
-  options: { logDir?: string; abortOnQuit?: boolean },
+  options: { logDir?: string },
 ): void {
-  const notice = quitNotice(model.live.snapshot(), {
-    logDir: options.logDir,
-    aborting: Boolean(options.abortOnQuit),
-  });
+  const notice = quitNotice(model.live.snapshot(), { logDir: options.logDir });
   if (!notice) return;
 
   process.stdout.write(`${notice}\n`);
-  if (options.abortOnQuit) {
-    controller.abort(new Error("the live view was quit (--abort-on-quit)"));
-  }
+  controller.abort(new Error("the live view was quit"));
 }

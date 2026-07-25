@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     }
 
     const mode = parseRunMode(argv, Boolean(process.stdout.isTTY));
-    const { json, useTui, planOnly, abortOnQuit } = mode;
+    const { json, useTui, planOnly } = mode;
 
     // Every mode writes its human-readable feed under the same directory —
     // one progress.log per arm, plus ladder.log for the climb's own lines.
@@ -95,7 +95,6 @@ async function main(): Promise<void> {
         useTui,
         logDir,
         hold: mode.kind === "demo",
-        abortOnQuit,
       });
 
       // The summary prints in every non-JSON mode, including the TUI: the
@@ -144,7 +143,6 @@ async function main(): Promise<void> {
     const subtickets = await runGregLive(base, limit, planOnly, {
       useTui,
       logDir,
-      abortOnQuit,
     });
     const milestones = new Set(
       subtickets.map((subticket) => subticket.milestone),

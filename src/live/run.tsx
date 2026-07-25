@@ -18,12 +18,10 @@ export async function runTicketLive(
   config: HarnessConfig,
   // `hold` keeps the view up after the arms settle instead of unmounting into
   // the closing summary — the demo's whole purpose is the view itself.
-  // `abortOnQuit` makes closing the view stop the run rather than outlive it.
   options: {
     useTui: boolean;
     logDir?: string;
     hold?: boolean;
-    abortOnQuit?: boolean;
   },
 ): Promise<TicketRunResult> {
   const model = new LiveModel("vivarium", config.ticket);
@@ -34,6 +32,8 @@ export async function runTicketLive(
     onLine: (line) => model.appendLog(line),
     onLanding: (record) => model.recordLanding(record),
   });
+  // Closing the view stops the run: the controller the view aborts is the one
+  // every session runs under.
   const controller = new AbortController();
   const app = options.useTui
     ? mountLive(model, {

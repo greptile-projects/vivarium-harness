@@ -30,7 +30,7 @@ export async function runGregLive(
   base: HarnessConfig,
   limit: number,
   writeAhead: boolean,
-  options: { useTui: boolean; logDir?: string; abortOnQuit?: boolean },
+  options: { useTui: boolean; logDir?: string },
 ): Promise<GregSubticketSummary[]> {
   const { useTui } = options;
   // The climb's log lines are its own tab ("ladder"), separate from the raw
@@ -43,8 +43,8 @@ export async function runGregLive(
   });
   const onEvent: ArmEventSink = sinks.onEvent;
 
-  // Quitting the view under --abort-on-quit stops every Codex session this
-  // loop owns — Greg's planning session as much as the builders'.
+  // Quitting the view stops every Codex session this loop owns — Greg's
+  // planning session as much as the builders'.
   const controller = new AbortController();
 
   // The planner's own Codex session, surfaced as a "greg" tab.

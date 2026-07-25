@@ -144,7 +144,7 @@ describe("autonomous arm retries", () => {
 });
 
 describe("aborting an arm", () => {
-  // The point of --abort-on-quit is that the run stops. Aborting only the
+  // The point of quitting the view is that the run stops. Aborting only the
   // attempt in flight would hand straight back to the retry loop, which would
   // start another one — so the loop has to check the signal between attempts.
   it("does not spend a retry once the run has been aborted", async () => {
