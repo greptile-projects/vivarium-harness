@@ -1,18 +1,18 @@
-# Arm B review-mirror pipeline — setup
+# Komodo review-mirror pipeline — setup
 
-This harness replays each successive `vivarium-b` **main-state** into a private
-mirror (`makors/vivarium-b-mirror`) as its own Greptile-reviewed PR, one at a
-time, in order. The mirror is a review record of arm B's landed states; the arm
-B agent has no access to it and cannot infer that reviews exist.
+This harness replays each successive `vivarium-komodo` **main-state** into a private
+mirror (`makors/vivarium-komodo-mirror`) as its own Greptile-reviewed PR, one at a
+time, in order. The mirror is a review record of Komodo's landed states; the
+Komodo agent has no access to it and cannot infer that reviews exist.
 
 Pieces:
 
 | Where | File | Role |
 |-------|------|------|
-| `vivarium-b` | `.github/workflows/main-sync.yml` | fires a `repository_dispatch` (`armb-main-push`) on every push to `main`. Fire-and-forget; neutral naming. |
+| `vivarium-komodo` | `.github/workflows/main-sync.yml` | fires a `repository_dispatch` (`komodo-main-push`) on every push to `main`. Fire-and-forget; neutral naming. |
 | `vivarium-harness` | `.github/workflows/mirror-sync.yml` | the sequential sync job (dispatch + daily cron + manual). |
 | `vivarium-harness` | `scripts/mirror_sync.sh` | the state-based sync loop. |
-| `makors/vivarium-b-mirror` | — | private mirror. `main` tree byte-identical to arm B; disclosure README on `docs`; **GitHub Actions disabled**. |
+| `makors/vivarium-komodo-mirror` | — | private mirror. `main` tree byte-identical to Komodo; disclosure README on `docs`; **GitHub Actions disabled**. |
 
 ## Credentials
 
@@ -36,7 +36,7 @@ Create it (web UI, one time):
    Active). Repository permissions:
    - **Contents: Read and write**
    - **Pull requests: Read and write**
-   - **Workflows: Read and write** — ⚠️ **mandatory**. Arm B's tree contains
+   - **Workflows: Read and write** — ⚠️ **mandatory**. Komodo's tree contains
      `.github/workflows/*` files (its app workflows + the `main-sync.yml` dispatch
      file); tree identity forces those into every synced mirror state, and GitHub
      **rejects any push that creates/updates a file under `.github/workflows/`
@@ -46,7 +46,7 @@ Create it (web UI, one time):
      **disabled**, so the files stay inert.
 2. **Generate a private key** (App settings → Private keys → Generate) and
    download the `.pem`.
-3. **Install the App** on `makors/vivarium-b-mirror` only (App → Install App →
+3. **Install the App** on `makors/vivarium-komodo-mirror` only (App → Install App →
    your account → Only select repositories).
    - ⚠️ The App must be installed on the **`makors` account** (mirror owner). If
      it isn't installed where the repo lives, the token has no access and pushes
@@ -67,11 +67,11 @@ be deleted.
 ### 2. `HARNESS_ORG_TOKEN`
 
 - **Resource owner: the org** (`greptile-projects`).
-- Repository access: `greptile-projects/vivarium-b` **and**
+- Repository access: `greptile-projects/vivarium-komodo` **and**
   `greptile-projects/vivarium-harness`.
 - Permissions:
-  - on `vivarium-b`: **Contents: Read**, **Metadata: Read**, **Pull requests: Read**
-    (read arm B — it is private — and resolve commit → PR title/author).
+  - on `vivarium-komodo`: **Contents: Read**, **Metadata: Read**, **Pull requests: Read**
+    (read Komodo — it is private — and resolve commit → PR title/author).
   - on `vivarium-harness`: **Variables: Read and write**, **Metadata: Read**
     (read/advance `LAST_SYNCED_SHA`).
 
@@ -81,11 +81,11 @@ Store it (fine-grained PAT, web-UI only):
 gh secret set HARNESS_ORG_TOKEN -R greptile-projects/vivarium-harness   # paste token
 ```
 
-`vivarium-b` also needs a secret **`DISPATCH_TOKEN`** for its dispatch workflow —
+`vivarium-komodo` also needs a secret **`DISPATCH_TOKEN`** for its dispatch workflow —
 a token that can send a `repository_dispatch` to `vivarium-harness` (fine-grained,
 resource owner = org, `vivarium-harness` → **Contents: Read and write**, which
 grants dispatch; or a classic PAT with `repo`). Store with
-`gh secret set DISPATCH_TOKEN -R greptile-projects/vivarium-b`.
+`gh secret set DISPATCH_TOKEN -R greptile-projects/vivarium-komodo`.
 
 ## Repository variables (in `vivarium-harness`)
 
@@ -93,11 +93,11 @@ Already set by bootstrap; listed here for reference:
 
 | Variable | Value | Meaning |
 |----------|-------|---------|
-| `LAST_SYNCED_SHA` | `12f37c6d…` | last arm B main-state mirrored. **State lives here, never in the mirror** (that would break tree identity). Bootstrap value = the arm B main SHA the mirror was seeded from. |
-| `SOURCE_REPO` | `greptile-projects/vivarium-b` | arm B. |
-| `MIRROR_REPO` | `makors/vivarium-b-mirror` | the mirror (`owner/name`). |
+| `LAST_SYNCED_SHA` | `12f37c6d…` | last Komodo main-state mirrored. **State lives here, never in the mirror** (that would break tree identity). Bootstrap value = the Komodo main SHA the mirror was seeded from. |
+| `SOURCE_REPO` | `greptile-projects/vivarium-komodo` | Komodo. |
+| `MIRROR_REPO` | `makors/vivarium-komodo-mirror` | the mirror (`owner/name`). |
 | `MIRROR_OWNER` | `makors` | mirror owner account — scopes the app installation token. |
-| `MIRROR_REPO_NAME` | `vivarium-b-mirror` | mirror repo name — scopes the app installation token. |
+| `MIRROR_REPO_NAME` | `vivarium-komodo-mirror` | mirror repo name — scopes the app installation token. |
 | `GREPTILE_BOT_LOGIN` | `greptile-apps[bot]` | login the sync loop polls for. Confirmed live: Greptile reviews mirror PRs under this login. |
 
 ```sh
@@ -111,15 +111,15 @@ The sync loop waits for a PR review **or** comment authored by
 Greptile reviewed real mirror PRs under this login during bring-up. If it is ever
 wrong, every PR hits the 10-minute timeout and gets the `review-timeout` label
 instead of a review; re-confirm with
-`gh api "repos/makors/vivarium-b-mirror/pulls/<n>/reviews" -q '.[].user.login'`.
+`gh api "repos/makors/vivarium-komodo-mirror/pulls/<n>/reviews" -q '.[].user.login'`.
 
 ## One-time bootstrap (already done)
 
-1. Created `makors/vivarium-b-mirror` — **private, empty**.
-2. Disabled GitHub Actions on it (mirrored arm-B app workflows stay inert; the
+1. Created `makors/vivarium-komodo-mirror` — **private, empty**.
+2. Disabled GitHub Actions on it (mirrored Komodo app workflows stay inert; the
    Greptile app is a webhook, unaffected).
-3. Pushed arm B's current `main` tree as the initial mirror `main` commit — arm
-   B agent as **author**, sync bot as **committer**, `Mirrored-from:` trailer.
+3. Pushed Komodo's current `main` tree as the initial mirror `main` commit — the
+   Komodo agent as **author**, sync bot as **committer**, `Mirrored-from:` trailer.
 4. Added the disclosure README on the `docs` branch (kept off `main` to preserve
    tree identity) and set `docs` as the default branch.
 5. Set `LAST_SYNCED_SHA` to that source SHA.
@@ -133,10 +133,18 @@ To re-verify or run manually: **Actions → mirror-sync → Run workflow**
   open mirror PR at a time.
 - **Timeout**: polls every 60s, 10-min cap. On timeout → `review-timeout` label,
   proceed (sync integrity beats review completeness).
-- **Force-push**: if `LAST_SYNCED_SHA` is no longer an ancestor of arm B `main`,
+- **Force-push**: if `LAST_SYNCED_SHA` is no longer an ancestor of Komodo `main`,
   one coarse `[force-push]`-prefixed PR to current main, then normal resume.
 - **History-only rewrite** (identical tree): no PR, state advances.
 - **Idempotent**: a crash mid-cycle resumes on the next run (open `sync/<sha>`
   PR is detected and finished; already-merged states advance without a dup PR).
 - **Tree identity**: after every merge, `git diff <source-sha> mirror/main` must
   be empty or the run fails loudly.
+- **Dispatch event name (transitional)**: `mirror-sync.yml` currently listens for
+  **both** `armb-main-push` and `komodo-main-push`. The sender lives in a
+  different repo, so a single-name switch would drop dispatches in whichever
+  direction merged first — and it would do so *silently*, since the sender step
+  is `continue-on-error` with a trailing `|| true` (the daily cron is the only
+  thing that would catch it). Once `vivarium-komodo`'s `main-sync.yml` is
+  confirmed sending `komodo-main-push`, drop `armb-main-push` from the `types:`
+  list.

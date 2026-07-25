@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# mirror_sync.sh — replay arm B's successive main-states into the private review
+# mirror_sync.sh — replay Komodo's successive main-states into the private review
 # mirror, one PR at a time, in order, letting Greptile review each before merge.
 #
 # State-based (NOT patch/cherry-pick): each main-state SHA is materialized as an
 # exact tree copy on a branch off mirror/main, opened as its own PR, reviewed,
 # and merged. Strictly sequential — one open mirror PR at a time.
 #
-# All waiting happens here (harness side); arm B never blocks on the mirror.
+# All waiting happens here (harness side); Komodo never blocks on the mirror.
 #
 # Credentials (two fine-grained PATs — see SETUP.md):
 #   MIRROR_PUSH_TOKEN  resource owner = MIRROR_OWNER (personal acct), mirror repo
 #                      only: Contents:write, Pull requests:write.
-#   HARNESS_ORG_TOKEN  resource owner = org: read vivarium-b (Contents/Metadata/
+#   HARNESS_ORG_TOKEN  resource owner = org: read vivarium-komodo (Contents/Metadata/
 #                      Pull requests: read) + read/write the harness repo variable
 #                      (Variables: read/write).
 #
@@ -21,12 +21,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Config (overridable via env; defaults suit the real deployment)
 # ---------------------------------------------------------------------------
-SOURCE_REPO="${SOURCE_REPO:-greptile-projects/vivarium-b}"
-MIRROR_REPO="${MIRROR_REPO:-makors/vivarium-b-mirror}"
+SOURCE_REPO="${SOURCE_REPO:-greptile-projects/vivarium-komodo}"
+MIRROR_REPO="${MIRROR_REPO:-makors/vivarium-komodo-mirror}"
 HARNESS_REPO="${HARNESS_REPO:-greptile-projects/vivarium-harness}"
 STATE_VAR="${STATE_VAR:-LAST_SYNCED_SHA}"
 
-# Greptile app login — CONFIRM against a real arm A PR (see SETUP.md); the app's
+# Greptile app login — CONFIRM against a real Tuatara PR (see SETUP.md); the app's
 # bot login is what authors its reviews/comments.
 GREPTILE_BOT_LOGIN="${GREPTILE_BOT_LOGIN:-greptile-apps[bot]}"
 
@@ -36,7 +36,7 @@ TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
 
 # Committer identity for mirror commits. In CI the workflow overrides these with
 # the `vivarium-mirror[bot]` app identity; this fallback only applies to manual
-# local runs. The arm B agent stays the *author* (--author passthrough).
+# local runs. The Komodo agent stays the *author* (--author passthrough).
 BOT_COMMITTER_NAME="${BOT_COMMITTER_NAME:-github-actions[bot]}"
 BOT_COMMITTER_EMAIL="${BOT_COMMITTER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
 
@@ -55,14 +55,14 @@ gh_org()    { GH_TOKEN="${HARNESS_ORG_TOKEN:-}" gh "$@"; }
 
 # ---------------------------------------------------------------------------
 # State: last-synced SHA lives in a harness repo variable (NOT in the mirror —
-# that would break tree identity with vivarium-b).
+# that would break tree identity with vivarium-komodo).
 # ---------------------------------------------------------------------------
 read_state() {
   local v
   v="$(gh_org api "repos/${HARNESS_REPO}/actions/variables/${STATE_VAR}" -q '.value' 2>/dev/null || true)"
   if [[ -z "$v" ]]; then
-    # Bootstrap: unset => start from arm B's root commit.
-    v="$(git -C "$WORKDIR" rev-list --max-parents=0 arm-b/main | tail -1)"
+    # Bootstrap: unset => start from Komodo's root commit.
+    v="$(git -C "$WORKDIR" rev-list --max-parents=0 komodo/main | tail -1)"
     log "state unset; bootstrapping from root commit $v"
   fi
   printf '%s' "$v"
@@ -86,12 +86,12 @@ setup_repo() {
   git init -q "$WORKDIR"
   git -C "$WORKDIR" config user.name "$BOT_COMMITTER_NAME"
   git -C "$WORKDIR" config user.email "$BOT_COMMITTER_EMAIL"
-  git -C "$WORKDIR" remote add arm-b "$SOURCE_GIT_URL" 2>/dev/null || \
-    git -C "$WORKDIR" remote set-url arm-b "$SOURCE_GIT_URL"
+  git -C "$WORKDIR" remote add komodo "$SOURCE_GIT_URL" 2>/dev/null || \
+    git -C "$WORKDIR" remote set-url komodo "$SOURCE_GIT_URL"
   git -C "$WORKDIR" remote add mirror "$MIRROR_GIT_URL" 2>/dev/null || \
     git -C "$WORKDIR" remote set-url mirror "$MIRROR_GIT_URL"
   # --force is mandatory: rewritten history must never wedge tracking refs.
-  git -C "$WORKDIR" fetch --force --prune arm-b '+refs/heads/*:refs/remotes/arm-b/*'
+  git -C "$WORKDIR" fetch --force --prune komodo '+refs/heads/*:refs/remotes/komodo/*'
   git -C "$WORKDIR" fetch --force --prune mirror '+refs/heads/*:refs/remotes/mirror/*'
 }
 
@@ -228,7 +228,7 @@ Synced state; see repo README for mechanism.
 EOF
 )"
 
-  # Commit: arm B agent is the AUTHOR; the bot is only the committer.
+  # Commit: Komodo agent is the AUTHOR; the bot is only the committer.
   msg="$(printf '%s\n\nMirrored-from: %s\n' "$title" "$sha")"
   GIT_COMMITTER_NAME="$BOT_COMMITTER_NAME" GIT_COMMITTER_EMAIL="$BOT_COMMITTER_EMAIL" \
     g commit -q --author="$author" -m "$msg"
@@ -254,7 +254,7 @@ main() {
 
   local last head
   last="$(read_state)"
-  head="$(g rev-parse arm-b/main)"
+  head="$(g rev-parse komodo/main)"
 
   if [[ "$last" == "$head" ]]; then
     log "already up to date at ${head}; nothing to sync"
@@ -263,13 +263,13 @@ main() {
 
   # Ensure the last-synced object is present locally (may be dangling after a
   # force-push); best-effort fetch by SHA.
-  g fetch --force arm-b "$last" 2>/dev/null || true
+  g fetch --force komodo "$last" 2>/dev/null || true
 
-  if g merge-base --is-ancestor "$last" arm-b/main 2>/dev/null; then
+  if g merge-base --is-ancestor "$last" komodo/main 2>/dev/null; then
     # Normal path: one PR per successive main-state, first-parent, oldest first.
     local shas=() s
     while IFS= read -r s; do [[ -n "$s" ]] && shas+=("$s"); done \
-      < <(g rev-list "${last}..arm-b/main" --first-parent --reverse)
+      < <(g rev-list "${last}..komodo/main" --first-parent --reverse)
     log "syncing ${#shas[@]} state(s): ${last}..${head}"
     for s in "${shas[@]}"; do
       sync_one "$s" ""

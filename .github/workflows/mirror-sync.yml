@@ -1,13 +1,17 @@
 name: mirror-sync
 
-# Sequential review-mirror pipeline for arm B. Replays each successive
-# vivarium-b main-state into the private mirror as its own Greptile-reviewed PR.
-# All waiting happens here; arm B never blocks on this.
+# Sequential review-mirror pipeline for Komodo. Replays each successive
+# vivarium-komodo main-state into the private mirror as its own Greptile-reviewed PR.
+# All waiting happens here; Komodo never blocks on this.
 
 on:
-  # Fired by vivarium-b's main-sync dispatch workflow on every push to main.
+  # Fired by vivarium-komodo's main-sync dispatch workflow on every push to main.
+  # Both names are accepted during the rename: the sender switches to
+  # komodo-main-push in a separate repo, so listening for only one of them would
+  # drop dispatches in whichever direction merged first. armb-main-push can be
+  # dropped once vivarium-komodo's main-sync.yml is confirmed on the new name.
   repository_dispatch:
-    types: [armb-main-push]
+    types: [armb-main-push, komodo-main-push]
   # Self-healing backstop: the dispatch workflow lives in agent-writable
   # territory and may be broken/removed at any time, so we also poll daily.
   schedule:
@@ -44,7 +48,7 @@ jobs:
           repositories: ${{ vars.MIRROR_REPO_NAME }}
 
       # Derive the app bot's git identity so mirror commits are committed by
-      # `vivarium-mirror[bot]` (author stays the arm B agent via passthrough).
+      # `vivarium-mirror[bot]` (author stays the Komodo agent via passthrough).
       - name: Derive bot committer identity
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

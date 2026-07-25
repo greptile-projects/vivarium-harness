@@ -5,13 +5,13 @@
 # These exercise the pipeline's *local git logic* end-to-end — state
 # enumeration, exact-tree materialization (rm + checkout), empty-diff skip,
 # force-push ancestry fallback, tree-identity verification, state advance, and
-# idempotent resume — against real local bare repos standing in for vivarium-b
+# idempotent resume — against real local bare repos standing in for vivarium-komodo
 # and the mirror. `gh` is replaced by a stub (see stub_gh below) that simulates
 # Greptile-approve + merge, PR listing, and the state variable.
 #
 # What these do NOT cover (needs live GitHub + Greptile — see SETUP.md):
 #   - a real Greptile review actually appearing
-#   - cross-installation config parity with arm A
+#   - cross-installation config parity with Tuatara
 #   - real repository_dispatch delivery
 #
 set -uo pipefail
@@ -83,7 +83,7 @@ new_scenario() {
   STUB_DIR="$SC/stub"; mkdir -p "$STUB_DIR"
   git init -q --bare "$SRC_BARE"; git init -q --bare "$MIRROR_BARE"
   WORK="$SC/work"; git clone -q "$SRC_BARE" "$WORK"
-  git -C "$WORK" config user.name arm-b-agent
+  git -C "$WORK" config user.name komodo-agent
   git -C "$WORK" config user.email agent@armb.example
   printf 'v1\n' > "$WORK/file.txt"; git -C "$WORK" add -A
   git -C "$WORK" commit -q -m "initial commit"
