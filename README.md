@@ -2,24 +2,15 @@
 
 <h1>vivarium harness</h1>
 
-<p><strong>Two reptiles. One ticket. Every move recorded.</strong></p>
-
-<p>
-  Run the same Linear ticket through two isolated Codex workers, watch them
-  build in parallel, and keep the complete evidence trail.
-</p>
-
 <img
   src="./docs/assets/vivarium-live.png"
   alt="Vivarium live view showing Tuatara first and Komodo second"
   width="900"
 />
 
-<p><sub>The live experiment view. Tuatara is always presented first.</sub></p>
-
 </div>
 
-## meet the arms
+## meet the (g)reptiles
 
 - **Tuatara** works in the checkout where Greptile review feedback is
   available.
