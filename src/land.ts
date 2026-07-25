@@ -258,6 +258,21 @@ export async function landArm(
       // And after: the pair is what says whether the arm pushed a fix or only
       // replied. Equal shas mean it argued and changed nothing.
       const respondedSha = await deps.github.headSha(pullRequest.number);
+
+      // A missing sha is recorded as a missing sha, never left to be inferred.
+      // The round still counts — the arm did answer, and failing it over a
+      // bookkeeping read would cost the rung — but an absent field otherwise
+      // reads identically to a run made before these were captured at all, and
+      // an analysis would silently treat the gap as "the arm changed nothing".
+      const missing = [
+        reviewedSha ? undefined : "reviewedSha",
+        respondedSha ? undefined : "respondedSha",
+      ].filter(Boolean);
+      if (missing.length > 0) {
+        note(
+          `could not read the branch head on #${pullRequest.number} (${missing.join(", ")}) — round ${round} recorded without it`,
+        );
+      }
       reviewRounds.push({
         round,
         reviewer: arm.reviewer,

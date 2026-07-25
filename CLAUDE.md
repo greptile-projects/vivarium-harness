@@ -208,7 +208,11 @@ with the live view tapping the same event stream.
   extract either. Whole body rather than the ticket section alone is also the
   only safe read: ticket bodies carry their own `## Objective`/`## Deliverable`
   headings, so anything that ends the section at the next `## ` captures the
-  heading and nothing else. `reviewPrompt(url, round, rounds)` is the one instruction only
+  heading and nothing else. That read **fails closed** — a description the API
+  will not hand over is retried and then fatal, because a mirror PR is written
+  once and reviewed before anyone sees it, so shipping a blank one is
+  unrecoverable while dying costs a rerun (nothing advanced; `write_state` runs
+  only after a merge). `reviewPrompt(url, round, rounds)` is the one instruction only
   the reviewed arm ever sees: it names the pull request and tells the arm to
   **fetch its own review** and reply to every comment. The comments are
   deliberately not pasted in — what the arm chooses to read is part of what is

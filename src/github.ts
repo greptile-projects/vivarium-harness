@@ -320,18 +320,26 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       return first ? toRef(first) : undefined;
     },
 
+    // Retried, unlike every other call here, because this is the one whose
+    // answer cannot be recovered later: the caller wants the sha *before* the
+    // arm moves the ref, and a second chance a moment later is still before it.
+    // Every other method can be re-run against the same pull request tomorrow.
     async headSha(pullRequest) {
-      const view = await gh([
-        "pr",
-        "view",
-        String(pullRequest),
-        "--json",
-        "headRefOid",
-      ]);
-      if (view.code !== 0) return undefined;
-      const parsed = parseJson<{ headRefOid?: unknown }>(view.stdout);
-      const sha = parsed?.headRefOid;
-      return typeof sha === "string" && sha.length > 0 ? sha : undefined;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const view = await gh([
+          "pr",
+          "view",
+          String(pullRequest),
+          "--json",
+          "headRefOid",
+        ]);
+        if (view.code === 0) {
+          const parsed = parseJson<{ headRefOid?: unknown }>(view.stdout);
+          const sha = parsed?.headRefOid;
+          if (typeof sha === "string" && sha.length > 0) return sha;
+        }
+      }
+      return undefined;
     },
 
     // Reviews, issue comments and inline review comments, merged into one

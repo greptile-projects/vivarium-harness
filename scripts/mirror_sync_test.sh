@@ -58,7 +58,11 @@ case "$1" in
       *"/pulls/"*)
         case "$jq_expr" in
           .title) printf '%s' "${STUB_SRC_TITLE:-}" ;;
-          .body) printf '%s' "${STUB_SRC_BODY:-}" ;;
+          # Matches the script's '.body // ""'. STUB_SRC_BODY_FAIL makes the
+          # read fail the way a 503 or a rate limit does: nonzero, no output.
+          *body*)
+            [[ -n "${STUB_SRC_BODY_FAIL:-}" ]] && exit 22
+            printf '%s' "${STUB_SRC_BODY:-}" ;;
         esac ;;
       *) : ;;
     esac ;;
@@ -111,7 +115,8 @@ run_sync() {
   PATH="$STUB_DIR:$PATH" \
   STUB_DIR="$STUB_DIR" MIRROR_BARE="$MIRROR_BARE" STUB_REVIEW="${STUB_REVIEW:-1}" \
   STUB_SRC_PR="${STUB_SRC_PR:-}" STUB_SRC_TITLE="${STUB_SRC_TITLE:-}" \
-  STUB_SRC_BODY="${STUB_SRC_BODY:-}" \
+  STUB_SRC_BODY="${STUB_SRC_BODY:-}" STUB_SRC_BODY_FAIL="${STUB_SRC_BODY_FAIL:-}" \
+  API_RETRY_SLEEP="${API_RETRY_SLEEP:-0}" \
   MIRROR_PUSH_TOKEN=dummy HARNESS_ORG_TOKEN=dummy \
   SOURCE_GIT_URL="file://$SRC_BARE" MIRROR_GIT_URL="file://$MIRROR_BARE" \
   WORKDIR="$(mktemp -d "$SC/wd.XXXX")" \
@@ -270,6 +275,26 @@ check "body leads with provenance" "$(printf '%s' "$body" | head -1)" \
   "Source PR: #43 — https://github.com/greptile-projects/vivarium-komodo/pull/43"
 check "no stray separator" "$(printf '%s' "$body" | grep -c '^---$')" "0"
 unset STUB_SRC_PR STUB_SRC_TITLE STUB_SRC_BODY
+
+# A mirror PR is written once and merged after review. Opening one with no
+# description because a lookup blipped is unrecoverable — the review it exists
+# to produce has already happened against a diff with no explanation. Failing
+# the run costs a retry; nothing has advanced.
+echo "== Scenario 10: a failed description read stops the run, it does not ship blank =="
+new_scenario s10
+export STUB_SRC_PR=44 STUB_SRC_TITLE="1.2 Store and retrieve Git objects"
+export STUB_SRC_BODY_FAIL=1
+src_commit v2 "1.2 Store and retrieve Git objects"
+before_state="$(state)"
+run_sync; rc=$?
+check "run failed loudly" "$([[ "$rc" -ne 0 ]] && echo yes || echo no)" "yes"
+check "no mirror PR opened" "$(n_prs)" "0"
+check "state not advanced" "$(state)" "$before_state"
+check "reason logged" \
+  "$(grep -c 'refusing to open a mirror PR without it' "$SC/out.log")" "1"
+check "retried before giving up" \
+  "$(grep -c 'could not read description.*(attempt ' "$SC/out.log")" "3"
+unset STUB_SRC_PR STUB_SRC_TITLE STUB_SRC_BODY_FAIL
 
 # =========================================================================
 echo

@@ -269,6 +269,41 @@ describe("landArm", () => {
     expect(first?.reviewedSha).toBe(first?.respondedSha);
   });
 
+  // An absent sha otherwise reads exactly like a run made before these were
+  // captured — and an analysis would score the gap as "the arm changed
+  // nothing", which is the opposite of unknown.
+  it("says so in the record when the branch head cannot be read", async () => {
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [note(REVIEWER, "c1", "fix this")],
+        [note(REVIEWER, "c1", "fix this"), note("vivarium-tuatara-bot", "c2", "done")],
+      ],
+      // No heads configured: every lookup comes back undefined.
+      heads: [],
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    // The round still counts — the arm did answer, and the rung is not failed
+    // over a bookkeeping read.
+    expect(record.status).toBe("merged");
+    expect(record.reviewRounds[0]?.response).toBe("replied to every comment");
+    expect(record.reviewRounds[0]?.reviewedSha).toBeUndefined();
+    expect(
+      record.notes.some(
+        (line) =>
+          line.includes("could not read the branch head") &&
+          line.includes("reviewedSha") &&
+          line.includes("respondedSha"),
+      ),
+    ).toBe(true);
+  });
+
   it("merges unreviewed when the review never arrives", async () => {
     const github = fakeGitHub({ conversations: [[]] });
     const prompts: string[] = [];
