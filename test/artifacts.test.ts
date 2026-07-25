@@ -34,6 +34,10 @@ describe("run artifacts", () => {
       codexHome,
       maxAttempts: 3,
       idleTimeoutMs: 600_000,
+      land: false,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewRounds: 2,
     };
     const artifacts = await RunArtifacts.create(config, "exact prompt");
     const results = [];
@@ -132,6 +136,10 @@ describe("run artifacts", () => {
       codexHome: hostHome,
       maxAttempts: 1,
       idleTimeoutMs: 600_000,
+      land: false,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewRounds: 2,
     };
     const artifacts = await RunArtifacts.create(config, "exact prompt");
     const threadId = "control-thread";

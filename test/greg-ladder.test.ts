@@ -191,6 +191,16 @@ describe("outcome lines", () => {
         { arm: "control", status: "succeeded" },
         { arm: "greptile", status: "failed" },
       ],
+      landings: [
+        {
+          arm: "control",
+          status: "merged",
+          pullRequest: { number: 4, url: "https://github.com/org/repo/pull/4" },
+          reviewRounds: [],
+          conversation: [],
+          notes: [],
+        },
+      ],
     } as unknown as HarnessRunResult;
 
     const outcome = runOutcome(run);

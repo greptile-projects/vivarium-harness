@@ -188,6 +188,16 @@ export class LiveStore {
     this.emit();
   }
 
+  // Progress that is not a codex/event: the landing phase (waiting on a
+  // review, merging) is the arm working with its session idle, and it belongs
+  // on the same activity trail rather than in a second place.
+  note(arm: string, text: string): void {
+    const state = this.arms.get(arm);
+    if (!state) return;
+    setActivity(state, text);
+    this.emit();
+  }
+
   finish(arm: string, result: { error?: string; threadId?: string }): void {
     const state = this.arms.get(arm);
     if (!state) return;

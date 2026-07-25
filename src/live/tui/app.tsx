@@ -78,13 +78,13 @@ function TabStrip({
 // choice and never a second execution path.
 export function LiveApp({
   model,
-  logPath,
+  logDir,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
 }: {
   model: LiveModel;
-  logPath?: string;
+  logDir?: string;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -209,7 +209,13 @@ export function LiveApp({
   } else if (selected.startsWith("arm:")) {
     const state = arms.find((a) => armTabId(a.arm) === selected);
     pane = state ? (
-      <ArmDetail state={state} frame={frame} width={inner} height={body} />
+      <ArmDetail
+        state={state}
+        prs={model.pullRequests(state.arm)}
+        frame={frame}
+        width={inner}
+        height={body}
+      />
     ) : null;
   } else {
     pane = <Overview arms={arms} frame={frame} width={inner} height={body} />;
@@ -243,9 +249,9 @@ export function LiveApp({
           {`${held ? "run finished · " : ""}↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
         </Text>
         <Box flexGrow={1} />
-        {logPath && columns >= 100 ? (
+        {logDir && columns >= 100 ? (
           <Text dimColor wrap="truncate-start">
-            {logPath}
+            {logDir}
           </Text>
         ) : null}
       </Box>
@@ -271,10 +277,10 @@ export function mountLive(
   // fires on *every* exit, including the ordinary end-of-run unmount — telling
   // "the human quit early" from "the run ended" is the caller's job, and it
   // reads that off the model rather than off the keypress.
-  options: { logPath?: string; onExit?: () => void },
+  options: { logDir?: string; onExit?: () => void },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
-  const app = render(<LiveApp model={model} logPath={options.logPath} />, {
+  const app = render(<LiveApp model={model} logDir={options.logDir} />, {
     exitOnCtrlC: true,
   });
   return {

@@ -27,7 +27,7 @@ compatible.
 
 ## how it works
 
-the harness runs on your host and does four things:
+the harness runs on your host and does five things:
 
 1. **builds one prompt** from your ticket — the same prompt for both arms.
 2. **runs both arms in parallel.** each arm is a Codex session driven over MCP.
@@ -36,8 +36,12 @@ the harness runs on your host and does four things:
 3. **retries a failing arm** up to 3 times. it resumes the same Codex thread
    where it can, otherwise restarts fresh with the error as context. an arm that
    uses up its retries is marked failed; the other arm keeps going regardless.
-4. **saves everything** to `results/<run-id>/` — the ticket, the prompt, and
-   every request, response, status, and transcript from each arm and attempt.
+4. **lands the work.** each arm opens a pull request; tuatara is sent back to
+   answer greptile's review on it before the harness merges. see "how a
+   subticket lands" below.
+5. **saves everything** to `results/<run-id>/` — the ticket, the prompt, and
+   every request, response, status, transcript, review and merge from each arm
+   and attempt.
 
 each arm's Codex runs in its own Docker container, so one arm can't read the
 other's checkout, the harness, or the host. the harness talks to both containers
@@ -64,8 +68,8 @@ nothing goes on the command line. point it at two checkouts of the same commit:
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
-CONTROL_CONTAINER=vivarium-control     # already set in .env.example
-GREPTILE_CONTAINER=vivarium-greptile
+CONTROL_CONTAINER=vivarium-komodo      # already set in .env.example
+GREPTILE_CONTAINER=vivarium-tuatara
 CONTROL_GH_TOKEN=ghp_...               # this arm's identity when it opens PRs
 GREPTILE_GH_TOKEN=ghp_...
 ```
@@ -75,8 +79,8 @@ only the arm name and reads the rest from `.env`:
 
 ```bash
 docker build -t vivarium-arm .
-scripts/arm-run.sh control
-scripts/arm-run.sh greptile
+scripts/arm-run.sh komodo
+scripts/arm-run.sh tuatara
 ```
 
 each container mounts only its own arm's checkout at `/workspace`, mounts Codex
@@ -119,13 +123,14 @@ untouched when it's done.
 quitting closes the view, not the run — a climb is meant to run for days, and
 `q` is how you stop watching one. if sessions are still working when you quit,
 the CLI says so and names them; they keep going and the feed keeps landing in
-`progress.log`. if you did mean to stop everything, `--abort-on-quit` makes `q`
-(and ctrl-c) tear the run down and exit 1.
+that arm's `progress.log`. if you did mean to stop everything,
+`--abort-on-quit` makes `q` (and ctrl-c) tear the run down and exit 1.
 
 without a terminal (or with `--no-tui`) the same feed is tee'd line by line.
-either way it lands in `results/live-<ts>/progress.log`, and the CLI prints the
-run summary and artifact directory when it finishes. the exit code is 1 if an
-arm exhausts its retries.
+either way it lands in `results/live-<ts>/` — one `progress.log` per arm, plus
+`ladder.log` for the climb itself — and the CLI prints the run summary, the
+pull requests each arm merged, and the artifact directory when it finishes. the
+exit code is 1 if an arm exhausts its retries or lands nothing.
 
 ## if a run gets interrupted
 
@@ -157,16 +162,40 @@ unfiled).
 
 every run writes to `results/<run-id>/`:
 
-- the ticket, generated prompt, and config, at the top level.
+- the ticket, generated prompt, config, and the commit each arm started from,
+  at the top level.
 - a `greptile/` (Tuatara) and a `control/` (Komodo) directory, each holding
   that arm's MCP request and response, status, timing, and a copy of the Codex
   transcript.
 - one `attempt-01/`, `attempt-02/`, … subdirectory per try, so retries are kept
   separately.
+- a `land.json` per arm: the pull request it opened, every review round (what
+  the reviewer said, what the arm answered), the whole conversation, and the
+  merge. that file is the close reading — the arguing with greptile is in it.
 
 a run where every arm succeeds is `completed`; one where an arm used up its
-retries is `completed_with_failures`; a run that breaks for infrastructure
-reasons is `failed`.
+retries — or landed nothing — is `completed_with_failures`; a run that breaks
+for infrastructure reasons is `failed`.
+
+## how a subticket lands
+
+a subticket isn't done when the agent says it is; it's done when it's merged.
+around each build the harness does the mechanical half itself:
+
+1. both checkouts are reset to `origin/main`, so each subticket starts where the
+   last one merged rather than wherever the previous session left the tree.
+2. both arms build it and open a pull request with `gh`, under their own token.
+3. **tuatara** waits for greptile to review it, then gets sent back — with the
+   pull request's URL and nothing else — to fetch the comments itself and reply
+   to every one of them on the record. it argues, fixes, pushes; then the
+   harness merges. **komodo** has no reviewer and merges straight away. that
+   difference is the entire experiment.
+4. no pull request, or a merge that won't go through, fails the arm and halts
+   the climb with the box unchecked. a rung that didn't land doesn't look built.
+
+a review that never shows up doesn't hold the climb: after `REVIEW_TIMEOUT_MS`
+(15 minutes by default) the pull request merges unreviewed, and the timeout is
+recorded as what happened.
 
 ## config
 
@@ -175,7 +204,14 @@ everything below is optional and lives in `.env`:
 - `CODEX_HOME` — where to find Codex sessions (default `~/.codex`).
 - `IDLE_TIMEOUT_MS` — abort an arm after this much silence with no events
   (default `600000`, 10 minutes; `0` disables the watchdog).
-- `CODEX_SANDBOX` — Codex sandbox mode (default `workspace-write`).
+- `CODEX_SANDBOX` — Codex sandbox mode. leave it unset: a containerized arm
+  then gets `danger-full-access` (it needs the network to push, open a PR and
+  answer a review; the container is the isolation), a host arm gets
+  `workspace-write`.
+- `CONTROL_GH_TOKEN` / `GREPTILE_GH_TOKEN` — each arm's github identity. the
+  container pushes with it and the harness merges with it.
+- `GREPTILE_BOT_LOGIN`, `REVIEW_TIMEOUT_MS`, `REVIEW_ROUNDS` — who tuatara has
+  to answer, how long to wait for them, and how many rounds it gets.
 - `LINEAR_API_KEY` — bearer token for the `linear` MCP server greg files
   milestones and sub-issues through. unset means he skips linear.
 

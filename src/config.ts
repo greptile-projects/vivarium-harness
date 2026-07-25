@@ -18,8 +18,24 @@ export const MAX_MILESTONES = 2;
 // disables) — a hung external tool call otherwise holds a run for the full
 // default before anything notices.
 export const IDLE_TIMEOUT_MS = 600_000;
+// How long the landing phase waits for the reviewer to say something about an
+// arm's pull request before merging without it (REVIEW_TIMEOUT_MS), and how
+// often it looks. A review that never arrives must not hold the climb: the
+// same trade the review mirror makes — sync integrity beats review
+// completeness — except here it is recorded as a timed-out round.
+export const REVIEW_TIMEOUT_MS = 900_000;
+export const REVIEW_POLL_MS = 30_000;
+// How many review → answer → re-review rounds one pull request gets. Greptile
+// re-reviews after a push, so round 2 is where "did the answer land" shows up;
+// past that a run would spend more time arguing than climbing.
+export const REVIEW_ROUNDS = 2;
+// The login the reviewed arm has to answer to. Confirmed live on the mirror
+// pipeline; overridable with GREPTILE_BOT_LOGIN.
+export const REVIEWER_LOGIN = "greptile-apps[bot]";
 
 export type ArmName = "control" | "greptile";
+
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
 export interface ArmConfig {
   name: ArmName;
@@ -37,16 +53,36 @@ export interface ArmConfig {
   // inside the container, so this must point at the host dir arm-run.sh mounts
   // in. Unset means fall back to the run-wide CODEX_HOME.
   codexHome?: string;
+  // GitHub token the *harness* acts with on this arm's behalf (finding the pull
+  // request, reading the review, merging). The same token the container gets,
+  // so the record shows one identity per arm rather than the operator's.
+  ghToken?: string;
+  // Sandbox for this arm's Codex session. A containerized arm gets
+  // danger-full-access by default: it needs the network to push a branch and
+  // open a pull request, and the container — not the sandbox — is what keeps
+  // it away from the host and the other arm.
+  sandbox?: SandboxMode;
+  // The reviewer login this arm has to answer to. Set on exactly one arm; that
+  // asymmetry *is* the experiment. An arm without it merges as soon as its
+  // pull request exists.
+  reviewer?: string;
 }
 
 export interface HarnessConfig {
   ticket: string;
   arms: [ArmConfig, ArmConfig];
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  sandbox: SandboxMode;
   resultsDir: string;
   codexHome: string;
   maxAttempts: number;
   idleTimeoutMs: number;
+  // Sync each checkout to origin's default branch before the arms start, and
+  // merge what they open when they finish. False only for the demo, whose
+  // throwaway temp dirs are not checkouts of anything.
+  land: boolean;
+  reviewTimeoutMs: number;
+  reviewPollMs: number;
+  reviewRounds: number;
 }
 
 function valueAfter(args: string[], flag: string): string | undefined {
@@ -60,10 +96,11 @@ function valueAfter(args: string[], flag: string): string | undefined {
   return value;
 }
 
-function sandboxFromEnv(
-  value: string | undefined,
-): HarnessConfig["sandbox"] {
-  const sandbox = value ?? "workspace-write";
+// An explicit CODEX_SANDBOX always wins; unset returns undefined so each arm
+// can pick its own default (see armSandbox).
+function sandboxFromEnv(value: string | undefined): SandboxMode | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const sandbox = value.trim();
   if (
     sandbox !== "read-only" &&
     sandbox !== "workspace-write" &&
@@ -74,6 +111,31 @@ function sandboxFromEnv(
     );
   }
   return sandbox;
+}
+
+// A containerized arm has to reach the network — it pushes a branch, opens a
+// pull request and answers a review with `gh` — and the container is already
+// the isolation boundary, so the sandbox inside it only gets in the way. A
+// host-mode arm shares the operator's filesystem and stays fenced in.
+export function armSandbox(
+  explicit: SandboxMode | undefined,
+  container: string | undefined,
+): SandboxMode {
+  if (explicit) return explicit;
+  return container ? "danger-full-access" : "workspace-write";
+}
+
+function positiveFromEnv(
+  name: string,
+  value: string | undefined,
+  fallback: number,
+): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative number`);
+  }
+  return parsed;
 }
 
 function idleTimeoutFromEnv(value: string | undefined): number {
@@ -117,6 +179,8 @@ export function parseArgs(
     throw new Error("CONTROL_REPO and GREPTILE_REPO must be configured");
   }
 
+  const sandbox = sandboxFromEnv(env.CODEX_SANDBOX);
+
   return {
     ticket,
     arms: [
@@ -129,6 +193,8 @@ export function parseArgs(
           env.CONTROL_CODEX_HOME,
           env.CONTROL_CONTAINER,
         ),
+        ghToken: env.CONTROL_GH_TOKEN,
+        sandbox: armSandbox(sandbox, env.CONTROL_CONTAINER),
       },
       {
         name: "greptile",
@@ -139,13 +205,30 @@ export function parseArgs(
           env.GREPTILE_CODEX_HOME,
           env.GREPTILE_CONTAINER,
         ),
+        ghToken: env.GREPTILE_GH_TOKEN,
+        sandbox: armSandbox(sandbox, env.GREPTILE_CONTAINER),
+        // The one asymmetry between the arms: this one has a reviewer whose
+        // comments it has to answer on the record before its work lands.
+        reviewer: env.GREPTILE_BOT_LOGIN ?? REVIEWER_LOGIN,
       },
     ],
-    sandbox: sandboxFromEnv(env.CODEX_SANDBOX),
+    sandbox: sandbox ?? "workspace-write",
     resultsDir: RESULTS_DIR,
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
     maxAttempts: MAX_ATTEMPTS,
     idleTimeoutMs: idleTimeoutFromEnv(env.IDLE_TIMEOUT_MS),
+    land: true,
+    reviewTimeoutMs: positiveFromEnv(
+      "REVIEW_TIMEOUT_MS",
+      env.REVIEW_TIMEOUT_MS,
+      REVIEW_TIMEOUT_MS,
+    ),
+    reviewPollMs: REVIEW_POLL_MS,
+    reviewRounds: positiveFromEnv(
+      "REVIEW_ROUNDS",
+      env.REVIEW_ROUNDS,
+      REVIEW_ROUNDS,
+    ),
   };
 }
 
@@ -250,7 +333,8 @@ Options:
                           to exercise the plumbing without the experiment repos.
                           The live view stays up when it finishes — press q.
   --tui / --no-tui        Force the live view on/off (default: on when stdout
-                          is a TTY). Both write results/live-<ts>/progress.log.
+                          is a TTY). Both write one progress.log per arm under
+                          results/live-<ts>/<arm>/.
   --abort-on-quit         Make q (and Ctrl-C) stop the run itself, not just the
                           view: every running session is torn down and the
                           process exits 1. Without it, quitting only closes the
@@ -282,10 +366,24 @@ Optional environment:
   CONTROL_CODEX_HOME=<path>   Host dir whose sessions/ holds the arm's Codex
   GREPTILE_CODEX_HOME=<path>  transcript. Containerized arms default to
                           ~/.vivarium/<container>; host arms use CODEX_HOME.
-  CODEX_SANDBOX=<mode>    Defaults to workspace-write
+  CONTROL_GH_TOKEN=<token>    GitHub token per arm: the container pushes and
+  GREPTILE_GH_TOKEN=<token>   opens its pull request with it, and the harness
+                          merges with it, so each arm lands under its own
+                          identity. Unset falls back to the host's gh auth.
+  CODEX_SANDBOX=<mode>    Overrides both arms. Unset, a containerized arm runs
+                          danger-full-access (it needs the network to push and
+                          to answer a review; the container is the boundary)
+                          and a host arm runs workspace-write.
   CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
                           Defaults to 600000 (10m); 0 disables the watchdog.
+  GREPTILE_BOT_LOGIN=<login>  The reviewer the greptile arm must answer before
+                          its pull request is merged. Defaults to
+                          ${REVIEWER_LOGIN}.
+  REVIEW_TIMEOUT_MS=<ms>  How long to wait for that review before merging
+                          without it. Defaults to ${REVIEW_TIMEOUT_MS} (15m).
+  REVIEW_ROUNDS=<n>       Review → answer → re-review rounds per pull request.
+                          Defaults to ${REVIEW_ROUNDS}.
 
 The caller supplies only --ticket. Repository and tool isolation are deployment
 configuration, not per-ticket orchestration inputs. Results dir (./results) and

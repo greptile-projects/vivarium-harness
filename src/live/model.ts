@@ -1,3 +1,4 @@
+import type { LandingRecord, LandingStatus } from "../land.js";
 import { LiveStore } from "./store.js";
 
 // One numbered line of scrollback. The id is stable so React keys survive the
@@ -5,6 +6,44 @@ import { LiveStore } from "./store.js";
 export interface Line {
   id: number;
   text: string;
+}
+
+// One pull request an arm landed, as its own tab shows it. Kept on the model
+// rather than in the store because the store is cleared between phases (Greg
+// swaps sessions per milestone) and a climb's merged pull requests are exactly
+// the thing that should accumulate across them.
+export interface PullRequestEntry {
+  arm: string;
+  number: number;
+  url: string;
+  title: string;
+  status: LandingStatus;
+  // Review rounds this pull request went through, and how many of them the arm
+  // actually answered — the reviewed arm's whole story in two numbers.
+  rounds: number;
+  answered: number;
+  comments: number;
+}
+
+const PR_LIMIT = 100;
+
+export function pullRequestEntry(
+  record: LandingRecord,
+): PullRequestEntry | undefined {
+  const pr = record.pullRequest;
+  if (!pr) return undefined;
+  return {
+    arm: record.arm,
+    number: pr.number,
+    url: pr.url,
+    title: pr.title,
+    status: record.status,
+    rounds: record.reviewRounds.length,
+    answered: record.reviewRounds.filter(
+      (round) => round.response !== undefined,
+    ).length,
+    comments: record.conversation.length,
+  };
 }
 
 // Bounded so a run that goes all night cannot grow the process without limit —
@@ -29,6 +68,7 @@ export class LiveModel {
   // Replaced (never mutated) on append so React sees a new identity.
   private notesLines: Line[] = [];
   private logLines: Line[] = [];
+  private prs = new Map<string, PullRequestEntry[]>();
   private nextId = 0;
   private readonly listeners = new Set<() => void>();
 
@@ -65,6 +105,27 @@ export class LiveModel {
     this.subtitle = subtitle;
     this.live.reset();
     for (const arm of arms) this.live.register(arm);
+    this.emit();
+  }
+
+  // Every pull request this arm has landed so far, oldest first.
+  pullRequests(arm: string): PullRequestEntry[] {
+    return this.prs.get(arm) ?? [];
+  }
+
+  // Record what an arm's work landed as. Re-recording the same pull request
+  // (a re-run of the same subticket) replaces the earlier entry rather than
+  // listing it twice.
+  recordLanding(record: LandingRecord): void {
+    const entry = pullRequestEntry(record);
+    if (!entry) return;
+    const existing = this.prs.get(record.arm) ?? [];
+    const without = existing.filter((pr) => pr.url !== entry.url);
+    const next = [...without, entry];
+    this.prs.set(
+      record.arm,
+      next.length > PR_LIMIT ? next.slice(next.length - PR_LIMIT) : next,
+    );
     this.emit();
   }
 

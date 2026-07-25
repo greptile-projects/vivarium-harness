@@ -1,0 +1,256 @@
+import { describe, expect, test } from "bun:test";
+import {
+  GIT_TOKEN_ENV,
+  armGitHub,
+  pullRequestNumber,
+  pullRequestUrl,
+  slugFromRemote,
+} from "../src/github.js";
+import type { ArmConfig } from "../src/config.js";
+import type { CommandResult, CommandRunner } from "../src/github.js";
+
+const TOKEN = "ghp_thisisthesecretvalue";
+
+const arm = (overrides: Partial<ArmConfig> = {}): ArmConfig => ({
+  name: "greptile",
+  repo: "/tmp/checkout",
+  ...overrides,
+});
+
+// Records every spawn so a test can assert on argv and env — nothing here runs
+// git or gh.
+function recorder(replies: Record<string, CommandResult> = {}) {
+  const calls: {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+  }[] = [];
+  const exec: CommandRunner = async (command, args, options) => {
+    calls.push({ command, args, env: options?.env });
+    const key = `${command} ${args.filter((a) => !a.startsWith("-")).join(" ")}`;
+    for (const [match, reply] of Object.entries(replies)) {
+      if (key.startsWith(match)) return reply;
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  return { calls, exec };
+}
+
+const ok = (stdout: string): CommandResult => ({ code: 0, stdout, stderr: "" });
+
+describe("credential handling", () => {
+  // The point of the credential helper is that the token reaches git without
+  // ever being readable off the process table — `-c` values are argv, and argv
+  // is world-readable through `ps` while the fetch runs.
+  test("no spawned argument ever contains the token", async () => {
+    const { calls, exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/main\n"),
+      "git rev-parse": ok("abc123\n"),
+    });
+
+    await armGitHub(arm({ ghToken: TOKEN }), exec).syncToBaseline();
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      for (const argument of call.args) {
+        expect(argument).not.toContain(TOKEN);
+      }
+    }
+  });
+
+  test("the token reaches git through the environment instead", async () => {
+    const { calls, exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/main\n"),
+      "git rev-parse": ok("abc123\n"),
+    });
+
+    await armGitHub(arm({ ghToken: TOKEN }), exec).syncToBaseline();
+
+    const fetch = calls.find((call) => call.args.includes("fetch"));
+    expect(fetch?.env?.[GIT_TOKEN_ENV]).toBe(TOKEN);
+    // …and the helper is still installed, referring to it by name.
+    const helper = fetch?.args.find((a) => a.startsWith("credential.helper="));
+    expect(helper).toContain(`$${GIT_TOKEN_ENV}`);
+    expect(helper).not.toContain(TOKEN);
+  });
+
+  test("an arm with no token installs no helper and sets no token env", async () => {
+    const { calls, exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/main\n"),
+      "git rev-parse": ok("abc123\n"),
+    });
+
+    await armGitHub(arm(), exec).syncToBaseline();
+
+    const fetch = calls.find((call) => call.args.includes("fetch"));
+    expect(fetch?.args.some((a) => a.startsWith("credential.helper="))).toBe(
+      false,
+    );
+    expect(fetch?.env?.[GIT_TOKEN_ENV]).toBeUndefined();
+  });
+});
+
+describe("syncToBaseline", () => {
+  test("keeps untracked files by using checkout -f -B, never a clean", async () => {
+    const { calls, exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/trunk\n"),
+      "git rev-parse": ok("deadbeef\n"),
+    });
+
+    const baseline = await armGitHub(arm(), exec).syncToBaseline();
+
+    expect(baseline).toEqual({
+      slug: "org/repo",
+      branch: "trunk",
+      sha: "deadbeef",
+    });
+    expect(calls.some((call) => call.args.includes("clean"))).toBe(false);
+    const checkout = calls.find((call) => call.args[0] === "checkout");
+    expect(checkout?.args).toEqual([
+      "checkout",
+      "-f",
+      "-B",
+      "trunk",
+      "origin/trunk",
+    ]);
+  });
+
+  test("a failed fetch throws rather than silently building on a stale base", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/main\n"),
+      "git fetch": { code: 128, stdout: "", stderr: "could not read from remote" },
+    });
+
+    await expect(armGitHub(arm(), exec).syncToBaseline()).rejects.toThrow(
+      /could not read from remote/,
+    );
+  });
+});
+
+describe("conversation", () => {
+  // `gh api --paginate` merges array responses into a single JSON array, so a
+  // review long enough to paginate still parses as one document. This pins
+  // that expectation: the inline comments must survive.
+  test("reads every inline comment out of one merged array", async () => {
+    const page = (id: number) => ({
+      id,
+      user: { login: "greptile-apps[bot]" },
+      body: `finding ${id}`,
+      created_at: `2026-07-25T0${id}:00:00Z`,
+      html_url: `https://github.com/org/repo/pull/7#discussion_r${id}`,
+      path: "src/github.ts",
+    });
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [], comments: [] })),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([page(1), page(2), page(3)]),
+      ),
+    });
+
+    const notes = await armGitHub(arm(), exec).conversation(7);
+
+    expect(notes.map((note) => note.body)).toEqual([
+      "finding 1",
+      "finding 2",
+      "finding 3",
+    ]);
+    expect(notes.every((note) => note.kind === "review-comment")).toBe(true);
+  });
+
+  test("merges reviews, issue comments and inline comments chronologically", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(
+        JSON.stringify({
+          reviews: [
+            {
+              id: 1,
+              author: { login: "greptile-apps[bot]" },
+              body: "the review",
+              submittedAt: "2026-07-25T02:00:00Z",
+              state: "COMMENTED",
+            },
+          ],
+          comments: [
+            {
+              id: 2,
+              author: { login: "makors" },
+              body: "the issue comment",
+              createdAt: "2026-07-25T01:00:00Z",
+            },
+          ],
+        }),
+      ),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          {
+            id: 3,
+            user: { login: "greptile-apps[bot]" },
+            body: "the inline comment",
+            created_at: "2026-07-25T03:00:00Z",
+          },
+        ]),
+      ),
+    });
+
+    const notes = await armGitHub(arm(), exec).conversation(7);
+
+    expect(notes.map((note) => note.body)).toEqual([
+      "the issue comment",
+      "the review",
+      "the inline comment",
+    ]);
+  });
+
+  test("an inline reply keeps its parent link", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [], comments: [] })),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          { id: 10, body: "finding", created_at: "2026-07-25T01:00:00Z" },
+          {
+            id: 11,
+            body: "answer",
+            created_at: "2026-07-25T02:00:00Z",
+            in_reply_to_id: 10,
+          },
+        ]),
+      ),
+    });
+
+    const notes = await armGitHub(arm(), exec).conversation(7);
+
+    expect(notes[0]?.inReplyTo).toBeUndefined();
+    expect(notes[1]?.inReplyTo).toBe("review-comment:10");
+  });
+});
+
+describe("pure helpers", () => {
+  // Host-agnostic on purpose: it parses `owner/name` out of either spelling
+  // git uses, and says nothing about which host that is.
+  test("slugFromRemote handles both remote spellings", () => {
+    expect(slugFromRemote("https://github.com/org/repo.git")).toBe("org/repo");
+    expect(slugFromRemote("git@github.com:org/repo.git")).toBe("org/repo");
+    expect(slugFromRemote("https://github.com/org/repo")).toBe("org/repo");
+    expect(slugFromRemote("/tmp/a-local-checkout")).toBeUndefined();
+  });
+
+  test("pullRequestUrl finds the URL an arm signed off with", () => {
+    expect(
+      pullRequestUrl("done!\nPR: https://github.com/org/repo/pull/12\n"),
+    ).toBe("https://github.com/org/repo/pull/12");
+    expect(pullRequestUrl("no link here")).toBeUndefined();
+  });
+
+  test("pullRequestNumber reads the number back off a URL", () => {
+    expect(pullRequestNumber("https://github.com/org/repo/pull/12")).toBe(12);
+    expect(pullRequestNumber("https://github.com/org/repo")).toBeUndefined();
+  });
+});
