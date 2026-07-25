@@ -102,10 +102,10 @@ bun run build                  # emit dist/ via tsconfig.build.json
 ### Shell scripts
 
 ```bash
-docker build -t vivarium-arm .   # build the arm image once
+docker build -t vivarium-tuatararm .   # build the arm image once
 scripts/arm-run.sh control       # start the control arm's container from .env
 scripts/arm-run.sh greptile      # same, for the greptile arm
-scripts/mirror_sync.sh           # replay arm B's main-states into the review mirror
+scripts/mirror_sync.sh           # replay Komodo's main-states into the review mirror
 scripts/mirror_sync_test.sh      # offline tests for mirror_sync.sh
 scripts/resume-clean.sh          # report what an interrupted climb left behind
 scripts/resume-clean.sh --apply  # …and reset both arms to the same baseline
@@ -113,7 +113,7 @@ scripts/resume-clean.sh --apply  # …and reset both arms to the same baseline
 
 `arm-run.sh` is the per-arm container launcher (details below).
 `mirror_sync.sh` is the review-mirror pipeline — it materializes each successive
-`vivarium-b` main-state as its own PR in a private mirror so Greptile reviews it
+`vivarium-komodo` main-state as its own PR in a private mirror so Greptile reviews it
 before merge, strictly one open PR at a time. It normally runs from
 `.github/workflows/mirror-sync.yml`, not by hand, and needs two fine-grained
 PATs (see `SETUP.md`). `mirror_sync_test.sh` exercises its local git logic
@@ -137,7 +137,7 @@ Run-wide knobs live there too: `CODEX_SANDBOX` (default `workspace-write`),
 through. See `.env.example` for the annotated list.
 
 ```bash
-docker build -t vivarium-arm .
+docker build -t vivarium-tuatararm .
 scripts/arm-run.sh control    # reads CONTROL_* from .env
 scripts/arm-run.sh greptile   # reads GREPTILE_* from .env
 ```
