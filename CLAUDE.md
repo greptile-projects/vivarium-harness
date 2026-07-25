@@ -102,7 +102,7 @@ bun run build                  # emit dist/ via tsconfig.build.json
 ### Shell scripts
 
 ```bash
-docker build -t vivarium-tuatararm .   # build the arm image once
+docker build -t vivarium-arm .   # build the arm image once
 scripts/arm-run.sh control       # start the control arm's container from .env
 scripts/arm-run.sh greptile      # same, for the greptile arm
 scripts/mirror_sync.sh           # replay Komodo's main-states into the review mirror
