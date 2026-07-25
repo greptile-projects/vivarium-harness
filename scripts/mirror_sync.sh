@@ -30,6 +30,10 @@ STATE_VAR="${STATE_VAR:-LAST_SYNCED_SHA}"
 # bot login is what authors its reviews/comments.
 GREPTILE_BOT_LOGIN="${GREPTILE_BOT_LOGIN:-greptile-apps[bot]}"
 
+# Marker every mirror PR title carries. Greptile reads it to recognize the PR
+# as agent-authored, so it is not decoration — keep the trailing space.
+CODEX_TITLE_PREFIX="${CODEX_TITLE_PREFIX:-[codex] }"
+
 POLL_INTERVAL="${POLL_INTERVAL:-60}"     # seconds between review checks
 POLL_TIMEOUT="${POLL_TIMEOUT:-600}"      # 10 min; runner stays alive => bounds Actions minutes
 TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
@@ -208,6 +212,10 @@ sync_one() { # <source-sha> <title-prefix>
     title="$src_line"
   fi
   [[ -n "$prefix" ]] && title="${prefix}${title}"
+  # Every mirror PR is titled "[codex] …": Greptile keys off that marker to
+  # treat the PR as agent-authored. Non-negotiable, so it goes on last and
+  # outermost — after any per-path prefix like [force-push].
+  [[ "$title" == "${CODEX_TITLE_PREFIX}"* ]] || title="${CODEX_TITLE_PREFIX}${title}"
 
   author_login="$(source_author_login "$sha")"
   local author_ref

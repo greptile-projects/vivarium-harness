@@ -133,6 +133,11 @@ To re-verify or run manually: **Actions → mirror-sync → Run workflow**
   open mirror PR at a time.
 - **Timeout**: polls every 60s, 10-min cap. On timeout → `review-timeout` label,
   proceed (sync integrity beats review completeness).
+- **`[codex] ` title marker**: every mirror PR title starts with it — that is
+  how Greptile recognizes the PR as agent-authored. It goes on outermost (so a
+  force-push PR reads `[codex] [force-push] …`) and is not re-applied if the
+  source title already carries it. Override with `CODEX_TITLE_PREFIX` only if
+  the marker Greptile keys off ever changes.
 - **Force-push**: if `LAST_SYNCED_SHA` is no longer an ancestor of Komodo `main`,
   one coarse `[force-push]`-prefixed PR to current main, then normal resume.
 - **History-only rewrite** (identical tree): no PR, state advances.

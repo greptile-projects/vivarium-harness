@@ -140,7 +140,8 @@ HEAD_SHA="$(git -C "$WORK" rev-parse HEAD)"
 run_sync
 check "3 PRs created" "$(n_prs)" "3"
 check "state at head" "$(state)" "$HEAD_SHA"
-check "titles in order" "$(paste -sd, "$STUB_DIR/titles")" "commit two,commit three,commit four"
+check "titles in order" "$(paste -sd, "$STUB_DIR/titles")" \
+  "[codex] commit two,[codex] commit three,[codex] commit four"
 check "tree identical" "$(tree_identical "$HEAD_SHA")" "yes"
 
 echo "== Scenario 3: history rewrite, identical tree -> no PR, state advances =="
@@ -166,7 +167,8 @@ git -C "$WORK" push -q -f origin HEAD:main
 HEAD_SHA="$(git -C "$WORK" rev-parse HEAD)"
 run_sync
 check "one PR created" "$(n_prs)" "1"
-check "title has [force-push] prefix" "$(grep -c '^\[force-push\] ' "$STUB_DIR/titles")" "1"
+check "title has [codex] then [force-push] prefix" \
+  "$(grep -c '^\[codex\] \[force-push\] ' "$STUB_DIR/titles")" "1"
 check "state at head" "$(state)" "$HEAD_SHA"
 check "tree identical" "$(tree_identical "$HEAD_SHA")" "yes"
 
@@ -196,6 +198,12 @@ check "PR still created" "$(n_prs)" "1"
 check "review-timeout label applied" "$([[ -f "$STUB_DIR/timeout_marker" ]] && echo yes || echo no)" "yes"
 check "merged + state advanced despite timeout" "$(state)" "$HEAD_SHA"
 check "tree identical" "$(tree_identical "$HEAD_SHA")" "yes"
+
+echo "== Scenario 7: source title already marked -> [codex] not doubled =="
+new_scenario s7
+src_commit v2 "[codex] already marked"
+run_sync
+check "title kept as-is" "$(tail -1 "$STUB_DIR/titles")" "[codex] already marked"
 
 # =========================================================================
 echo
