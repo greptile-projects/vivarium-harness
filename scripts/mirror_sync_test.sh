@@ -33,13 +33,18 @@ write_stub() {
 #!/usr/bin/env bash
 set -uo pipefail
 D="$STUB_DIR"; MB="$MIRROR_BARE"
-endpoint=""; is_write=0; val=""
+endpoint=""; is_write=0; val=""; jq_expr=""
+prev=""
 for a in "$@"; do
   case "$a" in
     repos/*) endpoint="$a" ;;
     PATCH|POST) is_write=1 ;;
     value=*) val="${a#value=}" ;;
   esac
+  # The source-PR endpoint is asked for .title and .body separately, so the
+  # stub has to answer per field rather than per endpoint.
+  [[ "$prev" == "-q" ]] && jq_expr="$a"
+  prev="$a"
 done
 case "$1" in
   api)
@@ -48,8 +53,17 @@ case "$1" in
         if [[ "$is_write" == 1 ]]; then printf '%s' "$val" > "$D/state"; else cat "$D/state" 2>/dev/null; fi ;;
       *"/reviews") printf '%s' "${STUB_REVIEW:-1}" ;;      # Greptile review present
       *"/comments") printf '0' ;;
-      *"/commits/"*"/pulls") : ;;                          # no associated source PR
+      *"/commits/"*"/pulls") printf '%s' "${STUB_SRC_PR:-}" ;;   # source PR, if the scenario sets one
       *"/commits/"*) : ;;                                  # no author login
+      *"/pulls/"*)
+        case "$jq_expr" in
+          .title) printf '%s' "${STUB_SRC_TITLE:-}" ;;
+          # Matches the script's '.body // ""'. STUB_SRC_BODY_FAIL makes the
+          # read fail the way a 503 or a rate limit does: nonzero, no output.
+          *body*)
+            [[ -n "${STUB_SRC_BODY_FAIL:-}" ]] && exit 22
+            printf '%s' "${STUB_SRC_BODY:-}" ;;
+        esac ;;
       *) : ;;
     esac ;;
   pr)
@@ -57,10 +71,11 @@ case "$1" in
       list)
         if [[ -f "$D/open_pr" ]]; then cat "$D/open_pr"; fi ;;
       create)
-        head=""; title=""
-        while [[ $# -gt 0 ]]; do case "$1" in --head) head="$2"; shift;; --title) title="$2"; shift;; esac; shift; done
+        head=""; title=""; body=""
+        while [[ $# -gt 0 ]]; do case "$1" in --head) head="$2"; shift;; --title) title="$2"; shift;; --body) body="$2"; shift;; esac; shift; done
         n=$(( $(cat "$D/counter" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/counter"
         echo "$n $head" >> "$D/prmap"; echo "$title" >> "$D/titles"
+        printf '%s' "$body" > "$D/last_body"
         echo "https://github.com/mirror/pull/$n" ;;
       merge)
         n="$3"; br="$(awk -v n="$n" '$1==n{print $2}' "$D/prmap" | tail -1)"
@@ -99,6 +114,9 @@ new_scenario() {
 run_sync() {
   PATH="$STUB_DIR:$PATH" \
   STUB_DIR="$STUB_DIR" MIRROR_BARE="$MIRROR_BARE" STUB_REVIEW="${STUB_REVIEW:-1}" \
+  STUB_SRC_PR="${STUB_SRC_PR:-}" STUB_SRC_TITLE="${STUB_SRC_TITLE:-}" \
+  STUB_SRC_BODY="${STUB_SRC_BODY:-}" STUB_SRC_BODY_FAIL="${STUB_SRC_BODY_FAIL:-}" \
+  API_RETRY_SLEEP="${API_RETRY_SLEEP:-0}" \
   MIRROR_PUSH_TOKEN=dummy HARNESS_ORG_TOKEN=dummy \
   SOURCE_GIT_URL="file://$SRC_BARE" MIRROR_GIT_URL="file://$MIRROR_BARE" \
   WORKDIR="$(mktemp -d "$SC/wd.XXXX")" \
@@ -204,6 +222,79 @@ new_scenario s7
 src_commit v2 "[codex] already marked"
 run_sync
 check "title kept as-is" "$(tail -1 "$STUB_DIR/titles")" "[codex] already marked"
+
+# =========================================================================
+# Greptile reviews the mirror, not Komodo. If the ticket does not ride across,
+# the only reviewer in the experiment judges Komodo's diff with no idea what was
+# asked for, while Tuatara's reviewer sees the ticket on the PR — and the two
+# arms stop being reviewed under the same conditions.
+echo "== Scenario 8: the source PR's description rides across into the mirror PR =="
+new_scenario s8
+# A realistic ticket: the bodies Greg writes carry their own "## " headings, so
+# this is also the regression test for extracting the ticket by scanning to the
+# next heading — that captures the heading and nothing else.
+SRC_BODY="## Original Ticket
+
+## Objective
+
+Give the platform a repository lifecycle.
+
+## Deliverable
+
+A caller can create, identify, reopen, and inspect an empty repository.
+
+## What changed
+
+Added the storage interface."
+export STUB_SRC_PR=42 STUB_SRC_TITLE="1.1 Create and open repositories"
+export STUB_SRC_BODY="$SRC_BODY"
+src_commit v2 "1.1 Create and open repositories"
+run_sync
+body="$(cat "$STUB_DIR/last_body")"
+check "ticket heading carried over" \
+  "$(printf '%s' "$body" | grep -c '^## Original Ticket$')" "1"
+# The part a next-heading parser would have silently dropped.
+check "ticket body carried over" \
+  "$(printf '%s' "$body" | grep -c 'Give the platform a repository lifecycle')" "1"
+check "later ticket sections carried too" \
+  "$(printf '%s' "$body" | grep -c '^## Deliverable$')" "1"
+# The description is the context a reviewer needs before the diff, so it leads.
+check "description leads the body" "$(printf '%s' "$body" | head -1)" "## Original Ticket"
+check "provenance still present" \
+  "$(printf '%s' "$body" | grep -c '^Source SHA: ')" "1"
+unset STUB_SRC_PR STUB_SRC_TITLE STUB_SRC_BODY
+
+# An empty source description must not leave a stray separator leading the body.
+echo "== Scenario 9: a source PR with an empty description still syncs =="
+new_scenario s9
+export STUB_SRC_PR=43 STUB_SRC_TITLE="hotfix" STUB_SRC_BODY=""
+src_commit v2 "hotfix"
+run_sync
+body="$(cat "$STUB_DIR/last_body")"
+check "body leads with provenance" "$(printf '%s' "$body" | head -1)" \
+  "Source PR: #43 — https://github.com/greptile-projects/vivarium-komodo/pull/43"
+check "no stray separator" "$(printf '%s' "$body" | grep -c '^---$')" "0"
+unset STUB_SRC_PR STUB_SRC_TITLE STUB_SRC_BODY
+
+# A mirror PR is written once and merged after review. Opening one with no
+# description because a lookup blipped is unrecoverable — the review it exists
+# to produce has already happened against a diff with no explanation. Failing
+# the run costs a retry; nothing has advanced.
+echo "== Scenario 10: a failed description read stops the run, it does not ship blank =="
+new_scenario s10
+export STUB_SRC_PR=44 STUB_SRC_TITLE="1.2 Store and retrieve Git objects"
+export STUB_SRC_BODY_FAIL=1
+src_commit v2 "1.2 Store and retrieve Git objects"
+before_state="$(state)"
+run_sync; rc=$?
+check "run failed loudly" "$([[ "$rc" -ne 0 ]] && echo yes || echo no)" "yes"
+check "no mirror PR opened" "$(n_prs)" "0"
+check "state not advanced" "$(state)" "$before_state"
+check "reason logged" \
+  "$(grep -c 'refusing to open a mirror PR without it' "$SC/out.log")" "1"
+check "retried before giving up" \
+  "$(grep -c 'could not read description.*(attempt ' "$SC/out.log")" "3"
+unset STUB_SRC_PR STUB_SRC_TITLE STUB_SRC_BODY_FAIL
 
 # =========================================================================
 echo

@@ -27,7 +27,11 @@ function recorder(replies: Record<string, CommandResult> = {}) {
   }[] = [];
   const exec: CommandRunner = async (command, args, options) => {
     calls.push({ command, args, env: options?.env });
-    const key = `${command} ${args.filter((a) => !a.startsWith("-")).join(" ")}`;
+    // Flags and the `-c credential.helper=…` payload are dropped so a key stays
+    // "git ls-remote origin …" whether or not the arm has a token.
+    const key = `${command} ${args
+      .filter((a) => !a.startsWith("-") && !a.startsWith("credential.helper="))
+      .join(" ")}`;
     for (const [match, reply] of Object.entries(replies)) {
       if (key.startsWith(match)) return reply;
     }
@@ -229,6 +233,62 @@ describe("conversation", () => {
 
     expect(notes[0]?.inReplyTo).toBeUndefined();
     expect(notes[1]?.inReplyTo).toBe("review-comment:10");
+  });
+});
+
+describe("headSha", () => {
+  test("reads the head off the pull request", async () => {
+    const { exec, calls } = recorder({
+      "gh pr view 7": ok(JSON.stringify({ headRefOid: "a".repeat(40) })),
+    });
+
+    expect(await armGitHub(arm(), exec).headSha(7, "subticket-1-1")).toBe(
+      "a".repeat(40),
+    );
+    // No fallback needed, so the remote is not consulted at all.
+    expect(calls.some((call) => call.args.includes("ls-remote"))).toBe(false);
+  });
+
+  // The API and the git remote publish the same fact over two protocols with
+  // two quotas — a rate limit or a 5xx on one says nothing about the other, and
+  // this sha cannot be re-read once the arm pushes over it.
+  test("falls back to the git remote when the API will not answer", async () => {
+    const { exec, calls } = recorder({
+      "gh pr view 7": { code: 1, stdout: "", stderr: "HTTP 503" },
+      "git ls-remote origin": ok(
+        `${"b".repeat(40)}\trefs/heads/subticket-1-1\n`,
+      ),
+    });
+
+    expect(await armGitHub(arm({ ghToken: TOKEN }), exec).headSha(7, "subticket-1-1")).toBe(
+      "b".repeat(40),
+    );
+    // Retried on the API first, and only then routed around.
+    expect(calls.filter((call) => call.command === "gh")).toHaveLength(2);
+    const lsRemote = calls.find((call) => call.args.includes("ls-remote"));
+    expect(lsRemote?.args).toContain("refs/heads/subticket-1-1");
+    // The fallback is a network call too, so it needs the same credentials —
+    // and the token still must not appear in argv.
+    expect(lsRemote?.args.join(" ")).not.toContain(TOKEN);
+    expect(lsRemote?.env?.[GIT_TOKEN_ENV]).toBe(TOKEN);
+  });
+
+  test("gives up only when both sources refuse", async () => {
+    const { exec } = recorder({
+      "gh pr view 7": { code: 1, stdout: "", stderr: "HTTP 503" },
+      "git ls-remote origin": { code: 128, stdout: "", stderr: "no route" },
+    });
+
+    expect(await armGitHub(arm(), exec).headSha(7, "subticket-1-1")).toBeUndefined();
+  });
+
+  test("ignores a remote answer that is not a sha", async () => {
+    const { exec } = recorder({
+      "gh pr view 7": { code: 1, stdout: "", stderr: "HTTP 503" },
+      "git ls-remote origin": ok("warning: something went sideways\n"),
+    });
+
+    expect(await armGitHub(arm(), exec).headSha(7, "subticket-1-1")).toBeUndefined();
   });
 });
 

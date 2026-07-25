@@ -34,6 +34,7 @@ GREPTILE_BOT_LOGIN="${GREPTILE_BOT_LOGIN:-greptile-apps[bot]}"
 # as agent-authored, so it is not decoration — keep the trailing space.
 CODEX_TITLE_PREFIX="${CODEX_TITLE_PREFIX:-[codex] }"
 
+API_RETRY_SLEEP="${API_RETRY_SLEEP:-2}"  # backoff between source-PR read attempts
 POLL_INTERVAL="${POLL_INTERVAL:-60}"     # seconds between review checks
 POLL_TIMEOUT="${POLL_TIMEOUT:-600}"      # 10 min; runner stays alive => bounds Actions minutes
 TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
@@ -168,6 +169,33 @@ verify_tree_identity() { # <source-sha>
   log "verified: mirror/main tree byte-identical to source ${sha}"
 }
 
+# Read one field off the source pull request, retrying, and treat exhaustion as
+# fatal rather than as an empty value.
+#
+# `|| true` here would be indistinguishable from a pull request that genuinely
+# has no description — and a 503 would then open a mirror PR with no ticket and
+# no context, which Greptile reviews and the pipeline merges before anyone
+# notices. That is unrecoverable: the mirror PR is written once, and the review
+# it exists to produce has already happened against a diff with no explanation.
+#
+# Dying is cheap by comparison. Nothing has advanced — `write_state` runs only
+# after a merge — so the next dispatch or the daily cron resumes at exactly this
+# state and retries it. A failed run is visible in Actions; a context-free
+# mirror PR looks like a success.
+source_pr_field() { # <pr-number> <jq-expr> <human name> -> field value
+  local pr="$1" expr="$2" what="$3" attempt out
+  for attempt in 1 2 3; do
+    if out="$(gh_org api "repos/${SOURCE_REPO}/pulls/${pr}" -q "$expr" 2>/dev/null)"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    log "could not read ${what} of ${SOURCE_REPO}#${pr} (attempt ${attempt}/3)"
+    sleep "$API_RETRY_SLEEP"
+  done
+  die "could not read ${what} of ${SOURCE_REPO}#${pr} after 3 attempts; \
+refusing to open a mirror PR without it (state unchanged, rerun to retry)"
+}
+
 # ---------------------------------------------------------------------------
 # Sync one source SHA into its own mirror PR (idempotent / resumable).
 # ---------------------------------------------------------------------------
@@ -203,14 +231,29 @@ sync_one() { # <source-sha> <title-prefix>
   local author msg
   author="$(g log -1 --format='%an <%ae>' "$sha")"
   # Title: source PR title if resolvable, else first line of the commit message.
-  local src_pr title body author_login src_line
+  local src_pr title body author_login src_line src_body ticket
   src_pr="$(source_pr_number "$sha")"
   src_line="$(g log -1 --format='%s' "$sha")"
   if [[ -n "$src_pr" ]]; then
-    title="$(gh_org api "repos/${SOURCE_REPO}/pulls/${src_pr}" -q '.title' 2>/dev/null || echo "$src_line")"
+    title="$(source_pr_field "$src_pr" '.title' 'title')"
+    [[ -n "$title" ]] || title="$src_line"
+    # `// ""` because GitHub sends a null body for a pull request opened with no
+    # description, and jq would print the string "null".
+    src_body="$(source_pr_field "$src_pr" '.body // ""' 'description')"
   else
     title="$src_line"
+    src_body=""
   fi
+
+  # Carry the source PR's whole description across, verbatim. Greptile reviews
+  # the mirror, not Komodo, so without this it is the only reviewer in the
+  # experiment judging a diff with no idea what was asked for — while Tuatara's
+  # reviewer sees the full description on the real PR. Whole body, not just the
+  # "## Original Ticket" section: symmetry is the point, and Tuatara's reviewer
+  # is not handed an extract either. It also sidesteps a trap — ticket bodies
+  # carry their own "## Objective"/"## Deliverable" headings, so any parser that
+  # ends the section at the next "## " silently captures nothing.
+  ticket="$src_body"
   [[ -n "$prefix" ]] && title="${prefix}${title}"
   # Every mirror PR is titled "[codex] …": Greptile keys off that marker to
   # treat the PR as agent-authored. Non-negotiable, so it goes on last and
@@ -227,8 +270,14 @@ sync_one() { # <source-sha> <title-prefix>
   local src_pr_line="(no associated source PR)"
   [[ -n "$src_pr" ]] && src_pr_line="#${src_pr} — https://github.com/${SOURCE_REPO}/pull/${src_pr}"
 
+  # The description goes first, ahead of the provenance lines: it is the context
+  # a reviewer needs before the diff, and the mirror PR is what gets reviewed.
   body="$(cat <<EOF
-Source PR: ${src_pr_line}
+${ticket:+${ticket}
+
+---
+
+}Source PR: ${src_pr_line}
 Source SHA: ${sha}
 Original author: ${author_ref}
 
