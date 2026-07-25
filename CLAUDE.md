@@ -200,7 +200,15 @@ with the live view tapping the same event stream.
   worker instruction, and it asks for a branch, a pushed commit, a pull request
   opened with `gh`, and a closing `PR: <url>` line. Both arms get the
   *identical* worker prompt; keep it that way — divergence there would confound
-  the experiment. `reviewPrompt(url, round, rounds)` is the one instruction only
+  the experiment. The pull request body must **open with the ticket verbatim**
+  under an `## Original Ticket` heading: the reviewer opening it has no other
+  way to see what was asked for. `mirror_sync.sh` carries the source PR's
+  **whole description** into the mirror PR for the same reason — Greptile
+  reviews the mirror, not Komodo, and Tuatara's reviewer is not handed an
+  extract either. Whole body rather than the ticket section alone is also the
+  only safe read: ticket bodies carry their own `## Objective`/`## Deliverable`
+  headings, so anything that ends the section at the next `## ` captures the
+  heading and nothing else. `reviewPrompt(url, round, rounds)` is the one instruction only
   the reviewed arm ever sees: it names the pull request and tells the arm to
   **fetch its own review** and reply to every comment. The comments are
   deliberately not pasted in — what the arm chooses to read is part of what is
@@ -227,7 +235,13 @@ with the live view tapping the same event stream.
   arm a `reviewPrompt` on **its own Codex thread**, and repeats up to
   `reviewRounds`; a review that never arrives merges unreviewed after
   `reviewTimeoutMs` rather than holding the climb, and the timeout is recorded
-  as the round's outcome. `landingError` is the rule that a subticket's
+  as the round's outcome. Each answered round pins the branch head on **both
+  sides** (`reviewedSha`, `respondedSha`). `reviewedSha` is captured before the
+  arm can touch the ref: an amend or force-push makes the reviewed commits
+  unreachable and GitHub marks the inline comments outdated, which would erase
+  the one diff showing what the review changed — and a sha stays fetchable long
+  after the ref moves. The pair also says, with no text analysis at all, whether
+  the arm pushed a fix or only argued. `landingError` is the rule that a subticket's
   deliverable is a *merged pull request*: a session that opened none, or whose
   merge failed, becomes a failed arm however cheerfully it reported itself —
   which halts Greg and leaves the box unchecked.

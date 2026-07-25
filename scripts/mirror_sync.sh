@@ -203,14 +203,26 @@ sync_one() { # <source-sha> <title-prefix>
   local author msg
   author="$(g log -1 --format='%an <%ae>' "$sha")"
   # Title: source PR title if resolvable, else first line of the commit message.
-  local src_pr title body author_login src_line
+  local src_pr title body author_login src_line src_body ticket
   src_pr="$(source_pr_number "$sha")"
   src_line="$(g log -1 --format='%s' "$sha")"
   if [[ -n "$src_pr" ]]; then
     title="$(gh_org api "repos/${SOURCE_REPO}/pulls/${src_pr}" -q '.title' 2>/dev/null || echo "$src_line")"
+    src_body="$(gh_org api "repos/${SOURCE_REPO}/pulls/${src_pr}" -q '.body' 2>/dev/null || true)"
   else
     title="$src_line"
+    src_body=""
   fi
+
+  # Carry the source PR's whole description across, verbatim. Greptile reviews
+  # the mirror, not Komodo, so without this it is the only reviewer in the
+  # experiment judging a diff with no idea what was asked for — while Tuatara's
+  # reviewer sees the full description on the real PR. Whole body, not just the
+  # "## Original Ticket" section: symmetry is the point, and Tuatara's reviewer
+  # is not handed an extract either. It also sidesteps a trap — ticket bodies
+  # carry their own "## Objective"/"## Deliverable" headings, so any parser that
+  # ends the section at the next "## " silently captures nothing.
+  ticket="$src_body"
   [[ -n "$prefix" ]] && title="${prefix}${title}"
   # Every mirror PR is titled "[codex] …": Greptile keys off that marker to
   # treat the PR as agent-authored. Non-negotiable, so it goes on last and
@@ -227,8 +239,14 @@ sync_one() { # <source-sha> <title-prefix>
   local src_pr_line="(no associated source PR)"
   [[ -n "$src_pr" ]] && src_pr_line="#${src_pr} — https://github.com/${SOURCE_REPO}/pull/${src_pr}"
 
+  # The description goes first, ahead of the provenance lines: it is the context
+  # a reviewer needs before the diff, and the mirror PR is what gets reviewed.
   body="$(cat <<EOF
-Source PR: ${src_pr_line}
+${ticket:+${ticket}
+
+---
+
+}Source PR: ${src_pr_line}
 Source SHA: ${sha}
 Original author: ${author_ref}
 

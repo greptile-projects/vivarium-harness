@@ -93,6 +93,13 @@ export interface ArmGitHub {
     branch?: string;
   }): Promise<PullRequestRef | undefined>;
   conversation(pullRequest: number): Promise<ReviewNote[]>;
+  // The commit the branch currently points at. Recorded on both sides of every
+  // review round, because an arm that amends or force-pushes to address a
+  // comment makes the reviewed commits unreachable from the branch and GitHub
+  // marks the inline comments outdated — the one diff that shows what the
+  // review actually changed. A sha stays fetchable long after the ref moves, so
+  // capturing it is the whole preservation.
+  headSha(pullRequest: number): Promise<string | undefined>;
   merge(pullRequest: number): Promise<MergeOutcome>;
 }
 
@@ -311,6 +318,20 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           : undefined;
       const first = parsed?.[0];
       return first ? toRef(first) : undefined;
+    },
+
+    async headSha(pullRequest) {
+      const view = await gh([
+        "pr",
+        "view",
+        String(pullRequest),
+        "--json",
+        "headRefOid",
+      ]);
+      if (view.code !== 0) return undefined;
+      const parsed = parseJson<{ headRefOid?: unknown }>(view.stdout);
+      const sha = parsed?.headRefOid;
+      return typeof sha === "string" && sha.length > 0 ? sha : undefined;
     },
 
     // Reviews, issue comments and inline review comments, merged into one

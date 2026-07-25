@@ -4,7 +4,17 @@ ${ticket}
 
 Read the repository's instructions, documentation, and predecessor logs before making changes. Implement the ticket, run the most relevant checks, and update AGENTS.md and whole-codebase documentation when the work changes information the next worker will need.
 
-Your checkout is on the repository's default branch, at the commit the last piece of work landed on. Do your work on a new branch, commit it, push it, and open a pull request with the GitHub CLI (\`gh\`), which is installed and authenticated. Do not merge it yourself — the orchestrator merges. End your final message with a line of exactly this shape, and nothing after it:
+Your checkout is on the repository's default branch, at the commit the last piece of work landed on. Do your work on a new branch, commit it, push it, and open a pull request with the GitHub CLI (\`gh\`), which is installed and authenticated. Do not merge it yourself — the orchestrator merges.
+
+The pull request body MUST begin with the ticket you were given, verbatim, under exactly this heading, before anything else you write:
+
+## Original Ticket
+
+<the full ticket text from above, unedited>
+
+Everything else — what you changed, how you tested it, what you left out — goes after that section. A reviewer opening the pull request has no other way to see what you were asked for.
+
+End your final message with a line of exactly this shape, and nothing after it:
 
 PR: <the pull request URL>
 

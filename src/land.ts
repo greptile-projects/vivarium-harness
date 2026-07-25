@@ -32,6 +32,13 @@ export interface ReviewRound {
   // What appeared from the reviewer this round. Recorded for the record only —
   // the arm is never handed these; it fetches its own review.
   found: ReviewNote[];
+  // The branch head before and after the arm answered. `reviewedSha` is the
+  // commit the review was written against, pinned before the arm can move the
+  // ref; without it a force-push would erase the only diff that shows what the
+  // review changed. The pair also answers, with no text analysis at all,
+  // whether the arm pushed a fix or merely replied.
+  reviewedSha?: string;
+  respondedSha?: string;
   respondedAt?: string;
   response?: string;
   error?: string;
@@ -240,15 +247,25 @@ export async function landArm(
       // this answer.
       for (const entry of waited.conversation) seen.add(entry.id);
 
+      // Pinned before the arm touches the branch. If it amends or force-pushes
+      // to address a comment, this is the only remaining handle on the code the
+      // review was actually written against.
+      const reviewedSha = await deps.github.headSha(pullRequest.number);
+
       const answer = await deps.reply(
         reviewPrompt(pullRequest.url, round, config.reviewRounds),
       );
+      // And after: the pair is what says whether the arm pushed a fix or only
+      // replied. Equal shas mean it argued and changed nothing.
+      const respondedSha = await deps.github.headSha(pullRequest.number);
       reviewRounds.push({
         round,
         reviewer: arm.reviewer,
         waitedMs: waited.waitedMs,
         timedOut: false,
         found: waited.found,
+        reviewedSha,
+        respondedSha,
         respondedAt: new Date().toISOString(),
         response: answer.output,
         error: answer.isError ? answer.output : undefined,

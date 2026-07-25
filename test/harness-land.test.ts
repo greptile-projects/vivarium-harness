@@ -76,6 +76,9 @@ function fakeGitHub(
     async findPullRequest() {
       return options.pullRequest === false ? undefined : refFor(arm.name);
     },
+    async headSha() {
+      return `head-${arm.name}`;
+    },
     async conversation(): Promise<ReviewNote[]> {
       if (!options.withReview) return [];
       return [

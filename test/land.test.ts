@@ -60,12 +60,24 @@ function fakeGitHub(options: {
   merge?: MergeOutcome;
   isCheckout?: boolean;
   branch?: string;
+  // Successive branch heads, so a test can model an arm that pushes a fix
+  // (the sha moves) or one that only argues (it does not).
+  heads?: string[];
 }): ArmGitHub & { calls: string[] } {
   const conversations = options.conversations ?? [[]];
+  const heads = options.heads ?? [];
   let index = 0;
+  let headIndex = 0;
   const calls: string[] = [];
   return {
     calls,
+    async headSha() {
+      calls.push("headSha");
+      if (heads.length === 0) return undefined;
+      const current = heads[Math.min(headIndex, heads.length - 1)]!;
+      headIndex += 1;
+      return current;
+    },
     async isGitHubCheckout() {
       return options.isCheckout ?? true;
     },
@@ -204,6 +216,57 @@ describe("landArm", () => {
     expect(record.conversation.map((entry) => entry.author)).toContain(
       "vivarium-tuatara-bot",
     );
+  });
+
+  // The commit the review was written against has to be pinned before the arm
+  // can move the branch — an amend or force-push otherwise erases the only diff
+  // that shows what the review changed, and GitHub marks the comments outdated.
+  it("pins the branch head on both sides of an answered review round", async () => {
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [note(REVIEWER, "c1", "this leaks a connection")],
+        [
+          note(REVIEWER, "c1", "this leaks a connection"),
+          note("vivarium-tuatara-bot", "c2", "fixed"),
+        ],
+      ],
+      heads: ["sha-reviewed", "sha-after-fix"],
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    const [first] = record.reviewRounds;
+    expect(first?.reviewedSha).toBe("sha-reviewed");
+    expect(first?.respondedSha).toBe("sha-after-fix");
+    // Captured either side of the reply, never after the fact.
+    const order = github.calls.filter((call) => call === "headSha");
+    expect(order).toHaveLength(2);
+  });
+
+  it("records an equal pair when the arm argues but pushes nothing", async () => {
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [note(REVIEWER, "c1", "rename this")],
+        [note(REVIEWER, "c1", "rename this"), note("vivarium-tuatara-bot", "c2", "disagree")],
+      ],
+      // The branch never moves: the arm replied and changed nothing.
+      heads: ["sha-unchanged"],
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    const [first] = record.reviewRounds;
+    expect(first?.reviewedSha).toBe(first?.respondedSha);
   });
 
   it("merges unreviewed when the review never arrives", async () => {
