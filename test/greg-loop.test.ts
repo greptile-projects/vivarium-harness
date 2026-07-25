@@ -37,6 +37,10 @@ async function makeSetup(): Promise<{
     codexHome: join(root, "codex"),
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
+    land: false,
+    reviewTimeoutMs: 1_000,
+    reviewPollMs: 10,
+    reviewRounds: 2,
   };
 
   return { base, ladderPath: join(root, "LADDER.md") };
@@ -48,6 +52,7 @@ function fakeRun(runId: string): HarnessRunResult {
     artifactDir: `/results/${runId}`,
     status: "completed",
     results: [],
+    landings: [],
   };
 }
 
@@ -262,7 +267,8 @@ describe("runGreg", () => {
                 { arm: "control", status: "failed" },
                 { arm: "greptile", status: "succeeded" },
               ],
-            } as HarnessRunResult;
+              landings: [],
+            } as unknown as HarnessRunResult;
           }
           return fakeRun("run-2");
         },

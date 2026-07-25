@@ -19,9 +19,47 @@ describe("parseArgs", () => {
     const config = parseArgs(["--ticket", "ENG-123"], env);
 
     expect(config.ticket).toBe("ENG-123");
-    expect(config.arms).toEqual([
-      { name: "control", repo: "/tmp/control" },
-      { name: "greptile", repo: "/tmp/greptile" },
+    expect(config.arms.map((arm) => [arm.name, arm.repo])).toEqual([
+      ["control", "/tmp/control"],
+      ["greptile", "/tmp/greptile"],
+    ]);
+    // The one asymmetry between the arms, and it comes from configuration
+    // rather than from a name check somewhere downstream.
+    expect(config.arms[0].reviewer).toBeUndefined();
+    expect(config.arms[1].reviewer).toBe("greptile-apps[bot]");
+  });
+
+  it("gives a containerized arm full access and a host arm a sandbox", () => {
+    const containerized = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      CONTROL_CONTAINER: "vivarium-control",
+    });
+    // The container is the isolation boundary; inside it the arm needs the
+    // network to push a branch and answer a review.
+    expect(containerized.arms[0].sandbox).toBe("danger-full-access");
+    expect(containerized.arms[1].sandbox).toBe("workspace-write");
+
+    // An explicit setting still wins for both arms.
+    const explicit = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      CONTROL_CONTAINER: "vivarium-control",
+      CODEX_SANDBOX: "workspace-write",
+    });
+    expect(explicit.arms.map((arm) => arm.sandbox)).toEqual([
+      "workspace-write",
+      "workspace-write",
+    ]);
+  });
+
+  it("passes each arm's GitHub token through for landing", () => {
+    const config = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      CONTROL_GH_TOKEN: "ghp_control",
+      GREPTILE_GH_TOKEN: "ghp_greptile",
+    });
+    expect(config.arms.map((arm) => arm.ghToken)).toEqual([
+      "ghp_control",
+      "ghp_greptile",
     ]);
   });
 

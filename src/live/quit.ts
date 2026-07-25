@@ -26,7 +26,7 @@ export function stillRunning(arms: ArmState[]): ArmState[] {
 // says everything worth saying and a second message would only be noise.
 export function quitNotice(
   arms: ArmState[],
-  options: { logPath?: string; aborting: boolean },
+  options: { logDir?: string; aborting: boolean },
 ): string | null {
   const running = stillRunning(arms);
   if (running.length === 0) return null;
@@ -42,7 +42,7 @@ export function quitNotice(
     "",
     `live view closed · ${count} still running (${names})`,
     "the run continues in the background; its feed keeps landing in",
-    `  ${options.logPath ?? "results/live-<ts>/progress.log"}`,
+    `  ${options.logDir ?? "results/live-<ts>"}/<arm>/progress.log`,
     "re-run with --abort-on-quit if you meant to stop the run itself.",
     "",
   ];
@@ -56,10 +56,10 @@ export function quitNotice(
 export function onViewClosed(
   model: LiveModel,
   controller: AbortController,
-  options: { logPath?: string; abortOnQuit?: boolean },
+  options: { logDir?: string; abortOnQuit?: boolean },
 ): void {
   const notice = quitNotice(model.live.snapshot(), {
-    logPath: options.logPath,
+    logDir: options.logDir,
     aborting: Boolean(options.abortOnQuit),
   });
   if (!notice) return;

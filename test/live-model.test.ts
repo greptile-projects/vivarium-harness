@@ -39,3 +39,69 @@ describe("LiveModel.finish", () => {
     expect(notifications).toBe(1);
   });
 });
+
+describe("LiveModel pull requests", () => {
+  const landing = (arm: string, number: number, rounds = 0) => ({
+    arm: arm as "control" | "greptile",
+    status: "merged" as const,
+    startedAt: "2026-07-24T00:00:00Z",
+    completedAt: "2026-07-24T00:10:00Z",
+    pullRequest: {
+      number,
+      url: `https://github.com/org/repo/pull/${number}`,
+      title: `subticket ${number}`,
+      headRefName: `branch-${number}`,
+      state: "MERGED",
+    },
+    reviewRounds: Array.from({ length: rounds }, (_, index) => ({
+      round: index + 1,
+      reviewer: "greptile-apps[bot]",
+      waitedMs: 1_000,
+      timedOut: false,
+      found: [],
+      response: "answered",
+    })),
+    conversation: [],
+    notes: [],
+  });
+
+  it("accumulates merged pull requests per arm across phases", () => {
+    const model = new LiveModel("greg tile", "climbing", "ladder");
+    model.recordLanding(landing("greptile", 1, 2));
+    model.recordLanding(landing("control", 1));
+
+    // Greg swaps the live sessions between milestones; the merged pull
+    // requests are exactly what should survive that.
+    model.setPhase("milestone 2 · planning", ["greg"]);
+    model.recordLanding(landing("greptile", 2));
+
+    expect(model.pullRequests("greptile").map((pr) => pr.number)).toEqual([1, 2]);
+    expect(model.pullRequests("control").map((pr) => pr.number)).toEqual([1]);
+    expect(model.pullRequests("greptile")[0]?.rounds).toBe(2);
+    expect(model.pullRequests("greptile")[0]?.answered).toBe(2);
+    expect(model.pullRequests("greg")).toEqual([]);
+  });
+
+  it("replaces a pull request re-recorded by a repeated subticket", () => {
+    const model = new LiveModel("vivarium", "a ticket");
+    model.recordLanding(landing("control", 4));
+    model.recordLanding({ ...landing("control", 4), status: "merge-failed" });
+
+    expect(model.pullRequests("control")).toHaveLength(1);
+    expect(model.pullRequests("control")[0]?.status).toBe("merge-failed");
+  });
+
+  it("records nothing when there was no pull request to land", () => {
+    const model = new LiveModel("vivarium", "a ticket");
+    model.recordLanding({
+      arm: "control",
+      status: "no-pull-request",
+      startedAt: "2026-07-24T00:00:00Z",
+      completedAt: "2026-07-24T00:01:00Z",
+      reviewRounds: [],
+      conversation: [],
+      notes: [],
+    });
+    expect(model.pullRequests("control")).toEqual([]);
+  });
+});

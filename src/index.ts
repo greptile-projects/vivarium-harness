@@ -7,6 +7,9 @@ import {
   IDLE_TIMEOUT_MS,
   MAX_MILESTONES,
   RESULTS_DIR,
+  REVIEW_POLL_MS,
+  REVIEW_ROUNDS,
+  REVIEW_TIMEOUT_MS,
   parseArgs,
   parseRunMode,
   usage,
@@ -14,6 +17,7 @@ import {
   type HarnessConfig,
 } from "./config.js";
 import { runGregLive } from "./greg/main.js";
+import { landingSummary } from "./land.js";
 import { runTicketLive } from "./live/run.js";
 
 // The single entrypoint. Default behaviour is the experiment itself: Greg
@@ -41,6 +45,12 @@ async function demoConfig(ticket: string | undefined): Promise<HarnessConfig> {
     codexHome: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
     maxAttempts: 1,
     idleTimeoutMs: IDLE_TIMEOUT_MS,
+    // Temp dirs are not checkouts of anything: nothing to sync to, nothing to
+    // merge. The demo exercises the plumbing, not the landing path.
+    land: false,
+    reviewTimeoutMs: REVIEW_TIMEOUT_MS,
+    reviewPollMs: REVIEW_POLL_MS,
+    reviewRounds: REVIEW_ROUNDS,
   };
 }
 
@@ -55,25 +65,26 @@ async function main(): Promise<void> {
     const mode = parseRunMode(argv, Boolean(process.stdout.isTTY));
     const { json, useTui, planOnly, abortOnQuit } = mode;
 
-    // Every mode writes its human-readable feed to the same place. Created
-    // only once a run is actually about to start, so a config error does not
-    // leave an empty live-<ts> directory behind.
-    const liveDir = resolve(
+    // Every mode writes its human-readable feed under the same directory —
+    // one progress.log per arm, plus ladder.log for the climb's own lines.
+    // Created only once a run is actually about to start, so a config error
+    // does not leave an empty live-<ts> directory behind.
+    const logDir = resolve(
       RESULTS_DIR,
       `live-${new Date().toISOString().replaceAll(":", "-")}`,
     );
-    const logPath = join(liveDir, "progress.log");
+    const logs = `${logDir}/<arm>/progress.log`;
 
     if (mode.kind !== "ladder") {
       const config =
         mode.kind === "demo"
           ? await demoConfig(mode.ticket)
           : await validateConfig(parseArgs(argv, process.env));
-      await mkdir(liveDir, { recursive: true });
+      await mkdir(logDir, { recursive: true });
 
       if (!useTui) {
         process.stdout.write(
-          `vivarium${mode.kind === "demo" ? " (demo)" : ""} · one ticket · ${config.arms.length} arms · log: ${logPath}\n`,
+          `vivarium${mode.kind === "demo" ? " (demo)" : ""} · one ticket · ${config.arms.length} arms · logs: ${logs}\n`,
         );
       }
 
@@ -82,7 +93,7 @@ async function main(): Promise<void> {
       // real ticket run still unmounts straight into the summary.
       const { run, store } = await runTicketLive(config, {
         useTui,
-        logPath,
+        logDir,
         hold: mode.kind === "demo",
         abortOnQuit,
       });
@@ -99,10 +110,20 @@ async function main(): Promise<void> {
           process.stdout.write(
             `${label.padEnd(8)} ${state.status.padEnd(7)} ${state.events} events · ${(state.tokens ?? 0).toLocaleString()} tok · thread ${state.threadId ?? "—"}\n`,
           );
+          // What the arm actually landed — the pull request is the deliverable,
+          // so it belongs in the last thing the human is left holding.
+          const landing = run.landings.find(
+            (record) => record.arm === state.arm,
+          );
+          if (landing && landing.status !== "skipped") {
+            process.stdout.write(
+              `         ${landingSummary(landing)}${landing.pullRequest ? `\n         ${landing.pullRequest.url}` : ""}\n`,
+            );
+          }
         }
       }
       process.stdout.write(
-        `\nartifacts:    ${run.artifactDir}\nprogress log: ${logPath}\n`,
+        `\nartifacts:     ${run.artifactDir}\nprogress logs: ${logs}\n`,
       );
 
       if (run.status === "completed_with_failures") {
@@ -117,12 +138,12 @@ async function main(): Promise<void> {
     const base = await validateConfig(
       parseArgs(["--ticket", "greg-planner", ...argv], process.env),
     );
-    await mkdir(liveDir, { recursive: true });
+    await mkdir(logDir, { recursive: true });
     const limit = mode.unbounded ? Infinity : MAX_MILESTONES;
 
     const subtickets = await runGregLive(base, limit, planOnly, {
       useTui,
-      logPath,
+      logDir,
       abortOnQuit,
     });
     const milestones = new Set(
@@ -142,7 +163,7 @@ async function main(): Promise<void> {
         `\nPaused after ${subtickets.length} subticket(s) across ${milestones} milestone(s). Run \`bun start\` to climb further, or add --unbounded to run without a cap.\n`,
       );
     }
-    process.stdout.write(`progress log: ${logPath}\n`);
+    process.stdout.write(`progress logs: ${logs}\n`);
   } catch (error) {
     if (error instanceof Error && error.message === "HELP") {
       process.stdout.write(`${usage}\n`);

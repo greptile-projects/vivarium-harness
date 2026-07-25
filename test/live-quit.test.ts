@@ -53,12 +53,12 @@ describe("quitNotice", () => {
   it("names what is still running and where its feed goes", () => {
     const notice = quitNotice(
       [arm("greptile", "working"), arm("control", "done")],
-      { logPath: "results/live-x/progress.log", aborting: false },
+      { logDir: "results/live-x", aborting: false },
     );
 
     expect(notice).toContain("1 session still running");
     expect(notice).toContain("tuatara");
-    expect(notice).toContain("results/live-x/progress.log");
+    expect(notice).toContain("results/live-x/<arm>/progress.log");
     expect(notice).toContain("--abort-on-quit");
     // The run is not being stopped — say so plainly.
     expect(notice).toContain("continues in the background");
@@ -105,7 +105,7 @@ describe("onViewClosed", () => {
     );
 
     try {
-      onViewClosed(modelMidRun(), controller, { logPath: "log/path" });
+      onViewClosed(modelMidRun(), controller, { logDir: "log/path" });
     } finally {
       write.mockRestore();
     }

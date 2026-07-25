@@ -28,6 +28,10 @@ async function scratchLadder(): Promise<string> {
 const base = {
   codexHome: "/tmp/codex",
   idleTimeoutMs: 600_000,
+  land: false,
+  reviewTimeoutMs: 1_000,
+  reviewPollMs: 10,
+  reviewRounds: 2,
 } as unknown as HarnessConfig;
 
 describe("plannerPrompt", () => {

@@ -21,7 +21,7 @@ export async function runTicketLive(
   // `abortOnQuit` makes closing the view stop the run rather than outlive it.
   options: {
     useTui: boolean;
-    logPath?: string;
+    logDir?: string;
     hold?: boolean;
     abortOnQuit?: boolean;
   },
@@ -32,6 +32,7 @@ export async function runTicketLive(
   const sinks = attachLive(model.live, {
     ...options,
     onLine: (line) => model.appendLog(line),
+    onLanding: (record) => model.recordLanding(record),
   });
   const controller = new AbortController();
   const app = options.useTui
@@ -42,12 +43,7 @@ export async function runTicketLive(
     : undefined;
 
   try {
-    const run = await runHarness(
-      config,
-      sinks.onEvent,
-      sinks.onArmComplete,
-      controller.signal,
-    );
+    const run = await runHarness(config, sinks, controller.signal);
     if (app) {
       // The ticket stays on screen — the per-arm statuses already carry the
       // outcome, and the entrypoint prints it again once the terminal is back.

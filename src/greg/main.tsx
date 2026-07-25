@@ -30,7 +30,7 @@ export async function runGregLive(
   base: HarnessConfig,
   limit: number,
   writeAhead: boolean,
-  options: { useTui: boolean; logPath?: string; abortOnQuit?: boolean },
+  options: { useTui: boolean; logDir?: string; abortOnQuit?: boolean },
 ): Promise<GregSubticketSummary[]> {
   const { useTui } = options;
   // The climb's log lines are its own tab ("ladder"), separate from the raw
@@ -39,6 +39,7 @@ export async function runGregLive(
   const sinks = attachLive(model.live, {
     ...options,
     onLine: (line) => model.appendLog(line),
+    onLanding: (record) => model.recordLanding(record),
   });
   const onEvent: ArmEventSink = sinks.onEvent;
 
@@ -77,16 +78,14 @@ export async function runGregLive(
         `building · ${config.ticket.replace(/\s+/g, " ").slice(0, 80)}`,
         config.arms.map((arm) => arm.name),
       );
-      return runHarness(
-        config,
-        onEvent,
-        sinks.onArmComplete,
-        controller.signal,
-      );
+      return runHarness(config, sinks, controller.signal);
     },
+    // The climb's own lines: into the ladder tab when there is one, and always
+    // into ladder.log beside the per-arm feeds (attachLive echoes them to
+    // stdout itself when no view is mounted).
     log: (message) => {
       if (useTui) model.note(message);
-      else process.stderr.write(`${message}\n`);
+      sinks.note(message);
     },
   };
 

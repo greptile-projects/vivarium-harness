@@ -79,7 +79,7 @@ bun start -- --help              # the full option + env reference
   and exiting 1; it is rejected up front with `--no-tui`/`--json`, where there
   would be no view to quit. It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
-  writes `results/live-<ts>/progress.log` either way.
+  writes one `results/live-<ts>/<arm>/progress.log` per arm either way.
 - **`--json`** prints the machine-readable result and implies `--no-tui`.
 - Exit code is **1** whenever an arm exhausts its retries or the run throws, in
   every mode — the watchable path and the scriptable path are the same path.
@@ -131,13 +131,16 @@ command above.
 All arm configuration lives in `.env` (`<ARM>_REPO`, `<ARM>_CONTAINER`,
 `<ARM>_GH_TOKEN`, optionally `<ARM>_CODEX_HOME` / `<ARM>_WORKSPACE`). Both the
 harness and `scripts/arm-run.sh` read it — nothing is passed on the command line.
-Run-wide knobs live there too: `CODEX_SANDBOX` (default `workspace-write`),
-`CODEX_HOME`, `IDLE_TIMEOUT_MS` (watchdog, default `600000`, `0` disables), and
+Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives a containerized
+arm `danger-full-access` — it has to push, open a PR and answer a review, and
+the container is the boundary — and a host arm `workspace-write`),
+`GREPTILE_BOT_LOGIN` / `REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review
+phase, `CODEX_HOME`, `IDLE_TIMEOUT_MS` (watchdog, default `600000`, `0` disables), and
 `LINEAR_API_KEY` for the `linear` MCP server Greg's planner files tickets
 through. See `.env.example` for the annotated list.
 
 ```bash
-docker build -t vivarium-tuatararm .
+docker build -t vivarium-arm .
 scripts/arm-run.sh control    # reads CONTROL_* from .env
 scripts/arm-run.sh greptile   # reads GREPTILE_* from .env
 ```
@@ -173,13 +176,54 @@ with the live view tapping the same event stream.
   set; that flag is what flips host vs. container execution downstream.
 
 - **`src/prompt.ts`** — `workerPrompt(ticket)` builds the single autonomous
-  worker instruction. Both arms get the *identical* prompt; the only difference
-  between arms is their checkout (and thus whether Greptile review context is
-  present). Keep the prompt identical across arms — divergence there would
-  confound the experiment.
+  worker instruction, and it asks for a branch, a pushed commit, a pull request
+  opened with `gh`, and a closing `PR: <url>` line. Both arms get the
+  *identical* worker prompt; keep it that way — divergence there would confound
+  the experiment. `reviewPrompt(url, round, rounds)` is the one instruction only
+  the reviewed arm ever sees: it names the pull request and tells the arm to
+  **fetch its own review** and reply to every comment. The comments are
+  deliberately not pasted in — what the arm chooses to read is part of what is
+  being observed.
 
-- **`src/harness.ts`** — the orchestrator. `runHarness` runs both arms
-  concurrently with `Promise.all`. `runArm` owns the **retry loop**
+- **`src/github.ts`** — everything the harness does to git and GitHub *outside*
+  Codex, bound per arm (`armGitHub(arm, exec)` → `ArmGitHub`) so a caller never
+  passes a repo or a token around: `syncToBaseline` (fetch + `checkout -f -B`
+  onto origin's default branch — untracked files survive, so `node_modules` and
+  the mounted ladder are not collateral), `findPullRequest` (by the URL the arm
+  reported, falling back to its branch), `conversation` (reviews + issue
+  comments + inline review comments, merged chronologically), and `merge`. A
+  token, when present, reaches git through a one-shot credential helper so it
+  never lands in a remote URL. The whole interface is injected in tests — the
+  suite touches neither git nor `gh`.
+
+- **`src/land.ts`** — what happens to an arm's work *after* its session says it
+  is done, and the piece that makes this an experiment rather than two agents
+  writing into the void. `prepareArm` puts the checkout back on the shared
+  baseline before a subticket starts; `landArm` finds the pull request, runs the
+  review rounds, and merges. Both arms take the identical path: the reviewed
+  arm's extra rounds come from `arm.reviewer` being set in config, never from a
+  name check here. A round waits for something new from that login, hands the
+  arm a `reviewPrompt` on **its own Codex thread**, and repeats up to
+  `reviewRounds`; a review that never arrives merges unreviewed after
+  `reviewTimeoutMs` rather than holding the climb, and the timeout is recorded
+  as the round's outcome. `landingError` is the rule that a subticket's
+  deliverable is a *merged pull request*: a session that opened none, or whose
+  merge failed, becomes a failed arm however cheerfully it reported itself —
+  which halts Greg and leaves the box unchecked.
+
+- **`src/harness.ts`** — the orchestrator, and the run is now three phases:
+  **prepare** (both checkouts synced to origin's default branch, sequentially,
+  before either session starts — so a sync failure costs nothing already in
+  flight, and every subticket begins where the last one merged), **build** (both
+  arms concurrently with `Promise.all`), **land** (`landArm` per arm, on the
+  same thread and the same event sinks, so the live view keeps watching one
+  continuous arm through the review wait). Watchers are grouped in
+  `HarnessSinks` (`onEvent`, `onArmComplete`, `onArmNote`, `onLanding`) and the
+  outside world in `HarnessDeps` (`runner`, `github`, `wait`, `now`) — the
+  landing phase is testable without git, `gh`, or a clock. `armExecution` is the
+  single place host-vs-container execution and the arm's sandbox are decided, so
+  the build attempts and the review rounds cannot drift apart. `runArm` owns the
+  **retry loop**
   (`maxAttempts`, default 3): on failure it re-invokes with a `retryPrompt`,
   continuing the *same Codex thread* via `codex-reply` when a `threadId` exists,
   otherwise restarting fresh with the recovery context prepended to the original
@@ -221,29 +265,46 @@ with the live view tapping the same event stream.
 
 - **`src/artifacts.ts`** — `RunArtifacts` owns the on-disk record under
   `results/<run-id>/`. Every write goes through `atomicWrite` (temp file +
-  `rename`). The top-level `manifest.json` (`schemaVersion: 2`) is the source of
+  `rename`). The top-level `manifest.json` (`schemaVersion: 3`) is the source of
   truth for run status; manifest writes are **serialized through a promise
   chain** (`manifestWrite`) that swallows its own errors so one failed write
   can't poison later ones. After an arm finishes it locates that arm's Codex
   transcript under **that arm's** codex home (`arm.codexHome ?? config.codexHome`
   — see the container note above) `/sessions` by matching the `threadId` suffix
   and copies it in (`transcriptStatus` records copied / not-found / no-thread-id).
+  `recordBaselines` writes the commit each arm started from (they should match;
+  when they do not, that *is* the finding). `recordLanding` writes
+  `<arm>/land.json` — pull request, every review round with what the reviewer
+  said and what the arm answered, the merge — replaces the arm's final result
+  (a session that opened no pull request is a failed arm), and **re-copies the
+  transcript**, because the review rounds are more turns on the same thread and
+  the first copy stops short of them.
 
 - **`src/index.ts`** — the single entrypoint. Dispatches to either the ladder
-  loop (default) or a one-ticket run, owns the `results/live-<ts>/progress.log`
-  path and the exit code, and owns no run logic of its own. Flag resolution
+  loop (default) or a one-ticket run, owns the `results/live-<ts>/` log
+  directory and the exit code, and owns no run logic of its own. Flag resolution
   lives in `config.ts` as `parseRunMode` (pure, and tested in
   `test/config.test.ts`) — combinations that could only be honoured by ignoring
   a flag the caller typed throw instead.
 
 - **`src/live/`** — the live view. `attach.ts` is the shared sink wiring
-  (`attachLive`): it updates the store, tees a readable line into
-  `progress.log` through a serialized write chain, mirrors that line to the
-  TUI's log tab, and echoes to stdout when no TUI is mounted — **both** run
-  modes go through it, so a change to the feed can't drift between them.
-  `store.ts` reduces raw `codex/event` messages into per-arm `ArmState`;
+  (`attachLive`): it updates the store, tees a readable line into **that arm's
+  own** `progress.log` through a serialized write chain, mirrors that line to
+  the TUI's log tab, and echoes to stdout when no TUI is mounted — **both** run
+  modes go through it, so a change to the feed can't drift between them. One
+  file per arm (`live-<ts>/<arm>/progress.log`, plus `ladder.log` for the
+  climb's own lines): one combined file read fine live, where the label column
+  tells the arms apart, but the artifact is a *pair* of independent builds and
+  reading one arm's three-hour run meant grepping the other one out of every
+  line first. The interleaved view survives where it belongs — in the log tab.
+  `store.ts` reduces raw `codex/event` messages into per-arm `ArmState`, plus
+  `note()` for landing progress (waiting on a review is the arm working with
+  its session idle, and it belongs on the same activity trail);
   `model.ts` is `LiveModel`, the one view model **both** run modes render from
-  (arms, a subtitle, notes, the mirrored log). `quit.ts` owns what closing the
+  (arms, a subtitle, notes, the mirrored log, and the merged pull requests per
+  arm — those live on the model, not the store, because the store is cleared
+  between phases and merged pull requests are exactly what should accumulate
+  across them). `quit.ts` owns what closing the
   view means — `quitNotice` is pure, and `onViewClosed` is the shared hook both
   modes hand to `mountLive`. It decides from the **model**, not the keypress,
   so the ordinary end-of-run unmount stays silent while an early quit names
@@ -263,8 +324,12 @@ with the live view tapping the same event stream.
   indices** — Greg swaps which sessions are live between phases, so the tab list
   changes shape mid-run; a future tab (a recent-PR list) slots into `tabsFor`
   and nothing else changes. `panes.tsx` holds the panes: `Overview` (one calm
-  card per arm), `ArmDetail` (one arm in full — context meter, activity trail,
-  answer), `Feed` (tail-following list, used by both the notes and log tabs).
+  card per arm), `ArmDetail` (one arm in full — context meter, the pull
+  requests it has merged with their GitHub links, activity trail, answer),
+  `Feed` (tail-following list, used by both the notes and log tabs). The pull
+  request rows are budgeted *before* the answer and print the URL whole,
+  truncating the title instead: those rows exist to be opened, and a truncated
+  link is not a link.
   Every pane is told its height and **budgets its rows explicitly**: Ink resolves
   overflow by drawing rows on top of each other rather than scrolling, so a pane
   drops a section instead of nearly fitting. `wrapLines` in `format.ts` exists
@@ -294,8 +359,14 @@ with the live view tapping the same event stream.
 ## Run statuses
 
 `completed` (both arms succeeded) · `completed_with_failures` (an arm exhausted
-its retries — process exits 1) · `failed` (the harness itself threw). These
-appear in both the CLI JSON result and `manifest.json`.
+its retries, **or landed nothing** — process exits 1) · `failed` (the harness
+itself threw). These appear in both the CLI JSON result and `manifest.json`.
+
+Succeeding means landing: an arm whose session ended cheerfully but opened no
+pull request, or whose pull request could not be merged, is a failed arm
+(`land.json` says which, as `no-pull-request` or `merge-failed`). The ladder
+halts and leaves the box unchecked — a rung that did not land must not look
+built.
 
 ## Resuming an interrupted climb
 
@@ -343,12 +414,22 @@ abandon the rest. Re-running finishes whatever was left.
 
 ```
 results/<run-id>/
-  manifest.json ticket.txt prompt.txt config.json
+  manifest.json ticket.txt prompt.txt config.json baselines.json
+  greptile/land.json          # pull request, review rounds, conversation, merge
   greptile/attempt-01/  request.json status.json response.json output.txt
                         error.txt transcript.jsonl
+  control/land.json     ...
   control/attempt-01/   ...
-  live-<ts>/progress.log   # written by the live view
+results/live-<ts>/
+  greptile/progress.log       # one feed per arm, written by the live view
+  control/progress.log
+  greg/progress.log           # the planner session, when there is one
+  ladder.log                  # the climb's own lines
 ```
+
+`land.json` is the close-reading input the experiment is for: the reviewer's
+findings and the arm's answers to them, in one chronological list per pull
+request, beside the transcript of the session that wrote both.
 
 `LADDER.md` sits at the repo root, outside `results/` — it is Greg's durable
 state across runs (North Star, every milestone, every subticket and its
@@ -360,6 +441,12 @@ Tests inject a fake `AttemptRunner` into `runArm`/`runHarness` — no real Codex
 process or container is spawned, so the suite runs offline. When changing the
 retry/threading logic in `harness.ts` or the artifact schema in `artifacts.ts`,
 update `test/harness.test.ts` / `test/artifacts.test.ts` accordingly.
+
+The landing phase is faked the same way, one level out: `test/land.test.ts`
+injects an `ArmGitHub` that answers from a script (including "the review arrives
+on the third poll") plus a fake clock, and `test/harness-land.test.ts` drives a
+whole `runHarness` with both fakes to check the artifacts it leaves behind.
+Nothing in the suite runs `git`, `gh`, Docker, or Linear.
 
 Greg's tests do the same one level up: `greg-loop.test.ts` injects fake `plan` /
 `harness` / `log` deps (`GregDeps`) and a temp ladder path, `greg-ladder.test.ts`

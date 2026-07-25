@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
+import type { Baseline } from "./github.js";
+import type { LandingRecord } from "./land.js";
 
 export interface PersistedArmResult {
   arm: ArmName;
@@ -22,18 +24,24 @@ export interface PersistedArmResult {
 }
 
 interface RunManifest {
-  schemaVersion: 2;
+  // 3 adds the landing record: the commit each arm started from, the pull
+  // request it opened, the review rounds it answered, and how it merged.
+  schemaVersion: 3;
   runId: string;
   status: "running" | "completed" | "completed_with_failures" | "failed";
   startedAt: string;
   completedAt?: string;
   error?: string;
+  // Where each arm's checkout stood before the run — the two should match, and
+  // when they do not that is the finding, not a detail.
+  baselines?: Partial<Record<ArmName, Baseline>>;
   arms: Partial<
     Record<
       ArmName,
       {
         final: PersistedArmResult;
         attempts: PersistedArmResult[];
+        landing?: LandingRecord;
       }
     >
   >;
@@ -105,7 +113,7 @@ export class RunArtifacts {
     this.codexHome = codexHome;
     this.armCodexHomes = armCodexHomes;
     this.manifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId,
       status: "running",
       startedAt,
@@ -220,6 +228,67 @@ export class RunArtifacts {
     this.manifest.arms[result.arm] = {
       final: persisted,
       attempts: [...(previous?.attempts ?? []), persisted],
+    };
+    await this.writeManifest();
+    return persisted;
+  }
+
+  // The commit each arm starts from, written before either session launches so
+  // an interrupted run still says where it began.
+  async recordBaselines(
+    baselines: Partial<Record<ArmName, Baseline>>,
+  ): Promise<void> {
+    this.manifest.baselines = baselines;
+    await Promise.all([
+      atomicWrite(join(this.directory, "baselines.json"), json(baselines)),
+      this.writeManifest(),
+    ]);
+  }
+
+  // What happened to the arm's work after its session ended: the pull request,
+  // the review rounds, the merge. Lands beside that arm's attempts as
+  // `<arm>/land.json` and replaces the arm's final result, because a session
+  // that opened no pull request is a failed arm however it reported itself.
+  //
+  // The transcript is copied again here: the review rounds are more turns on
+  // the same Codex thread, and the copy taken when the session first settled
+  // stops short of them.
+  async recordLanding(
+    record: LandingRecord,
+    result: PersistedArmResult,
+  ): Promise<PersistedArmResult> {
+    const persisted = { ...result };
+    await mkdir(join(this.directory, record.arm), { recursive: true });
+    await atomicWrite(
+      join(this.directory, record.arm, "land.json"),
+      json(record),
+    );
+
+    if (persisted.threadId && persisted.transcript) {
+      const codexHome = this.armCodexHomes[persisted.arm] ?? this.codexHome;
+      const source = await findTranscript(
+        join(codexHome, "sessions"),
+        persisted.threadId,
+      );
+      if (source) await copyFile(source, persisted.transcript);
+    }
+
+    if (persisted.error !== undefined) {
+      await atomicWrite(
+        join(persisted.artifactDir, "error.txt"),
+        `${persisted.error}\n`,
+      );
+    }
+    await atomicWrite(
+      join(persisted.artifactDir, "status.json"),
+      json(persisted),
+    );
+
+    const previous = this.manifest.arms[record.arm];
+    this.manifest.arms[record.arm] = {
+      final: persisted,
+      attempts: previous?.attempts ?? [persisted],
+      landing: record,
     };
     await this.writeManifest();
     return persisted;

@@ -7,6 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { armDisplayName } from "../arms.js";
 import type { HarnessRunResult } from "../harness.js";
 
 // The ladder is a single markdown file that IS the state: the North Star, every
@@ -270,7 +271,18 @@ export function runOutcome(run: HarnessRunResult): string {
     .filter((result) => result.status === "failed")
     .map((result) => result.arm);
   const detail = failed.length ? ` (failed arms: ${failed.join(", ")})` : "";
-  return `Run \`${run.runId}\`: ${run.status}${detail} — \`${run.artifactDir}\``;
+  // What the rung actually landed, on the same line as the run that built it.
+  // The ladder is the durable record of the climb, and a step whose merged
+  // pull requests are only findable by digging through results/ is a step
+  // nobody will read back later.
+  const merged = run.landings
+    .filter((landing) => landing.status === "merged" && landing.pullRequest)
+    .map(
+      (landing) =>
+        `${armDisplayName(landing.arm)} ${landing.pullRequest?.url ?? ""}`,
+    );
+  const prs = merged.length ? ` — merged: ${merged.join(", ")}` : "";
+  return `Run \`${run.runId}\`: ${run.status}${detail} — \`${run.artifactDir}\`${prs}`;
 }
 
 export type LinkStatus = "created" | "exists" | "skipped-nonlink" | "error";

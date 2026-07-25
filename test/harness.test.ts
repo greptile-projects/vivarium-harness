@@ -42,6 +42,10 @@ async function makeConfig(): Promise<{
     codexHome,
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
+    land: false,
+    reviewTimeoutMs: 1_000,
+    reviewPollMs: 10,
+    reviewRounds: 2,
   };
   const artifacts = await RunArtifacts.create(config, "original prompt");
   return { config, artifacts };

@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { armDisplayName } from "../../arms.js";
-import type { Line } from "../model.js";
+import type { Line, PullRequestEntry } from "../model.js";
 import type { ArmState } from "../store.js";
 import {
   SPINNER,
@@ -145,15 +145,62 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// What an arm has actually landed, one row per pull request. The URL is
+// printed whole and the title is what gets cut: these rows exist to be opened,
+// and a truncated link is not a link. Merged pull requests are the arm's real
+// output — the tab used to show three hours of reasoning and no sign of what
+// came out of it.
+export function PullRequests({
+  prs,
+  width,
+  rows,
+}: {
+  prs: PullRequestEntry[];
+  width: number;
+  rows: number;
+}) {
+  const visible = prs.slice(-rows);
+  // Pad the numbers so the URLs line up in a column — #9 and #12 side by side
+  // otherwise leave the links ragged.
+  const digits = Math.max(
+    ...visible.map((pr) => String(pr.number).length),
+  );
+  return (
+    <Box flexDirection="column" paddingLeft={2}>
+      {visible.map((pr) => {
+        const merged = pr.status === "merged";
+        const detail = pr.rounds
+          ? `${pr.answered}/${pr.rounds} answered · ${pr.comments} comments`
+          : pr.comments
+            ? `${pr.comments} comments`
+            : "";
+        const head = `${merged ? "✓" : "✗"} #${String(pr.number).padEnd(digits)}  `;
+        const room = Math.max(0, width - head.length - pr.url.length - 5);
+        return (
+          <Box key={pr.url}>
+            <Text color={merged ? "green" : "red"}>{head}</Text>
+            <Text>{pr.url}</Text>
+            {detail && room > 12 ? (
+              <Text dimColor>{`   ${truncate(detail, room)}`}</Text>
+            ) : null}
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
 // One arm, in full: the numbers it is burning, everything it has done so far,
-// and its answer or error verbatim.
+// what it landed, and its answer or error verbatim.
 export function ArmDetail({
   state,
+  prs = [],
   frame,
   width,
   height,
 }: {
   state: ArmState;
+  prs?: PullRequestEntry[];
   frame: number;
   width: number;
   height: number;
@@ -170,6 +217,14 @@ export function ArmDetail({
   const answerText = state.error ?? state.answer;
   const answerWidth = Math.max(20, width - 2);
   let rowsLeft = Math.max(0, height - 4);
+
+  // Pull requests are budgeted before the answer: they are the durable output
+  // of the arm, and there are never many of them.
+  const pullRequests =
+    prs.length > 0 && rowsLeft >= 3
+      ? prs.slice(-Math.min(prs.length, Math.max(1, Math.floor((rowsLeft - 2) / 2)), 6))
+      : [];
+  if (pullRequests.length) rowsLeft -= 2 + pullRequests.length;
 
   const answer =
     answerText && rowsLeft >= 3
@@ -216,6 +271,24 @@ export function ArmDetail({
       <Field label="thread">
         <Text dimColor>{state.threadId ?? "—"}</Text>
       </Field>
+
+      {pullRequests.length > 0 ? (
+        <>
+          <Box marginTop={1}>
+            <Text dimColor>
+              pull requests merged
+              {prs.length > pullRequests.length
+                ? ` (last ${pullRequests.length} of ${prs.length})`
+                : ""}
+            </Text>
+          </Box>
+          <PullRequests
+            prs={pullRequests}
+            width={Math.max(20, width - 2)}
+            rows={pullRequests.length}
+          />
+        </>
+      ) : null}
 
       {trail.length > 0 ? (
         <>
