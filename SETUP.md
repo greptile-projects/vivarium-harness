@@ -136,8 +136,12 @@ To re-verify or run manually: **Actions → mirror-sync → Run workflow**
 - **`[codex] ` title marker**: every mirror PR title starts with it — that is
   how Greptile recognizes the PR as agent-authored. It goes on outermost (so a
   force-push PR reads `[codex] [force-push] …`) and is not re-applied if the
-  source title already carries it. Override with `CODEX_TITLE_PREFIX` only if
-  the marker Greptile keys off ever changes.
+  source title already carries it — which is now the normal case, since the
+  worker prompt asks both arms for the marker and `landArm` restores it when an
+  arm forgets. The harness ships the same constant as `CODEX_TITLE_PREFIX` in
+  `src/github.ts`; if the marker Greptile keys off ever changes, change it in
+  both places (and in the worker prompt) or the two halves of the experiment
+  stop matching. Override here with the `CODEX_TITLE_PREFIX` env var.
 - **Force-push**: if `LAST_SYNCED_SHA` is no longer an ancestor of Komodo `main`,
   one coarse `[force-push]`-prefixed PR to current main, then normal resume.
 - **History-only rewrite** (identical tree): no PR, state advances.

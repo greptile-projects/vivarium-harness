@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   GIT_TOKEN_ENV,
   armGitHub,
+  codexTitle,
   pullRequestNumber,
   pullRequestUrl,
   slugFromRemote,
@@ -312,5 +313,19 @@ describe("pure helpers", () => {
   test("pullRequestNumber reads the number back off a URL", () => {
     expect(pullRequestNumber("https://github.com/org/repo/pull/12")).toBe(12);
     expect(pullRequestNumber("https://github.com/org/repo")).toBeUndefined();
+  });
+
+  // The marker the review tooling keys off. Idempotent because the worker
+  // prompt already asks the arm for it — the common case is a title that is
+  // already correct, and `[codex] [codex] …` would be a worse outcome than the
+  // missing marker this exists to fix.
+  test("codexTitle applies the marker exactly once", () => {
+    expect(codexTitle("Create and open repositories")).toBe(
+      "[codex] Create and open repositories",
+    );
+    expect(codexTitle("[codex] Create and open repositories")).toBe(
+      "[codex] Create and open repositories",
+    );
+    expect(codexTitle("")).toBe("[codex] ");
   });
 });

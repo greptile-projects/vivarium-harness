@@ -56,6 +56,26 @@ export interface PullRequestRef {
   checks?: string;
 }
 
+// The marker that tells the review tooling a pull request is agent-authored.
+// Without it on the title, the reviewed arm's pull request is treated as a
+// human's and is not reviewed — which would leave the experiment's one variable
+// unwired for that rung, silently and without failing anything.
+//
+// It is applied in three places, and they have to agree: the worker prompt asks
+// the arm for it (the only path that gets it there *before* the review fires),
+// `landArm` retitles as a backstop, and `scripts/mirror_sync.sh` puts the same
+// marker on every mirror PR it writes for the unreviewed arm. Both arms get it,
+// so the two pull requests differ in what reviews them and in nothing else.
+export const CODEX_TITLE_PREFIX = "[codex] ";
+
+// Idempotent, like the mirror's: an arm that followed the prompt must not end up
+// with `[codex] [codex] …`.
+export function codexTitle(title: string): string {
+  return title.startsWith(CODEX_TITLE_PREFIX)
+    ? title
+    : `${CODEX_TITLE_PREFIX}${title}`;
+}
+
 // One entry in a pull request's conversation: a review body, an inline review
 // comment, or an issue comment. The harness records every one of them — the
 // arm's replies as much as the reviewer's findings, because "did it actually
@@ -103,6 +123,11 @@ export interface ArmGitHub {
   // `branch` is the fallback path: with it, a refusing API can be routed around
   // via `git ls-remote` rather than costing the sha outright.
   headSha(pullRequest: number, branch?: string): Promise<string | undefined>;
+  // Rewrite a pull request's title. Only used to put `CODEX_TITLE_PREFIX` back
+  // on when the arm left it off; returns false rather than throwing, because a
+  // title that cannot be fixed is worth a note in the record and not a dead
+  // rung.
+  retitlePullRequest(pullRequest: number, title: string): Promise<boolean>;
   merge(pullRequest: number): Promise<MergeOutcome>;
 }
 
@@ -431,6 +456,17 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       return notes.sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt),
       );
+    },
+
+    async retitlePullRequest(pullRequest, title) {
+      const result = await gh([
+        "pr",
+        "edit",
+        String(pullRequest),
+        "--title",
+        title,
+      ]);
+      return result.code === 0;
     },
 
     async merge(pullRequest) {

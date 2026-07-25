@@ -36,7 +36,10 @@ const config: HarnessConfig = {
 const pr: PullRequestRef = {
   number: 7,
   url: "https://github.com/greptile-projects/vivarium-tuatara/pull/7",
-  title: "1.1 Do the thing",
+  // Already carrying the marker, which is the ordinary case: the worker prompt
+  // asks the arm for it. The tests that exercise the retitle backstop override
+  // this with a bare title.
+  title: "[codex] 1.1 Do the thing",
   headRefName: "subticket-1-1",
   state: "OPEN",
 };
@@ -63,6 +66,8 @@ function fakeGitHub(options: {
   // Successive branch heads, so a test can model an arm that pushes a fix
   // (the sha moves) or one that only argues (it does not).
   heads?: string[];
+  // `gh pr edit` refusing the retitle — a note in the record, never a failure.
+  retitleFails?: boolean;
 }): ArmGitHub & { calls: string[] } {
   const conversations = options.conversations ?? [[]];
   const heads = options.heads ?? [];
@@ -96,6 +101,10 @@ function fakeGitHub(options: {
       const current = conversations[Math.min(index, conversations.length - 1)]!;
       index += 1;
       return current;
+    },
+    async retitlePullRequest(pullRequest, title) {
+      calls.push(`retitle:${pullRequest}:${title}`);
+      return options.retitleFails !== true;
     },
     async merge() {
       calls.push("merge");
@@ -175,6 +184,82 @@ describe("landArm", () => {
     expect(prompts).toEqual([]);
     expect(record.reviewRounds).toEqual([]);
     expect(landingError(record)).toBeUndefined();
+  });
+
+  // The arm opens its own pull request, so the marker its reviewer keys off is
+  // only ever *asked* for in the worker prompt. This is the backstop for the
+  // worker that skipped it — and it runs before the review wait, not after.
+  it("retitles a pull request that is missing the [codex] marker", async () => {
+    const github = fakeGitHub({
+      pullRequest: { ...pr, title: "1.1 Do the thing" },
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(github.calls).toContain("retitle:7:[codex] 1.1 Do the thing");
+    // Before the review wait, so a late marker still costs a re-trigger and
+    // not the whole round.
+    expect(github.calls.indexOf("retitle:7:[codex] 1.1 Do the thing")).
+      toBeLessThan(github.calls.indexOf("conversation"));
+    expect(record.pullRequest?.title).toBe("[codex] 1.1 Do the thing");
+    expect(record.notes.join("\n")).toContain("retitled #7");
+  });
+
+  // Both arms, not just the reviewed one: the mirror puts the same marker on
+  // the unreviewed arm's pull requests, and two titles that differ would be one
+  // more difference than the experiment intends.
+  it("retitles the unreviewed arm's pull request too", async () => {
+    const github = fakeGitHub({
+      pullRequest: { ...pr, title: "1.1 Do the thing" },
+    });
+    await landArm(
+      control,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(github.calls).toContain("retitle:7:[codex] 1.1 Do the thing");
+  });
+
+  it("leaves a title that already carries the marker alone", async () => {
+    const github = fakeGitHub({
+      pullRequest: { ...pr, title: "[codex] 1.1 Do the thing" },
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(github.calls.some((call) => call.startsWith("retitle:"))).toBe(false);
+    expect(record.pullRequest?.title).toBe("[codex] 1.1 Do the thing");
+  });
+
+  // A title that cannot be fixed is worth a note, never a dead rung: the work
+  // is real and mergeable, and the note is what stops a later read from scoring
+  // the unreviewed pull request as "the reviewer had nothing to say".
+  it("records a failed retitle and still merges", async () => {
+    const github = fakeGitHub({
+      pullRequest: { ...pr, title: "1.1 Do the thing" },
+      retitleFails: true,
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(landingError(record)).toBeUndefined();
+    expect(record.pullRequest?.title).toBe("1.1 Do the thing");
+    expect(record.notes.join("\n")).toContain("could not retitle #7");
   });
 
   it("sends the reviewed arm back to answer, without handing it the comments", async () => {

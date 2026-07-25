@@ -79,6 +79,9 @@ function fakeGitHub(
     async headSha() {
       return `head-${arm.name}`;
     },
+    async retitlePullRequest() {
+      return true;
+    },
     async conversation(): Promise<ReviewNote[]> {
       if (!options.withReview) return [];
       return [

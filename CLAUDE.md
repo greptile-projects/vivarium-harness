@@ -200,7 +200,18 @@ with the live view tapping the same event stream.
   worker instruction, and it asks for a branch, a pushed commit, a pull request
   opened with `gh`, and a closing `PR: <url>` line. Both arms get the
   *identical* worker prompt; keep it that way — divergence there would confound
-  the experiment. The pull request body must **open with the ticket verbatim**
+  the experiment. The pull request **title** must begin with **`[codex] `** —
+  the marker Greptile keys off to treat a pull request as agent-authored, so
+  without it Tuatara's pull request is read as a human's and simply is not
+  reviewed, leaving the experiment's one variable unwired for that rung without
+  failing anything. It is asked for *here* because only the arm can title a
+  pull request at the moment it opens one, which is when the review fires; the
+  marker is a contract shared by three places that must agree — this prompt,
+  `CODEX_TITLE_PREFIX`/`codexTitle` in `github.ts` (the `landArm` backstop), and
+  `mirror_sync.sh`, which applies the same marker to Komodo's mirror PRs. The
+  prompt does **not** say what reads the marker: both arms get this text
+  verbatim, and naming the reviewer would tell an arm which one it is. The pull
+  request body must **open with the ticket verbatim**
   under an `## Original Ticket` heading: the reviewer opening it has no other
   way to see what was asked for. `mirror_sync.sh` carries the source PR's
   **whole description** into the mirror PR for the same reason — Greptile
@@ -224,7 +235,12 @@ with the live view tapping the same event stream.
   onto origin's default branch — untracked files survive, so `node_modules` and
   the mounted ladder are not collateral), `findPullRequest` (by the URL the arm
   reported, falling back to its branch), `conversation` (reviews + issue
-  comments + inline review comments, merged chronologically), and `merge`. A
+  comments + inline review comments, merged chronologically), `merge`, and
+  `retitlePullRequest` (the `[codex] ` backstop — it returns false instead of
+  throwing, because a title that cannot be fixed is worth a note, not a dead
+  rung). `CODEX_TITLE_PREFIX` and the pure, idempotent `codexTitle` live here
+  too, as the one definition the prompt and `land.ts` are both written against.
+  A
   token, when present, reaches git through a one-shot credential helper so it
   never lands in a remote URL. The whole interface is injected in tests — the
   suite touches neither git nor `gh`.
@@ -232,8 +248,15 @@ with the live view tapping the same event stream.
 - **`src/land.ts`** — what happens to an arm's work *after* its session says it
   is done, and the piece that makes this an experiment rather than two agents
   writing into the void. `prepareArm` puts the checkout back on the shared
-  baseline before a subticket starts; `landArm` finds the pull request, runs the
-  review rounds, and merges. Both arms take the identical path: the reviewed
+  baseline before a subticket starts; `landArm` finds the pull request, puts the
+  `[codex] ` marker back on its title if the arm left it off, runs the review
+  rounds, and merges. The retitle happens **before** the review wait and on
+  **both** arms — before, so a missed marker costs a late review rather than
+  none; both, because the mirror marks Komodo's PRs anyway and two titles that
+  differed would be one more difference than the experiment intends. It is a
+  backstop, not the primary path: the arm opens its own pull request, so only
+  the worker prompt can get the marker there at open time.
+  Both arms take the identical path: the reviewed
   arm's extra rounds come from `arm.reviewer` being set in config, never from a
   name check here. A round waits for something new from that login, hands the
   arm a `reviewPrompt` on **its own Codex thread**, and repeats up to

@@ -173,6 +173,18 @@ describe("worker fan-out", () => {
     expect(prompt).not.toMatch(/control arm|greptile arm/i);
   });
 
+  // The one path that gets the marker onto a title *before* the review fires:
+  // the arm opens its own pull request. `landArm` can only retitle afterwards.
+  it("asks for the [codex] title marker, without naming what reads it", () => {
+    const prompt = workerPrompt("ENG-123");
+
+    expect(prompt).toContain("[codex] ");
+    expect(prompt).toMatch(/pull request title MUST begin with/);
+    // Both arms get this prompt verbatim, so it cannot mention the reviewer —
+    // that would tell an arm it is the one being reviewed.
+    expect(prompt).not.toMatch(/greptile/i);
+  });
+
   it("varies only cwd between Codex calls", () => {
     const prompt = workerPrompt("ENG-123");
     const control = codexArguments(prompt, "/tmp/control", "workspace-write");

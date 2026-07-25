@@ -6,7 +6,7 @@ import type {
   PullRequestRef,
   ReviewNote,
 } from "./github.js";
-import { pullRequestUrl } from "./github.js";
+import { codexTitle, pullRequestUrl } from "./github.js";
 import type { StreamResult } from "./live/stream.js";
 import { reviewPrompt } from "./prompt.js";
 
@@ -195,7 +195,7 @@ export async function landArm(
 
   const branch = await deps.github.currentBranch();
   const reported = pullRequestUrl(session.output);
-  const pullRequest = await deps.github.findPullRequest({
+  let pullRequest = await deps.github.findPullRequest({
     url: reported,
     branch,
   });
@@ -207,6 +207,32 @@ export async function landArm(
     return done("no-pull-request", { branch });
   }
   note(`pull request #${pullRequest.number} — ${pullRequest.url}`);
+
+  // The arm opens its own pull request, so the marker its reviewer keys off can
+  // only be *asked* for, in the worker prompt. This is what happens when a
+  // worker skipped it: retitle before the review wait begins, so the cost of a
+  // missed marker is a late review rather than none at all. Applied to both
+  // arms — the mirror puts the same marker on the unreviewed arm's PRs, and two
+  // pull requests that differ in their titles differ in one more thing than the
+  // experiment intends.
+  const titled = codexTitle(pullRequest.title);
+  if (titled !== pullRequest.title) {
+    const retitled = await deps.github.retitlePullRequest(
+      pullRequest.number,
+      titled,
+    );
+    if (retitled) {
+      pullRequest = { ...pullRequest, title: titled };
+      note(`retitled #${pullRequest.number} to "${titled}"`);
+    } else {
+      // Recorded rather than raised: the pull request is real and mergeable,
+      // and failing the rung over a title would throw away the work. But a
+      // silent skip here reads later as "the reviewer had nothing to say".
+      note(
+        `could not retitle #${pullRequest.number} to "${titled}" — it may not be reviewed`,
+      );
+    }
+  }
 
   const reviewRounds: ReviewRound[] = [];
   const seen = new Set<string>();
