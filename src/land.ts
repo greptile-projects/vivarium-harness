@@ -250,14 +250,20 @@ export async function landArm(
       // Pinned before the arm touches the branch. If it amends or force-pushes
       // to address a comment, this is the only remaining handle on the code the
       // review was actually written against.
-      const reviewedSha = await deps.github.headSha(pullRequest.number);
+      const reviewedSha = await deps.github.headSha(
+        pullRequest.number,
+        pullRequest.headRefName,
+      );
 
       const answer = await deps.reply(
         reviewPrompt(pullRequest.url, round, config.reviewRounds),
       );
       // And after: the pair is what says whether the arm pushed a fix or only
       // replied. Equal shas mean it argued and changed nothing.
-      const respondedSha = await deps.github.headSha(pullRequest.number);
+      const respondedSha = await deps.github.headSha(
+        pullRequest.number,
+        pullRequest.headRefName,
+      );
 
       // A missing sha is recorded as a missing sha, never left to be inferred.
       // The round still counts — the arm did answer, and failing it over a

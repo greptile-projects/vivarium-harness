@@ -99,7 +99,10 @@ export interface ArmGitHub {
   // marks the inline comments outdated — the one diff that shows what the
   // review actually changed. A sha stays fetchable long after the ref moves, so
   // capturing it is the whole preservation.
-  headSha(pullRequest: number): Promise<string | undefined>;
+  //
+  // `branch` is the fallback path: with it, a refusing API can be routed around
+  // via `git ls-remote` rather than costing the sha outright.
+  headSha(pullRequest: number, branch?: string): Promise<string | undefined>;
   merge(pullRequest: number): Promise<MergeOutcome>;
 }
 
@@ -324,7 +327,13 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // answer cannot be recovered later: the caller wants the sha *before* the
     // arm moves the ref, and a second chance a moment later is still before it.
     // Every other method can be re-run against the same pull request tomorrow.
-    async headSha(pullRequest) {
+    //
+    // And when the API keeps refusing, it falls back to asking the git remote
+    // directly. The same fact is published in two places over two protocols
+    // with two quotas — a REST rate limit or a 5xx on `gh` says nothing about
+    // whether `git ls-remote` will answer — so a single failing endpoint should
+    // not be what loses a sha that cannot be re-read once the arm pushes.
+    async headSha(pullRequest, branch) {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         const view = await gh([
           "pr",
@@ -339,7 +348,18 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           if (typeof sha === "string" && sha.length > 0) return sha;
         }
       }
-      return undefined;
+
+      if (!branch) return undefined;
+      const remoteRef = await git([
+        ...credentialArgs(arm.ghToken),
+        "ls-remote",
+        "origin",
+        `refs/heads/${branch}`,
+      ]);
+      if (remoteRef.code !== 0) return undefined;
+      // "<sha>\trefs/heads/<branch>"
+      const sha = remoteRef.stdout.trim().split(/\s+/)[0];
+      return sha && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : undefined;
     },
 
     // Reviews, issue comments and inline review comments, merged into one

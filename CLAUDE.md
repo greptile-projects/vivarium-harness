@@ -245,7 +245,15 @@ with the live view tapping the same event stream.
   unreachable and GitHub marks the inline comments outdated, which would erase
   the one diff showing what the review changed — and a sha stays fetchable long
   after the ref moves. The pair also says, with no text analysis at all, whether
-  the arm pushed a fix or only argued. `landingError` is the rule that a subticket's
+  the arm pushed a fix or only argued. `headSha` is the one method in
+  `github.ts` that retries, and the only one with a **second source**: when the
+  API keeps refusing it asks the git remote (`git ls-remote`) instead. The same
+  fact is published over two protocols with two quotas, and unlike every other
+  call here this one cannot be re-read tomorrow — the arm will have pushed over
+  it. If both refuse, the round is still recorded, with a note naming the
+  missing side: an absent field otherwise reads identically to a run made
+  before these existed, and an analysis would score the gap as "the arm changed
+  nothing", which is the opposite of unknown. `landingError` is the rule that a subticket's
   deliverable is a *merged pull request*: a session that opened none, or whose
   merge failed, becomes a failed arm however cheerfully it reported itself —
   which halts Greg and leaves the box unchecked.
