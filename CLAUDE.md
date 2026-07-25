@@ -103,8 +103,8 @@ bun run build                  # emit dist/ via tsconfig.build.json
 
 ```bash
 docker build -t vivarium-arm .   # build the arm image once
-scripts/arm-run.sh control       # start the control arm's container from .env
-scripts/arm-run.sh greptile      # same, for the greptile arm
+scripts/arm-run.sh komodo        # start Komodo (control) from .env
+scripts/arm-run.sh tuatara       # same, for Tuatara (greptile)
 scripts/mirror_sync.sh           # replay Komodo's main-states into the review mirror
 scripts/mirror_sync_test.sh      # offline tests for mirror_sync.sh
 scripts/resume-clean.sh          # report what an interrupted climb left behind
@@ -141,8 +141,8 @@ through. See `.env.example` for the annotated list.
 
 ```bash
 docker build -t vivarium-arm .
-scripts/arm-run.sh control    # reads CONTROL_* from .env
-scripts/arm-run.sh greptile   # reads GREPTILE_* from .env
+scripts/arm-run.sh komodo     # reads CONTROL_* from .env
+scripts/arm-run.sh tuatara    # reads GREPTILE_* from .env
 ```
 
 `arm-run.sh` sources `.env` (override with `ENV_FILE`), resolves the arm's
@@ -154,6 +154,27 @@ container idles (`sleep infinity`) so the harness can `docker exec` a fresh
 the harness routes each arm through `docker exec` automatically; leaving them
 unset runs both arms directly on the host with **no isolation** — only
 acceptable for a throwaway smoke test.
+
+Two more things it sets up, both of which the arm only discovers it needs
+halfway through a subticket, after the work is done:
+
+- **A git identity.** It asks GitHub who `<ARM>_GH_TOKEN` belongs to and commits
+  as that account (`<id>+<login>@users.noreply.github.com`), so every line on
+  main is attributed to the arm that wrote it rather than to nobody. With no
+  token or no network it falls back to the arm's display name, which still tells
+  the two apart locally. The image carries a last-resort identity too, because
+  `git commit` will not guess one. It also sets `safe.directory` (the checkout
+  is a bind mount owned by the host user while the container runs as root) and a
+  credential helper that resolves `GH_TOKEN` at push time, so the token never
+  reaches a remote URL or argv.
+- **The ladder.** `linkLadder`'s symlink points at an absolute *host* path and
+  dangles inside the container, so `arm-run.sh` replaces it with a read-only
+  bind mount of the real file — the target has to be pre-created as a plain
+  file, since Docker Desktop cannot make a mount point inside a virtiofs bind
+  mount. `linkLadder` then finds a non-symlink, reports `skipped-nonlink`, and
+  leaves the mount alone. Greg writes the ladder in place rather than through a
+  rename, so the mount keeps showing current text instead of pinning the inode
+  it started on.
 
 The container's `CODEX_HOME` is `/codex`, so Codex writes transcripts to
 `/codex/sessions` *inside* the container. `arm-run.sh` bind-mounts that back to a

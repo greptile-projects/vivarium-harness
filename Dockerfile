@@ -35,10 +35,28 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.6" \
 # Common global JS CLIs seen on the host.
 RUN npm install -g tsx typescript vercel
 
-# Codex CLI (provides `codex mcp-server`). The host installs codex via a
-# separate channel (brew cask, v0.145.0) — match that version here; the npm
-# package may lag. Swap this line for your actual codex distribution.
-RUN npm install -g @openai/codex
+# Codex CLI (provides `codex mcp-server`), pinned to the host's version
+# (brew cask codex-cli 0.145.0). Pinned rather than floating on purpose: a climb
+# runs for weeks, and `latest` would silently change what the arms are made of
+# partway through — an uncontrolled variable in the one place the experiment
+# holds everything else constant. Bump this deliberately, between milestones.
+RUN npm install -g @openai/codex@0.145.0
+
+# Git, ready to commit and push from inside the container. Each line here is a
+# failure the arm would otherwise hit halfway through a subticket, after the
+# work was already done:
+#   - safe.directory: /workspace is a bind mount owned by the host user while
+#     the container runs as root, so git refuses it as "dubious ownership".
+#   - the credential helper resolves GH_TOKEN at push time, so the arm's token
+#     never lands in a remote URL, in argv, or in the reflog.
+#   - an identity, because `git commit` will not guess one. This is only the
+#     fallback; arm-run.sh overrides it per arm so a commit says which arm
+#     wrote it.
+RUN git config --global --add safe.directory /workspace \
+ && git config --global credential."https://github.com".helper '!gh auth git-credential' \
+ && git config --global user.name "vivarium arm" \
+ && git config --global user.email "arm@vivarium.invalid" \
+ && git config --global init.defaultBranch main
 
 # Codex reads auth + config from CODEX_HOME. Mount the host's auth read-only at
 # run time:  -v $HOME/.codex/auth.json:/codex/auth.json:ro

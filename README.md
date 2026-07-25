@@ -68,8 +68,8 @@ nothing goes on the command line. point it at two checkouts of the same commit:
 ```dotenv
 CONTROL_REPO=/absolute/path/to/control-checkout
 GREPTILE_REPO=/absolute/path/to/greptile-checkout
-CONTROL_CONTAINER=vivarium-control     # already set in .env.example
-GREPTILE_CONTAINER=vivarium-greptile
+CONTROL_CONTAINER=vivarium-komodo      # already set in .env.example
+GREPTILE_CONTAINER=vivarium-tuatara
 CONTROL_GH_TOKEN=ghp_...               # this arm's identity when it opens PRs
 GREPTILE_GH_TOKEN=ghp_...
 ```
@@ -79,8 +79,8 @@ only the arm name and reads the rest from `.env`:
 
 ```bash
 docker build -t vivarium-arm .
-scripts/arm-run.sh control
-scripts/arm-run.sh greptile
+scripts/arm-run.sh komodo
+scripts/arm-run.sh tuatara
 ```
 
 each container mounts only its own arm's checkout at `/workspace`, mounts Codex
