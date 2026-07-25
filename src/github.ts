@@ -133,14 +133,28 @@ function parseJson<T>(stdout: string): T | undefined {
   }
 }
 
+// The environment variable the credential helper below reads the token out of.
+// Named for this repo so it cannot collide with something the arm's own
+// tooling sets.
+export const GIT_TOKEN_ENV = "VIVARIUM_GIT_TOKEN";
+
 // A token, when the arm has one, is fed to git through a one-shot credential
 // helper so it never lands in the remote URL (and so never in `git config`,
 // the reflog, or an error message quoting the URL).
+//
+// The helper reads the token from the environment rather than having it
+// interpolated into this string: `-c` arguments are process **argv**, which on
+// a shared host is world-readable through `ps` for as long as the fetch runs.
+// The environment of another user's process is not. So what goes in argv is
+// the *name* `$VIVARIUM_GIT_TOKEN`, expanded by the shell git runs the helper
+// in, and the token itself is never a substring of anything we spawn. The `$$`
+// below is the template literal's escape for a literal `$` — turning it into a
+// JS interpolation is exactly the bug this avoids.
 function credentialArgs(token: string | undefined): string[] {
   if (!token) return [];
   return [
     "-c",
-    `credential.helper=!f() { echo username=x-access-token; echo password=${token}; }; f`,
+    `credential.helper=!f() { echo username=x-access-token; echo "password=$${GIT_TOKEN_ENV}"; }; f`,
   ];
 }
 
@@ -174,7 +188,11 @@ interface GhReviewComment {
 
 export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
   const env = arm.ghToken
-    ? { GH_TOKEN: arm.ghToken, GITHUB_TOKEN: arm.ghToken }
+    ? {
+        GH_TOKEN: arm.ghToken,
+        GITHUB_TOKEN: arm.ghToken,
+        [GIT_TOKEN_ENV]: arm.ghToken,
+      }
     : undefined;
   const git = (args: string[]) => exec("git", args, { cwd: arm.repo, env });
   const gh = (args: string[]) => exec("gh", args, { cwd: arm.repo, env });
@@ -336,6 +354,8 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       const url = await remote();
       const slug = url ? slugFromRemote(url) : undefined;
       if (slug) {
+        // `--paginate` merges array responses into a single array, so this
+        // stays one `JSON.parse` no matter how long the review gets.
         const inline = await gh([
           "api",
           "--paginate",
