@@ -120,11 +120,12 @@ notes, and the raw **log**. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll th
 `q` quits. it runs on the alternate screen and gives your terminal back
 untouched when it's done.
 
-quitting closes the view, not the run — a climb is meant to run for days, and
-`q` is how you stop watching one. if sessions are still working when you quit,
-the CLI says so and names them; they keep going and the feed keeps landing in
-that arm's `progress.log`. if you did mean to stop everything,
-`--abort-on-quit` makes `q` (and ctrl-c) tear the run down and exit 1.
+quitting stops the run — sessions never outlive the view that was watching them,
+because a run continuing invisibly behind a shell that looks idle is the worse
+surprise. if anything is still working, `q` names it and asks (`y` / `n`) before
+tearing it down; `y` stops every session and exits 1, any other key goes back to
+watching. ctrl-c stops the run without asking. with nothing left running there's
+nothing to confirm, so `q` just closes the view.
 
 without a terminal (or with `--no-tui`) the same feed is tee'd line by line.
 either way it lands in `results/live-<ts>/` — one `progress.log` per arm, plus

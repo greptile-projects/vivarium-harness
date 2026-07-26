@@ -139,29 +139,15 @@ describe("run mode", () => {
     expect(parseRunMode(["--json", "--tui"], false).useTui).toBe(true);
   });
 
-  it("leaves the run alive when the view is quit unless asked otherwise", () => {
-    // The default matters: `q` is how you stop watching a climb meant to run
-    // for days, and it must not also kill hours of arm work.
-    expect(parseRunMode([], true).abortOnQuit).toBe(false);
-    expect(parseRunMode(["--abort-on-quit"], true).abortOnQuit).toBe(true);
-  });
-
-  it("rejects --abort-on-quit when there is no view to quit", () => {
-    // The flag arms a key in a view that will not exist, so the run it was
-    // meant to be able to kill would run to completion regardless.
-    expect(() => parseRunMode(["--abort-on-quit", "--no-tui"], true)).toThrow(
-      /no live view/,
-    );
-    expect(() => parseRunMode(["--abort-on-quit", "--json"], true)).toThrow(
-      /no live view/,
-    );
-    expect(() => parseRunMode(["--abort-on-quit"], false)).toThrow(
-      /no live view/,
-    );
-    // Explicitly asking for the view makes it coherent again.
-    expect(
-      parseRunMode(["--abort-on-quit", "--tui"], false).abortOnQuit,
-    ).toBe(true);
+  it("takes no flag for what quitting means", () => {
+    // Quitting the view stops the run, always — the safety is the in-view
+    // confirmation, not an argv opt-in, so there is nothing here to parse and
+    // nothing a caller can forget to pass.
+    expect(parseRunMode([], true)).not.toHaveProperty("abortOnQuit");
+    // A script still passing the old flag is asking for what now always
+    // happens, so it keeps running rather than dying on an argument that has
+    // stopped meaning anything.
+    expect(() => parseRunMode(["--abort-on-quit", "--no-tui"], true)).not.toThrow();
   });
 });
 

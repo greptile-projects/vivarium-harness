@@ -73,11 +73,12 @@ bun start -- --help              # the full option + env reference
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
   tab **per arm** with its context meter, activity trail and answer, Greg's
   **ladder** notes, and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
-  scroll the list tabs, `q` quits — the **view**, not the run: the sessions keep
-  working and the CLI says so, naming what is still running. `--abort-on-quit`
-  makes `q` (and Ctrl-C) tear the run down instead, aborting every live session
-  and exiting 1; it is rejected up front with `--no-tui`/`--json`, where there
-  would be no view to quit. It runs on the alternate screen and gives the
+  scroll the list tabs, `q` quits — the **run**, not just the view: every live
+  session is aborted and the process exits 1. That is not a flag and cannot be
+  turned off; the safety is a **confirmation**, so `q` with sessions still
+  working names them in the footer and waits for `y` (any other key resumes
+  watching), while `q` with everything settled just closes. Ctrl-C skips the
+  question. It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
   writes one `results/live-<ts>/<arm>/progress.log` per arm either way.
 - **`--json`** prints the machine-readable result and implies `--no-tui`.
@@ -278,7 +279,7 @@ with the live view tapping the same event stream.
   container]` as the exec prefix and points Codex's cwd at the in-container
   workspace. `runner` (the arm launcher) and the two event sinks are injected —
   tests pass a fake runner instead of spawning real Codex. An optional
-  `AbortSignal` (from `--abort-on-quit`) is checked **between attempts** as well
+  `AbortSignal` (from quitting the live view) is checked **between attempts** as well
   as handed to the session: aborting only the attempt in flight would hand
   straight back to the retry loop, which would immediately start another one —
   the opposite of stopping. In `stream.ts` that signal joins the *same*
@@ -352,10 +353,15 @@ with the live view tapping the same event stream.
   arm — those live on the model, not the store, because the store is cleared
   between phases and merged pull requests are exactly what should accumulate
   across them). `quit.ts` owns what closing the
-  view means — `quitNotice` is pure, and `onViewClosed` is the shared hook both
-  modes hand to `mountLive`. It decides from the **model**, not the keypress,
-  so the ordinary end-of-run unmount stays silent while an early quit names
-  what is still running. `run.tsx` is the one-ticket run.
+  view means — closing it **stops the run**, and `onViewClosed` (the shared hook
+  both modes hand to `mountLive`) aborts the controller every session runs
+  under. It decides from the **model**, not the keypress, so the ordinary
+  end-of-run unmount stays silent and aborts nothing, while an early quit names
+  what it is stopping. The safety against a mistyped `q` is not a flag but the
+  confirmation `app.tsx` puts up first, and the two pure functions behind it
+  (`needsQuitConfirm`, `confirmQuitPrompt`) live here beside `quitNotice` rather
+  than in the component, so what quitting costs is decided in one testable
+  place. `run.tsx` is the one-ticket run.
   The live view and the durable artifacts come from the **same single run** —
   watching is a display choice, never a second execution path.
 
@@ -508,7 +514,9 @@ the real `LADDER.md`.
 `restoreOnExit` is the pure lifecycle seam, so the regression it pins (the
 terminal coming back when the *view* exits, not when the caller finally awaits)
 is a plain promise-ordering test. `live-quit.test.ts` does the same for what
-quitting means — `quitNotice` is pure, and `onViewClosed` is checked against a
-real `LiveModel` with stdout spied. The matching harness-side guarantee lives
+quitting means — `quitNotice`, `needsQuitConfirm` and `confirmQuitPrompt` are
+pure, and `onViewClosed` is checked against a real `LiveModel` with stdout
+spied: it must abort the controller when something is still running, and stay
+silent when nothing is. The matching harness-side guarantee lives
 in `harness.test.ts`: an aborted arm must record one failed attempt, **not**
 spend its remaining retries.
