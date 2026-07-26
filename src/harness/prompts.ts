@@ -22,6 +22,7 @@
 export const TOOLCHAIN = `Your environment — all of this is installed, on PATH, and needs no setting up:
 
 - **Bun** is the JavaScript/TypeScript runtime and package manager: prefer \`bun\` and \`bunx\` over \`npm\`/\`yarn\`, unless the repository's own instructions say otherwise. Node, pnpm, yarn, \`tsc\` and \`tsx\` are present too.
+- **Go** (\`go\`), for whatever Go the repository holds — \`go vet\` and \`go build\` run here, so run them before you push rather than leaving them to CI.
 - **git** and the **GitHub CLI (\`gh\`)**, already authenticated as your own GitHub account, with a commit identity and a push credential helper configured. Use \`gh\` freely, and never put a token in a URL or on a command line.
 - \`rg\` (ripgrep), \`jq\`, \`sqlite3\`, \`curl\`, \`make\`, \`gcc\`, \`patch\`, \`tree\`, \`openssl\`, \`shellcheck\`, and Python 3.
 - Network access: package installs, \`git push\` and API calls all work.
@@ -157,7 +158,7 @@ ${previousError}
 
 Diagnose the root cause, inspect the current repository state, and continue the original task from where it stopped. Resolve blockers yourself, retry with a different approach when necessary, and use the available tools and repository context. Do not ask for human help or wait for instructions.
 
-Your environment is unchanged and nothing has been taken away: \`bun\`/\`bunx\`, Node, git, an authenticated \`gh\`, \`rg\`, \`jq\`, \`curl\`, \`make\`, \`gcc\`, Python 3 and network access are all still there. If the failure looks like a missing tool, confirm it with \`command -v\` before working around it — and if something really is absent, install it (you are root, with a network) rather than dropping the approach.`;
+Your environment is unchanged and nothing has been taken away: \`bun\`/\`bunx\`, Node, \`go\`, git, an authenticated \`gh\`, \`rg\`, \`jq\`, \`curl\`, \`make\`, \`gcc\`, Python 3 and network access are all still there. If the failure looks like a missing tool, confirm it with \`command -v\` before working around it — and if something really is absent, install it (you are root, with a network) rather than dropping the approach.`;
 }
 
 // The one fixed goal of the experiment. Greg plans every milestone toward this.

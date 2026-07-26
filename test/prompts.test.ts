@@ -53,6 +53,9 @@ describe("TOOLCHAIN", () => {
     // nested container is not there to verify with.
     expect(TOOLCHAIN).toContain("Bun");
     expect(TOOLCHAIN).toContain("bunx");
+    // Both halves of the arms' repo: a Bun/Next front end and a Go API, whose
+    // checks the arm can only run before pushing if it knows `go` is here.
+    expect(TOOLCHAIN).toContain("go vet");
     expect(TOOLCHAIN).toContain("gh");
     expect(TOOLCHAIN).toContain("authenticated");
     expect(TOOLCHAIN).toContain("no browser and no Docker");
