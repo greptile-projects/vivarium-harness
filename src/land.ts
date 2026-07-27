@@ -2,12 +2,13 @@ import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
 import type {
   ArmGitHub,
   Baseline,
+  CommitRef,
   MergeOutcome,
   PullRequestRef,
   ReviewNote,
 } from "./github.js";
 import { pullRequestUrl } from "./github.js";
-import type { StreamResult } from "./live/stream.js";
+import type { StreamResult, TokenUsage } from "./live/stream.js";
 import { reviewPrompt } from "./prompt.js";
 
 // What happens to an arm's work *after* its Codex session says it is done: find
@@ -40,7 +41,14 @@ export interface ReviewRound {
   reviewedSha?: string;
   respondedSha?: string;
   respondedAt?: string;
+  // The instruction the arm was handed this round, and what it said back. The
+  // answer alone is half a record: `reviewPrompt` has changed before and will
+  // again, and a reply reads differently depending on whether the arm was told
+  // this was its last round.
+  prompt?: string;
   response?: string;
+  // What the round cost. Cumulative for the arm's thread — see TokenUsage.
+  usage?: TokenUsage;
   error?: string;
 }
 
@@ -69,6 +77,16 @@ export interface LandingRecord {
   // the close-reading input: the reviewer's findings and the arm's answers,
   // in one chronological list.
   conversation: ReviewNote[];
+  // What the arm actually changed. Captured before the merge, so the record can
+  // show the work without GitHub having to still serve the branch — the diff
+  // lands beside `land.json` as `pull-request.diff` rather than inside it,
+  // because a four-thousand-line patch encoded as a JSON string is not something
+  // anyone can close-read.
+  commits?: CommitRef[];
+  diff?: string;
+  // Where that patch was written. Filled in by `RunArtifacts.recordLanding`,
+  // which is the only thing here that knows about disk.
+  diffFile?: string;
   merge?: MergeOutcome;
   notes: string[];
 }
@@ -255,9 +273,12 @@ export async function landArm(
         pullRequest.headRefName,
       );
 
-      const answer = await deps.reply(
-        reviewPrompt(pullRequest.url, round, config.reviewRounds),
+      const instruction = reviewPrompt(
+        pullRequest.url,
+        round,
+        config.reviewRounds,
       );
+      const answer = await deps.reply(instruction);
       // And after: the pair is what says whether the arm pushed a fix or only
       // replied. Equal shas mean it argued and changed nothing.
       const respondedSha = await deps.github.headSha(
@@ -288,7 +309,9 @@ export async function landArm(
         reviewedSha,
         respondedSha,
         respondedAt: new Date().toISOString(),
+        prompt: instruction,
         response: answer.output,
+        usage: answer.usage,
         error: answer.isError ? answer.output : undefined,
       });
 
@@ -298,6 +321,12 @@ export async function landArm(
       }
     }
   }
+
+  // Before the merge: `--delete-branch` removes the head ref, and the arm may
+  // have force-pushed over its own history already. What the pull request *is*
+  // right now is the thing being recorded.
+  const commits = await deps.github.commits(pullRequest.number);
+  const diff = await deps.github.diff(pullRequest.number);
 
   const merge = await deps.github.merge(pullRequest.number);
   const conversation = await deps.github.conversation(pullRequest.number);
@@ -309,6 +338,8 @@ export async function landArm(
       pullRequest,
       reviewRounds,
       conversation,
+      commits,
+      diff,
       merge,
     });
   }
@@ -319,6 +350,8 @@ export async function landArm(
     pullRequest,
     reviewRounds,
     conversation,
+    commits,
+    diff,
     merge,
   });
 }

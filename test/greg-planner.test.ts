@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import {
+  appendFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessConfig } from "../src/config.js";
@@ -25,6 +33,9 @@ async function scratchLadder(): Promise<string> {
   return ladderPath;
 }
 
+// No resultsDir: these cases are about the planning contract, and without one
+// the planner records nothing (see the artifacts block at the bottom, which
+// supplies one).
 const base = {
   codexHome: "/tmp/codex",
   idleTimeoutMs: 600_000,
@@ -33,6 +44,9 @@ const base = {
   reviewPollMs: 10,
   reviewRounds: 2,
 } as unknown as HarnessConfig;
+
+// Stubbed for the same reason the runner is: the real one shells out to git.
+const provenance = async () => ({ commit: "cafe123", branch: "main", dirty: false });
 
 describe("plannerPrompt", () => {
   it("embeds the North Star, ladder, blindness, and direct-edit contract", () => {
@@ -174,5 +188,195 @@ describe("planNextMilestone", () => {
     await planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner);
 
     expect(await readLadder(ladderPath)).toContain("## Milestone 2: Second");
+  });
+});
+
+// The planning session's own record. Until this existed Greg was the only agent
+// in the experiment whose sessions wrote nothing at all: the ladder text was the
+// whole artifact, so the reasoning behind a rung was gone the moment the session
+// ended — and the rollout in $CODEX_HOME/sessions was unfindable afterwards
+// because nothing recorded the thread id.
+describe("planNextMilestone artifacts", () => {
+  async function scratchRun(): Promise<{
+    ladderPath: string;
+    config: HarnessConfig;
+    resultsDir: string;
+    codexHome: string;
+  }> {
+    const root = await mkdtemp(join(tmpdir(), "greg-plan-artifacts-"));
+    temporaryDirectories.push(root);
+    const ladderPath = join(root, "LADDER.md");
+    await initLadder(ladderPath, "goal");
+    const resultsDir = join(root, "results");
+    const codexHome = join(root, "codex");
+    return {
+      ladderPath,
+      resultsDir,
+      codexHome,
+      config: { ...base, resultsDir, codexHome } as HarnessConfig,
+    };
+  }
+
+  async function planDirectory(resultsDir: string): Promise<string> {
+    const entries = await readdir(resultsDir);
+    const plans = entries.filter((entry) => entry.startsWith("plan-"));
+    expect(plans).toHaveLength(1);
+    return join(resultsDir, plans[0]);
+  }
+
+  it("records the prompt, the ladder either side, the transcript and the cost", async () => {
+    const { ladderPath, config, resultsDir, codexHome } = await scratchRun();
+    const sessions = join(codexHome, "sessions", "2026", "07", "26");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, "rollout-2026-07-26-greg-thread.jsonl"),
+      '{"greg":"reasoning"}\n',
+    );
+
+    const runner: AttemptRunner = async () => {
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 1: Repo hosting\n\n### [ ] 1.1 Skeleton\n\nScaffold it.\n",
+        "utf8",
+      );
+      return {
+        output: "appended",
+        isError: false,
+        timedOut: false,
+        threadId: "greg-thread",
+        usage: { totalTokens: 8_400, contextWindow: 400_000 },
+        raw: { structuredContent: { threadId: "greg-thread" } },
+      };
+    };
+
+    await planNextMilestone(
+      config,
+      ladderPath,
+      await readLadder(ladderPath),
+      1,
+      runner,
+      provenance,
+    );
+
+    const directory = await planDirectory(resultsDir);
+    const attempt = join(directory, "attempt-01");
+
+    // The exact instruction, and the ladder exactly as Greg was shown it.
+    expect(await readFile(join(attempt, "prompt.txt"), "utf8")).toContain(
+      "You are Greg Tile",
+    );
+    const before = await readFile(join(attempt, "ladder-before.md"), "utf8");
+    expect(before).toContain("## North Star");
+    expect(before).not.toContain("Milestone 1");
+    // And what he did to it.
+    expect(await readFile(join(directory, "ladder-after.md"), "utf8")).toContain(
+      "## Milestone 1: Repo hosting",
+    );
+    // The rollout, recovered by thread id the same way an arm's is.
+    expect(await readFile(join(attempt, "transcript.jsonl"), "utf8")).toBe(
+      '{"greg":"reasoning"}\n',
+    );
+
+    const manifest = JSON.parse(
+      await readFile(join(directory, "manifest.json"), "utf8"),
+    );
+    expect(manifest.status).toBe("planned");
+    expect(manifest.milestone).toBe(1);
+    expect(manifest.harness.commit).toBe("cafe123");
+    expect(manifest.attempts).toHaveLength(1);
+    expect(manifest.attempts[0].threadId).toBe("greg-thread");
+    expect(manifest.attempts[0].transcriptStatus).toBe("copied");
+    expect(manifest.tokens).toBe(8_400);
+  });
+
+  it("records a failed plan too, including what the ladder was left as", async () => {
+    const { ladderPath, config, resultsDir } = await scratchRun();
+    const runner: AttemptRunner = async () => {
+      // A half-append: the session errors after touching the file, which is
+      // exactly the state the next attempt has to be read against.
+      await appendFile(ladderPath, "\n## Milestone 1: Half\n", "utf8");
+      return { output: "boom", isError: true, timedOut: false };
+    };
+
+    await expect(
+      planNextMilestone(
+        config,
+        ladderPath,
+        await readLadder(ladderPath),
+        1,
+        runner,
+        provenance,
+      ),
+    ).rejects.toThrow(/after 2 attempt\(s\)/);
+
+    const directory = await planDirectory(resultsDir);
+    const manifest = JSON.parse(
+      await readFile(join(directory, "manifest.json"), "utf8"),
+    );
+    expect(manifest.status).toBe("failed");
+    expect(manifest.error).toContain("Greg failed to plan milestone 1");
+    expect(manifest.attempts).toHaveLength(2);
+    expect(manifest.attempts.every((a: { status: string }) => a.status === "failed")).toBe(true);
+    expect(manifest.attempts[0].transcriptStatus).toBe(
+      "unavailable-no-thread-id",
+    );
+    expect(await readFile(join(directory, "ladder-after.md"), "utf8")).toContain(
+      "## Milestone 1: Half",
+    );
+    expect(
+      await readFile(join(directory, "attempt-02", "error.txt"), "utf8"),
+    ).toContain("boom");
+    // Attempt 2 was shown what attempt 1 left behind — the difference between
+    // the two ladder-before files is the only place that is visible.
+    expect(
+      await readFile(join(directory, "attempt-02", "ladder-before.md"), "utf8"),
+    ).toContain("## Milestone 1: Half");
+  });
+
+  it("keeps the session's spend when the session throws", async () => {
+    const { ladderPath, config, resultsDir } = await scratchRun();
+    const { attachSessionUsage } = await import("../src/live/stream.js");
+    const runner: AttemptRunner = async () => {
+      throw attachSessionUsage(
+        new Error("watchdog aborted greg: no activity for 600000ms"),
+        { totalTokens: 33_000 },
+      );
+    };
+
+    await expect(
+      planNextMilestone(
+        config,
+        ladderPath,
+        await readLadder(ladderPath),
+        1,
+        runner,
+        provenance,
+      ),
+    ).rejects.toThrow(/watchdog aborted greg/);
+
+    const manifest = JSON.parse(
+      await readFile(
+        join(await planDirectory(resultsDir), "manifest.json"),
+        "utf8",
+      ),
+    );
+    // Two fresh sessions, so these add: statelessness means every planning
+    // attempt is its own thread.
+    expect(manifest.tokens).toBe(66_000);
+    expect(manifest.attempts[0].usage.totalTokens).toBe(33_000);
+  });
+
+  it("plans without recording when no results dir is configured", async () => {
+    const ladderPath = await scratchLadder();
+    const runner: AttemptRunner = async () => {
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 1: Repo hosting\n\n### [ ] 1.1 Skeleton\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+    await planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner);
+    expect(await readLadder(ladderPath)).toContain("## Milestone 1");
   });
 });

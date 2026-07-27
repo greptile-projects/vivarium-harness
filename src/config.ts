@@ -68,6 +68,19 @@ export interface ArmConfig {
   reviewer?: string;
 }
 
+// Which rung of the ladder a run is building. The ticket body alone does not
+// say: `ticket.txt` is prose Greg wrote, and matching it back to a heading in
+// LADDER.md by string comparison is the only link a reader had. Carried on the
+// config so it lands in the run's own record, which is where someone reading
+// `results/<run-id>/` starts.
+export interface SubticketRef {
+  number: string;
+  milestone: number;
+  title: string;
+  // The Linear id stamped on the ladder heading, when one was filed.
+  ticket?: string;
+}
+
 export interface HarnessConfig {
   ticket: string;
   arms: [ArmConfig, ArmConfig];
@@ -76,6 +89,19 @@ export interface HarnessConfig {
   codexHome: string;
   maxAttempts: number;
   idleTimeoutMs: number;
+  // The rung this run is building, when it came from the ladder. Absent for an
+  // ad-hoc `--ticket` run, which belongs to no rung.
+  subticket?: SubticketRef;
+  // Where the live view is teeing this run's per-arm feeds
+  // (`results/live-<ts>/`). Recorded in the manifest so a run's artifacts and
+  // its progress logs can be paired without comparing timestamps by eye.
+  logDir?: string;
+  // The ladder this run was launched against. Snapshotted into the run
+  // directory, because the ladder is mounted into both checkouts — so the whole
+  // file is part of what the arms could read while working — and it is rewritten
+  // in place and gitignored, so by the time anyone reads the run back it says
+  // something else.
+  ladderPath?: string;
   // Sync each checkout to origin's default branch before the arms start, and
   // merge what they open when they finish. False only for the demo, whose
   // throwaway temp dirs are not checkouts of anything.

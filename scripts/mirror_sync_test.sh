@@ -51,8 +51,19 @@ case "$1" in
     case "$endpoint" in
       *"/actions/variables"*)
         if [[ "$is_write" == 1 ]]; then printf '%s' "$val" > "$D/state"; else cat "$D/state" 2>/dev/null; fi ;;
-      *"/reviews") printf '%s' "${STUB_REVIEW:-1}" ;;      # Greptile review present
-      *"/comments") printf '0' ;;
+      # Asked with -q it is has_greptile_review counting; asked without, it is
+      # capture_review wanting the raw collection, so answer in kind.
+      *"/reviews")
+        if [[ -n "$jq_expr" ]]; then printf '%s' "${STUB_REVIEW:-1}"
+        elif [[ -n "${STUB_REVIEW_FETCH_FAIL:-}" ]]; then exit 22
+        elif [[ "${STUB_REVIEW:-1}" == 0 ]]; then printf '[]'
+        else printf '[{"id":901,"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","submitted_at":"2026-01-01T00:00:00Z","body":"stub greptile review body"}]'
+        fi ;;
+      *"/comments")
+        if [[ -n "$jq_expr" ]]; then printf '0'
+        elif [[ "$endpoint" == *"/pulls/"* ]]; then printf '[{"id":902,"user":{"login":"greptile-apps[bot]"},"path":"file.txt","line":1,"diff_hunk":"@@ -1 +1 @@","body":"stub inline finding"}]'
+        else printf '[]'
+        fi ;;
       *"/commits/"*"/pulls") printf '%s' "${STUB_SRC_PR:-}" ;;   # source PR, if the scenario sets one
       *"/commits/"*) : ;;                                  # no author login
       *"/pulls/"*)
@@ -116,7 +127,9 @@ run_sync() {
   STUB_DIR="$STUB_DIR" MIRROR_BARE="$MIRROR_BARE" STUB_REVIEW="${STUB_REVIEW:-1}" \
   STUB_SRC_PR="${STUB_SRC_PR:-}" STUB_SRC_TITLE="${STUB_SRC_TITLE:-}" \
   STUB_SRC_BODY="${STUB_SRC_BODY:-}" STUB_SRC_BODY_FAIL="${STUB_SRC_BODY_FAIL:-}" \
+  STUB_REVIEW_FETCH_FAIL="${STUB_REVIEW_FETCH_FAIL:-}" \
   API_RETRY_SLEEP="${API_RETRY_SLEEP:-0}" \
+  MIRROR_REVIEW_DIR="$SC/reviews" \
   MIRROR_PUSH_TOKEN=dummy HARNESS_ORG_TOKEN=dummy \
   SOURCE_GIT_URL="file://$SRC_BARE" MIRROR_GIT_URL="file://$MIRROR_BARE" \
   WORKDIR="$(mktemp -d "$SC/wd.XXXX")" \
@@ -295,6 +308,65 @@ check "reason logged" \
 check "retried before giving up" \
   "$(grep -c 'could not read description.*(attempt ' "$SC/out.log")" "3"
 unset STUB_SRC_PR STUB_SRC_TITLE STUB_SRC_BODY_FAIL
+
+# =========================================================================
+# The review of the mirror IS the control arm's counterfactual — what Greptile
+# says about code written by the arm that cannot hear it. The pipeline used to
+# check only that a review *existed* and then merge past it, so the findings
+# themselves lived on the mirror PR and in an expiring Actions log, and in no
+# artifact of the experiment.
+echo "== Scenario 11: the mirror review is captured before the merge =="
+new_scenario s11
+export STUB_SRC_PR=45
+src_commit v2 "1.3 Reviewed commit"
+HEAD_SHA="$(git -C "$WORK" rev-parse HEAD)"
+run_sync
+short="$(git -C "$WORK" rev-parse --short=7 "$HEAD_SHA")"
+cap="$SC/reviews/${short}-mirror-pr-1"
+check "capture directory written" "$([[ -d "$cap" ]] && echo yes || echo no)" "yes"
+check "review body kept whole" \
+  "$(grep -c 'stub greptile review body' "$cap/reviews.json")" "1"
+# Inline comments carry path/line/diff_hunk — the code each finding was written
+# against, which a body alone does not say.
+check "inline findings kept with their anchor" \
+  "$(grep -c 'diff_hunk' "$cap/review-comments.json")" "1"
+check "joined to the source PR" \
+  "$(grep -c '"pullRequest": 45' "$cap/meta.json")" "1"
+check "joined to the reviewed commit" "$(grep -c "$HEAD_SHA" "$cap/meta.json")" "1"
+check "not marked timed out" "$(grep -c '"timedOut": false' "$cap/meta.json")" "1"
+check "captured before the merge" \
+  "$(awk '/captured review into/{c=1} /: merged/{if(c)print "yes"; exit}' "$SC/out.log")" "yes"
+unset STUB_SRC_PR
+
+# A review that never arrives is a real observation about the pipeline, so it is
+# recorded as an empty capture rather than as a missing file — those read the
+# same to anyone counting rungs later.
+echo "== Scenario 12: a timed-out review is captured as an empty record =="
+new_scenario s12
+src_commit v2 "unreviewed commit"
+HEAD_SHA="$(git -C "$WORK" rev-parse HEAD)"
+STUB_REVIEW=0 POLL_TIMEOUT=0 run_sync
+short="$(git -C "$WORK" rev-parse --short=7 "$HEAD_SHA")"
+cap="$SC/reviews/${short}-mirror-pr-1"
+check "capture still written" "$([[ -f "$cap/meta.json" ]] && echo yes || echo no)" "yes"
+check "marked timed out" "$(grep -c '"timedOut": true' "$cap/meta.json")" "1"
+check "no reviews recorded" "$(cat "$cap/reviews.json")" "[]"
+
+# Capturing runs before the merge precisely so this can fail closed: merging past
+# a review we could not read loses it for good, while dying costs a rerun that
+# resumes at the same open PR (scenario 5's path).
+echo "== Scenario 13: a review that cannot be read stops the merge =="
+new_scenario s13
+src_commit v2 "unreadable review"
+before_state="$(state)"
+STUB_REVIEW_FETCH_FAIL=1 run_sync; rc=$?
+check "run failed loudly" "$([[ "$rc" -ne 0 ]] && echo yes || echo no)" "yes"
+check "state not advanced" "$(state)" "$before_state"
+check "mirror main untouched" "$(mirror_main)" "$ROOT_SHA"
+check "reason logged" \
+  "$(grep -c 'refusing to merge past a review it cannot keep' "$SC/out.log")" "1"
+check "retried before giving up" \
+  "$(grep -c 'could not read reviews on mirror.*(attempt ' "$SC/out.log")" "3"
 
 # =========================================================================
 echo

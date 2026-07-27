@@ -104,6 +104,32 @@ Already set by bootstrap; listed here for reference:
 gh variable set LAST_SYNCED_SHA -R greptile-projects/vivarium-harness -b <sha>
 ```
 
+## Where the captured reviews go
+
+Before merging each mirror PR, the sync loop writes that PR's whole conversation
+to `$MIRROR_REVIEW_DIR` (default `results/mirror`, set explicitly in the
+workflow): `reviews.json`, `issue-comments.json`, `review-comments.json` as the
+raw API returned them, plus a `meta.json` joining the mirror PR to its source PR
+and the Komodo commit under review. Inline comments arrive with `path`, `line`
+and `diff_hunk`, so each finding keeps the code it was written against.
+
+This is the **control arm's counterfactual** — what Greptile says about code
+written by the arm that cannot hear it — and it exists nowhere else: Komodo's own
+pull requests carry no review. The reads **fail closed**: a review the API will
+not hand over kills the run before the merge, leaving state unadvanced so a
+rerun resumes at the same open PR. Merging past a review we could not keep would
+lose it for good; dying costs a rerun.
+
+The runner's disk is discarded, so the workflow uploads the directory as a build
+artifact (`mirror-reviews-<run>-<attempt>`, 90-day retention — GitHub's ceiling).
+That is a stopgap: **a permanent home is still owed** before anything is
+published — object storage, or a commit onto a data branch. Retrieve a run's
+capture with:
+
+```sh
+gh run download <run-id> -R greptile-projects/vivarium-harness -n mirror-reviews-<run-id>-1
+```
+
 ## Greptile bot login parameter
 
 The sync loop waits for a PR review **or** comment authored by

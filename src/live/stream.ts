@@ -1,5 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createWriteStream } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import { GIT_TOKEN_ENV } from "../github.js";
 
 // A `codex/event` notification carries the same event stream Codex writes to
 // its rollout transcript, but delivered live over the MCP connection while the
@@ -37,11 +41,42 @@ export interface StreamParams {
   // When set, continue an existing Codex thread (codex-reply) instead of
   // starting a fresh session.
   threadId?: string;
+  // Where to tee the codex subprocess's stderr. Unset leaves the SDK's default
+  // (`inherit`), which writes it to the harness's own terminal — under the
+  // fullscreen view that means painting it onto the alternate screen, which is
+  // discarded on exit. So the one output that explains *why* a session died
+  // (a container that is not running, a bad mount, an auth failure, a codex
+  // panic) was the one output nothing kept: `error.txt` gets the MCP-level
+  // message and nothing else.
+  stderrPath?: string;
+  // This arm's own GitHub token, passed through as GH_TOKEN. See cleanEnv: the
+  // harness's copies of *both* arms' tokens are stripped, so this is the only
+  // credential a session sees.
+  ghToken?: string;
   // Tear this session down from outside — the human quitting the live view
   // under --abort-on-quit. It joins the same abort path the watchdog uses, so
   // the MCP client is closed and its codex subprocess dies with it rather than
   // being orphaned by a bare process exit.
   signal?: AbortSignal;
+}
+
+// What one session cost. Codex reports it on `token_count` events, which until
+// now only ever reached the live view's context meter and the tee — so "how much
+// did each arm spend" existed as a number on a screen and a line in a
+// gitignored log, and nowhere in the durable record beside the wall-clock
+// duration that *was* persisted.
+//
+// These are the totals Codex reports for the **thread**, not for one turn, so
+// they are cumulative across the attempts and review rounds that share a
+// thread: take the last value per thread, never the sum (see `totalTokens` in
+// artifacts.ts).
+export interface TokenUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+  contextWindow?: number;
 }
 
 export interface StreamResult {
@@ -50,6 +85,44 @@ export interface StreamResult {
   isError: boolean;
   timedOut: boolean;
   raw?: unknown;
+  // The last usage snapshot seen on this session, when Codex reported one.
+  usage?: TokenUsage;
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+// Pull the usage snapshot out of a `token_count` event. Pure and exported so the
+// shape Codex sends is pinned by a test — the rest of this module spawns real
+// processes and cannot be exercised offline.
+export function tokenUsageFrom(msg: CodexMsg): TokenUsage | undefined {
+  if (msg.type !== "token_count") return undefined;
+  const info = msg.info as
+    | {
+        total_token_usage?: Record<string, unknown>;
+        model_context_window?: unknown;
+      }
+    | undefined;
+  const total = info?.total_token_usage;
+  if (!total) return undefined;
+  return {
+    inputTokens: num(total.input_tokens),
+    cachedInputTokens: num(total.cached_input_tokens),
+    outputTokens: num(total.output_tokens),
+    reasoningOutputTokens: num(total.reasoning_output_tokens),
+    totalTokens: num(total.total_tokens),
+    contextWindow: num(info?.model_context_window),
+  };
+}
+
+// The context window is announced on `task_started` and repeated inside
+// `token_count`; take it from whichever arrives.
+export function contextWindowFrom(msg: CodexMsg): number | undefined {
+  const direct = num(msg.model_context_window);
+  if (direct !== undefined) return direct;
+  const info = msg.info as { model_context_window?: unknown } | undefined;
+  return num(info?.model_context_window);
 }
 
 // Whatever the host's Codex is set up with, a harness session gets neither
@@ -100,12 +173,49 @@ export function codexToolArguments(
   };
 }
 
-function cleanEnv(codexHome?: string): Record<string, string> {
+// Credentials the *harness* holds for its own use, which no session may inherit.
+// This function copies the whole environment, so before this list a host-mode arm
+// was handed **both** arms' GitHub tokens and the experiment's Linear key: a
+// session that ran `env`, or a tool that echoed its environment on failure, wrote
+// them into a transcript this experiment intends to publish. `features.apps:
+// false` already keeps the account's Linear connector out; leaving the API key in
+// the environment was the same door with a different handle.
+//
+// Containerized arms were never exposed — `docker exec` forwards nothing but what
+// `-e` names, and arm-run.sh passes each container its own token — so this closes
+// the host-mode path, which is also the one the demo and any smoke test use.
+//
+// One deliberate consequence: a `linear` server configured in config.toml under
+// `mcp_servers` (which this module otherwise leaves strictly alone) loses its key
+// inside a session. That is the intended direction — the loop files Linear itself
+// precisely because neither Greg nor an arm may reach the board — but it is a
+// behaviour change, not an oversight, if someone wired one up on purpose.
+export const HARNESS_ONLY_ENV = [
+  "CONTROL_GH_TOKEN",
+  "GREPTILE_GH_TOKEN",
+  GIT_TOKEN_ENV,
+  "LINEAR_API_KEY",
+];
+
+export function cleanEnv(
+  codexHome?: string,
+  // The one token this session may see: its own arm's, under the names `gh`
+  // reads. An arm that has to push and open a pull request needs exactly this
+  // and nothing else.
+  ghToken?: string,
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") env[key] = value;
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value !== "string") continue;
+    if (HARNESS_ONLY_ENV.includes(key)) continue;
+    env[key] = value;
   }
   if (codexHome) env.CODEX_HOME = codexHome;
+  if (ghToken) {
+    env.GH_TOKEN = ghToken;
+    env.GITHUB_TOKEN = ghToken;
+  }
   return env;
 }
 
@@ -140,14 +250,36 @@ export async function runArmStreaming(
 ): Promise<StreamResult> {
   const exec = params.exec ?? [];
   const [command, ...prefixArgs] = exec.length > 0 ? exec : ["codex"];
+
+  // Capturing stderr means not inheriting it, which also keeps a chatty codex
+  // from painting over the fullscreen view.
+  if (params.stderrPath) {
+    await mkdir(dirname(params.stderrPath), { recursive: true });
+  }
   const transport = new StdioClientTransport({
     command,
     args: [...prefixArgs, ...(exec.length > 0 ? ["codex"] : []), "mcp-server"],
-    env: cleanEnv(params.codexHome),
+    env: cleanEnv(params.codexHome, params.ghToken),
     // Only anchor the host spawn dir when running locally; under `docker exec`
     // params.cwd is an in-container path that need not exist on the host.
     cwd: exec.length > 0 ? undefined : params.cwd,
+    stderr: params.stderrPath ? "pipe" : undefined,
   });
+
+  // Append, and stamp each session: review rounds all write to one file per arm,
+  // so without a header a reader cannot tell which round a stack trace came
+  // from. The stream is opened before connect() so a subprocess that dies during
+  // the handshake — the case this exists for — still lands its output.
+  let stderrFile: ReturnType<typeof createWriteStream> | undefined;
+  if (params.stderrPath) {
+    stderrFile = createWriteStream(params.stderrPath, { flags: "a" });
+    stderrFile.write(
+      `\n=== ${new Date().toISOString()} ${params.arm} ${command} ${
+        params.threadId ? `(reply ${params.threadId})` : "(fresh session)"
+      } ===\n`,
+    );
+    transport.stderr?.pipe(stderrFile, { end: false });
+  }
   const client = new Client({
     name: `vivarium-${params.arm}`,
     version: "0.1.0",
@@ -183,13 +315,32 @@ export async function runArmStreaming(
     }, idleTimeoutMs);
   };
 
+  // The last usage snapshot Codex reported on this session, kept so the result
+  // carries it into the artifacts instead of it living only on the event stream.
+  let usage: TokenUsage | undefined;
+  let contextWindow: number | undefined;
+
   client.fallbackNotificationHandler = async (notification) => {
     if (notification.method !== "codex/event") return;
     bumpWatchdog();
     const raw = notification.params as
       | { msg?: CodexMsg; _meta?: CodexEventMeta }
       | undefined;
-    if (raw?.msg) onEvent(raw.msg, raw._meta ?? {});
+    if (!raw?.msg) return;
+    contextWindow = contextWindowFrom(raw.msg) ?? contextWindow;
+    const reported = tokenUsageFrom(raw.msg);
+    if (reported) usage = reported;
+    onEvent(raw.msg, raw._meta ?? {});
+  };
+
+  // Usage as recorded, with the context window filled in from whichever event
+  // carried it. Built at every exit so a session that fails partway still
+  // reports what it had spent getting there.
+  const recordedUsage = (): TokenUsage | undefined => {
+    if (!usage) {
+      return contextWindow === undefined ? undefined : { contextWindow };
+    }
+    return { ...usage, contextWindow: usage.contextWindow ?? contextWindow };
   };
 
   try {
@@ -220,17 +371,27 @@ export async function runArmStreaming(
       isError: Boolean(result.isError),
       timedOut: false,
       raw: result,
+      usage: recordedUsage(),
     };
   } catch (error) {
+    // A session that dies is exactly the one whose spend is interesting — a
+    // watchdog abort forty minutes in was not free — so the usage rides out on
+    // the error rather than being dropped with the frame.
     if (aborted) {
-      throw new Error(`${params.arm} aborted: the live view was quit`);
-    }
-    if (timedOut) {
-      throw new Error(
-        `watchdog aborted ${params.arm}: no activity for ${idleTimeoutMs}ms`,
+      throw attachSessionUsage(
+        new Error(`${params.arm} aborted: the live view was quit`),
+        recordedUsage(),
       );
     }
-    throw error;
+    if (timedOut) {
+      throw attachSessionUsage(
+        new Error(
+          `watchdog aborted ${params.arm}: no activity for ${idleTimeoutMs}ms`,
+        ),
+        recordedUsage(),
+      );
+    }
+    throw attachSessionUsage(error, recordedUsage());
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
     params.signal?.removeEventListener("abort", onExternalAbort);
@@ -240,5 +401,33 @@ export async function runArmStreaming(
     } catch {
       // ignore
     }
+    // Closed after the client, so anything the subprocess wrote on its way down
+    // is already through the pipe. `end: false` on the pipe above is what makes
+    // closing here ours to do.
+    stderrFile?.end();
   }
+}
+
+// Usage carried on a thrown session failure. A property on the error rather
+// than a second channel: every caller already has the error in hand, and the
+// alternative is threading a mutable out-param through the retry loop.
+const SESSION_USAGE = Symbol.for("vivarium.sessionUsage");
+
+export function attachSessionUsage(
+  error: unknown,
+  usage: TokenUsage | undefined,
+): unknown {
+  if (usage && typeof error === "object" && error !== null) {
+    Object.defineProperty(error, SESSION_USAGE, {
+      value: usage,
+      enumerable: false,
+    });
+  }
+  return error;
+}
+
+export function sessionUsage(error: unknown): TokenUsage | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const usage = (error as Record<symbol, unknown>)[SESSION_USAGE];
+  return usage as TokenUsage | undefined;
 }

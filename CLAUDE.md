@@ -116,7 +116,11 @@ scripts/resume-clean.sh --apply  # …and reset both arms to the same baseline
 `vivarium-komodo` main-state as its own PR in a private mirror so Greptile reviews it
 before merge, strictly one open PR at a time. It normally runs from
 `.github/workflows/mirror-sync.yml`, not by hand, and needs two fine-grained
-PATs (see `SETUP.md`). `mirror_sync_test.sh` exercises its local git logic
+PATs (see `SETUP.md`). Before each merge it also **captures that PR's whole conversation** into
+`results/mirror/` — the control arm's counterfactual review, which exists nowhere
+else — and those reads fail closed: a review the API will not hand over kills the
+run before the merge, leaving state unadvanced so a rerun resumes at the same open
+PR. `mirror_sync_test.sh` exercises its local git logic
 against throwaway bare repos with a `gh` stub — no network, safe to run anytime.
 `resume-clean.sh` is the preflight for resuming an interrupted climb (below).
 
@@ -194,7 +198,22 @@ with the live view tapping the same event stream.
   `validateConfig` canonicalizes both repo paths with `realpath` and **rejects
   two checkouts that resolve to the same directory**. An arm gains `container`
   (+ optional `workspace`, default `/workspace`) when its `*_CONTAINER` var is
-  set; that flag is what flips host vs. container execution downstream.
+  set; that flag is what flips host vs. container execution downstream. Two
+  fields exist only to be recorded: `subticket` (which rung this run is, set by
+  Greg's loop) and `logDir` (where the live view is teeing, set by the
+  entrypoint) — a run's artifacts could not previously say either, so pairing a
+  result with its rung meant string-matching `ticket.txt` against `LADDER.md`,
+  and pairing it with its own progress logs meant comparing timestamps by eye.
+
+- **`src/provenance.ts`** — which harness commit produced a run (`commit`,
+  `branch`, `dirty`, or a recorded `error`). The experiment runs for months and
+  every knob that shapes an arm — the worker prompt, the review round count, the
+  watchdog — lives in this repo and will change; without this, two runs a month
+  apart are not comparable and nothing says why. `dirty` matters as much as the
+  sha: a run made from an edited tree was produced by code that exists nowhere.
+  Resolved from `import.meta.dir`, not the process cwd, because a systemd unit
+  need not run from the root. Injected everywhere it is used — the suite runs no
+  git.
 
 - **`src/prompt.ts`** — `workerPrompt(ticket)` builds the single autonomous
   worker instruction, and it asks for a branch, a pushed commit, a pull request
@@ -223,11 +242,26 @@ with the live view tapping the same event stream.
   passes a repo or a token around: `syncToBaseline` (fetch + `checkout -f -B`
   onto origin's default branch — untracked files survive, so `node_modules` and
   the mounted ladder are not collateral), `findPullRequest` (by the URL the arm
-  reported, falling back to its branch), `conversation` (reviews + issue
-  comments + inline review comments, merged chronologically), and `merge`. A
+  reported, falling back to its branch, and carrying the description the arm
+  wrote), `conversation` (reviews + issue comments + inline review comments,
+  merged chronologically), `diff` + `commits`, and `merge`. A
   token, when present, reaches git through a one-shot credential helper so it
   never lands in a remote URL. The whole interface is injected in tests — the
   suite touches neither git nor `gh`.
+  Three details here are what make a close reading possible rather than a
+  reconstruction. `conversation` keeps each inline comment's **anchor** (`line`,
+  `originalLine`, `diffHunk`): an arm that pushes a fix makes the comment
+  outdated and GitHub nulls `line`, at which point the hunk is the only record
+  of what was being complained about — otherwise “which code did this finding
+  refer to” is answerable only by a later call against a repository that has to
+  still exist. It also asks GraphQL for each thread's **resolution**
+  (`resolved`, `outdated`), because REST carries no such field and
+  resolved-with-a-push versus resolved-by-argument is exactly the “rejected
+  suggestions” the brief asks for; `undefined` there means *unknown*, never
+  “not resolved”, so a failed query leaves the fields absent rather than
+  claiming the arm ignored its review. And `diff`/`commits` are captured
+  **before** the merge, because `--delete-branch` removes the head ref and the
+  arm may have force-pushed over its own history already.
 
 - **`src/land.ts`** — what happens to an arm's work *after* its session says it
   is done, and the piece that makes this an experiment rather than two agents
@@ -237,7 +271,10 @@ with the live view tapping the same event stream.
   arm's extra rounds come from `arm.reviewer` being set in config, never from a
   name check here. A round waits for something new from that login, hands the
   arm a `reviewPrompt` on **its own Codex thread**, and repeats up to
-  `reviewRounds`; a review that never arrives merges unreviewed after
+  `reviewRounds`. The round records both halves — the `prompt` the arm was handed
+  as well as its `response`, since `reviewPrompt` has changed before and a reply
+  reads differently depending on whether the arm was told this was its last
+  round — plus what the round cost (`usage`). a review that never arrives merges unreviewed after
   `reviewTimeoutMs` rather than holding the climb, and the timeout is recorded
   as the round's outcome. Each answered round pins the branch head on **both
   sides** (`reviewedSha`, `respondedSha`). `reviewedSha` is captured before the
@@ -286,11 +323,31 @@ with the live view tapping the same event stream.
   client's `close()` kills the codex subprocess instead of orphaning it.
 
 - **`src/live/stream.ts`** — `runArmStreaming` runs one Codex session over its
-  own stdio MCP client. Three things to preserve: (1) it registers a
+  own stdio MCP client. Five things to preserve: (1) it registers a
   `codex/event` notification handler so events are observable live (this is what
   feeds both the TUI and the watchdog) rather than discarded; (2) an **activity
   watchdog** aborts an arm after `idleTimeoutMs` of event silence (default 10m),
-  independent of the 24h hard ceiling; (3) every fresh session is started with
+  independent of the 24h hard ceiling; (3) `stderrPath` tees the codex
+  subprocess's stderr to a file. The SDK's default is `inherit`, so the one
+  output that explains *why* a session died — a container that is not running, a
+  bad mount, an auth failure — went to the harness's terminal, which under the
+  fullscreen view means the alternate screen, discarded on exit; all `error.txt`
+  ever got was the MCP-level message, which for a dead subprocess is the useless
+  `Connection closed`. Piping it also stops a chatty codex painting over the
+  view. (4) `tokenUsageFrom`/`contextWindowFrom` (pure, tested) lift Codex's
+  usage numbers off the event stream onto `StreamResult.usage`, and
+  `attachSessionUsage`/`sessionUsage` carry them out on a **thrown** session —
+  they are cumulative per thread, so never sum them within one; (5) `cleanEnv`
+  copies the whole environment into the session, so `HARNESS_ONLY_ENV` strips
+  what the harness holds for *itself* — both arms' `*_GH_TOKEN`, the credential
+  helper's `VIVARIUM_GIT_TOKEN`, and `LINEAR_API_KEY` — and passes the arm
+  exactly one credential, its own, as `GH_TOKEN`. A host-mode arm was otherwise
+  handed the *other* arm's token and the experiment's Linear key, which a session
+  that runs `env` then writes into a transcript intended for publication.
+  Containerized arms were never exposed (`docker exec` forwards only what `-e`
+  names), so this closes the host-mode path — the one the demo and every smoke
+  test use. It is the same boundary as the flag below, which is (6): every fresh
+  session is started with
   **`config: {features: {apps: false, plugins: false}}`** (`codexToolArguments`,
   the one pure, tested part of this module) — no ambient account tooling, in
   either arm or in Greg. `codex_apps` connectors (Linear, GitHub) are
@@ -312,13 +369,28 @@ with the live view tapping the same event stream.
 
 - **`src/artifacts.ts`** — `RunArtifacts` owns the on-disk record under
   `results/<run-id>/`. Every write goes through `atomicWrite` (temp file +
-  `rename`). The top-level `manifest.json` (`schemaVersion: 3`) is the source of
+  `rename`). The top-level `manifest.json` (`schemaVersion: 4`) is the source of
   truth for run status; manifest writes are **serialized through a promise
   chain** (`manifestWrite`) that swallows its own errors so one failed write
-  can't poison later ones. After an arm finishes it locates that arm's Codex
+  can't poison later ones. Three things here are about the record being
+  *publishable and readable*, not about the run:
+  `redactArmConfig` strips `ghToken` and leaves `ghTokenPresent` — `config.json`
+  is written into the directory this experiment intends to publish, and it used
+  to carry both arms' live GitHub tokens; `runConfigRecord` writes the landing
+  knobs beside the rest (`land`, `reviewRounds`, `reviewTimeoutMs`,
+  `reviewPollMs`), because `land.json` records `timedOut: true` without saying
+  what it timed out against, and a round that gave up at 15 minutes is a
+  different observation than one that gave up at four hours; and `totalTokens`
+  sums an arm's spend by taking the **largest snapshot per thread**, never the
+  sum within one — Codex reports `total_token_usage` cumulatively per thread, so
+  adding three attempts on one thread would roughly double the answer, while two
+  attempts on *different* threads really did spend twice. After an arm finishes it locates that arm's Codex
   transcript under **that arm's** codex home (`arm.codexHome ?? config.codexHome`
   — see the container note above) `/sessions` by matching the `threadId` suffix
   and copies it in (`transcriptStatus` records copied / not-found / no-thread-id).
+  Each attempt also records what it **spent** (`usage`) and where its codex
+  stderr was teed (`stderrLog`) — including an attempt that died, which is the
+  expensive case, not the cheap one.
   `recordBaselines` writes the commit each arm started from (they should match;
   when they do not, that *is* the finding). `recordLanding` writes
   `<arm>/land.json` — pull request, every review round with what the reviewer
@@ -394,7 +466,18 @@ with the live view tapping the same event stream.
   mount). `planner.ts` builds the stateless planner prompt — the ladder text is
   the *only* context Greg gets, he cannot see the builders' code — and runs a
   fresh session (never a continued thread) with `PLANNER_ATTEMPTS` retries for
-  transient session failures. `loop.ts` is the todo-runner: `runGreg` builds the
+  transient session failures. It now leaves a record through
+  `plan-artifacts.ts` (`PlanArtifacts`, `results/plan-…/`): the prompt as sent,
+  the ladder as Greg was shown it *per attempt*, his reply, the rollout
+  transcript, the subprocess stderr, and the cost — held to the same standard the
+  build arms always were. Greg was the only agent here whose sessions wrote
+  nothing at all: the ladder text was the whole artifact, so the reasoning behind
+  a rung died with the session, and even the rollout under `$CODEX_HOME/sessions`
+  was unfindable afterwards because nothing recorded the thread id. The ladder is
+  written out on **failure** too — a half-appended milestone is the state the next
+  attempt has to be read against, and the difference between two
+  `ladder-before.md` files is the only place that shows. `base.resultsDir` is what
+  turns recording on; the unit tests plan without one. `loop.ts` is the todo-runner: `runGreg` builds the
   next unchecked subticket and **halts on any failure, leaving the box
   unchecked**, so a broken rung can never look built; `planAhead` is the
   `--plan-only` variant that plans without building. `main.tsx` wires the loop's
@@ -461,22 +544,54 @@ abandon the rest. Re-running finishes whatever was left.
 
 ```
 results/<run-id>/
-  manifest.json ticket.txt prompt.txt config.json baselines.json
+  manifest.json ticket.txt prompt.txt config.json baselines.json ladder.md
   greptile/land.json          # pull request, review rounds, conversation, merge
+  greptile/pull-request.diff  # the arm's final diff, captured before the merge
+  greptile/review-codex-stderr.log   # the review sessions' subprocess stderr
   greptile/attempt-01/  request.json status.json response.json output.txt
-                        error.txt transcript.jsonl
+                        error.txt transcript.jsonl codex-stderr.log
   control/land.json     ...
   control/attempt-01/   ...
+results/plan-<ts>-milestone-<n>-<uuid>/    # one planning session
+  manifest.json ladder-after.md
+  attempt-01/  prompt.txt ladder-before.md status.json response.json
+               output.txt error.txt transcript.jsonl codex-stderr.log
 results/live-<ts>/
   greptile/progress.log       # one feed per arm, written by the live view
   control/progress.log
   greg/progress.log           # the planner session, when there is one
   ladder.log                  # the climb's own lines
+results/mirror/<sha>-mirror-pr-<n>/        # written by mirror_sync.sh, in CI too
+  meta.json reviews.json issue-comments.json review-comments.json
 ```
+
+`config.json` carries **no token** — see `redactArmConfig`. It also records the
+rung (`subticket`), the harness commit (`harness`), the landing knobs, and the
+`logDir` its progress feeds went to, so a run directory says which rung, which
+code and which logs it belongs to without cross-referencing anything.
+
+`ladder.md` is the ladder as it stood when the run started. The whole file is
+mounted into both checkouts, so it is part of what the arms could read while
+working — and the real one is rewritten in place and gitignored, so by the time
+anyone reads a run back it says something else. An unreadable ladder is a missing
+snapshot, never a failed run; `config.json` still names the `ladderPath` it tried,
+so the gap is legible instead of looking like an ad-hoc `--ticket` run.
+
+`pull-request.diff` is the patch, kept out of `land.json` on purpose: a
+four-thousand-line diff encoded as a JSON string is not something anyone can
+close-read, so `land.json` names the file instead (`diffFile`).
+
+`results/mirror/` is the **control arm's counterfactual**: Komodo's own pull
+requests carry no review, so what Greptile says about the arm that cannot hear it
+exists only here and on the private mirror. In CI the runner's disk is discarded,
+so `mirror-sync.yml` uploads the directory as a build artifact — a stopgap with a
+90-day ceiling; a permanent home is still owed (see SETUP.md).
 
 `land.json` is the close-reading input the experiment is for: the reviewer's
 findings and the arm's answers to them, in one chronological list per pull
-request, beside the transcript of the session that wrote both.
+request, beside the transcript of the session that wrote both — each inline
+finding with the hunk it was written against and whether its thread ended
+resolved, and beside the diff and commits the arm produced.
 
 `LADDER.md` sits at the repo root, outside `results/` — it is Greg's durable
 state across runs (North Star, every milestone, every subticket and its
@@ -489,6 +604,24 @@ process or container is spawned, so the suite runs offline. When changing the
 retry/threading logic in `harness.ts` or the artifact schema in `artifacts.ts`,
 update `test/harness.test.ts` / `test/artifacts.test.ts` accordingly.
 
+`HarnessProvenance` is injected the same way and for the same reason: the default
+shells out to git, and **nothing in the suite may**. `runHarness` takes it via
+`HarnessDeps.provenance`, `RunArtifacts.create` as an argument, and
+`planNextMilestone` as its last parameter — a new call site that forgets is a
+test that quietly starts spawning git. `test/provenance.test.ts` covers the
+parsing (including that a failed `git status` records *unknown*, not "clean", and
+that a detached HEAD is not a branch named `HEAD`).
+
+Several properties of the record are pinned as tests rather than left to review,
+because each was a silent hole rather than a visible bug: `config.json` and the
+manifest contain no `ghp_` string (`artifacts.test.ts`, `harness-land.test.ts`);
+no session's environment does either, and an arm sees only its own token
+(`cleanEnv`, `live-stream.test.ts`); `totalTokens` takes the max per thread and
+only sums *across* threads; a thrown session still reports its spend; an inline
+comment keeps its hunk once GitHub nulls its `line`; a failed resolution query
+leaves `resolved` **undefined** rather than `false`; and `diff`/`commits` are
+asked for before `merge`, asserted as a call order in `land.test.ts`.
+
 The landing phase is faked the same way, one level out: `test/land.test.ts`
 injects an `ArmGitHub` that answers from a script (including "the review arrives
 on the third poll") plus a fake clock, and `test/harness-land.test.ts` drives a
@@ -498,8 +631,9 @@ Nothing in the suite runs `git`, `gh`, Docker, or Linear.
 Greg's tests do the same one level up: `greg-loop.test.ts` injects fake `plan` /
 `harness` / `log` deps (`GregDeps`) and a temp ladder path, `greg-ladder.test.ts`
 covers the markdown parse/complete/link logic, and `greg-planner.test.ts` fakes
-the runner to check the prompt and the "did Greg actually append milestone N"
-guard, and `greg-reconcile.test.ts` fakes the filer/closer to check what a
+the runner to check the prompt, the "did Greg actually append milestone N"
+guard, and what a planning session leaves under `results/plan-…/` (including a
+failed one, whose ladder and per-attempt inputs are the interesting artifact), and `greg-reconcile.test.ts` fakes the filer/closer to check what a
 half-filed, half-closed ladder asks Linear for — and that one failure does not
 abandon the rest of the pass. Nothing in the suite touches Docker, Linear, or
 the real `LADDER.md`.

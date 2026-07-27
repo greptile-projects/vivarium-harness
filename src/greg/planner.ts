@@ -1,8 +1,10 @@
 import { basename, dirname } from "node:path";
 import type { HarnessConfig } from "../config.js";
 import type { AttemptRunner } from "../harness.js";
-import { runArmStreaming } from "../live/stream.js";
+import { runArmStreaming, sessionUsage } from "../live/stream.js";
+import { harnessProvenance, type HarnessProvenance } from "../provenance.js";
 import { parseSubtickets, readLadder } from "./ladder.js";
+import { PlanArtifacts } from "./plan-artifacts.js";
 
 // The one fixed goal of the experiment. Greg plans every milestone toward this.
 // It is a direction, not a milestone that gets reached — the climb never ends.
@@ -90,40 +92,89 @@ export const PLANNER_ATTEMPTS = 2;
 // re-read of the ladder so anything a failed attempt half-appended is visible.
 // A session that succeeds but writes the wrong thing is not transient and
 // fails immediately.
+// Every session now leaves a record under `results/plan-…/`: the prompt as sent,
+// the ladder as Greg was shown it, his reply, the rollout transcript, the
+// subprocess's stderr and what the session cost — the same standard the build
+// arms have always been held to. `base.resultsDir` is what turns it on; a config
+// without one (only the unit tests) plans without recording.
 export async function planNextMilestone(
   base: HarnessConfig,
   ladderPath: string,
   ladder: string,
   milestoneNumber: number,
   runner: AttemptRunner = runArmStreaming,
+  // Injected for the same reason as `runner`: the default shells out to git, and
+  // the suite does not.
+  provenance: () => Promise<HarnessProvenance> = harnessProvenance,
 ): Promise<void> {
   let lastError = "unknown error";
+  const artifacts = base.resultsDir
+    ? await PlanArtifacts.create({
+        resultsDir: base.resultsDir,
+        codexHome: base.codexHome,
+        milestone: milestoneNumber,
+        ladderPath,
+        harness: await provenance(),
+      })
+    : undefined;
+  // Whatever happens, the ladder as it ends up is written down — including when
+  // the planner threw, which is when it matters most.
+  const settle = async (
+    status: "planned" | "failed",
+    error?: string,
+  ): Promise<void> => {
+    await artifacts?.complete(status, await readLadder(ladderPath), error);
+  };
 
   for (let attempt = 1; attempt <= PLANNER_ATTEMPTS; attempt += 1) {
     const currentLadder =
       attempt === 1 ? ladder : await readLadder(ladderPath);
+    const prompt = plannerPrompt(
+      currentLadder,
+      milestoneNumber,
+      basename(ladderPath),
+    );
+    const startedAt = new Date().toISOString();
+    const opened = await artifacts?.startAttempt(
+      attempt,
+      prompt,
+      currentLadder,
+    );
 
     let result;
     try {
       result = await runner(
         {
           arm: "greg",
-          prompt: plannerPrompt(
-            currentLadder,
-            milestoneNumber,
-            basename(ladderPath),
-          ),
+          prompt,
           cwd: dirname(ladderPath),
           sandbox: "workspace-write",
           codexHome: base.codexHome,
           idleTimeoutMs: base.idleTimeoutMs,
+          stderrPath: opened?.stderrPath,
         },
         () => {},
       );
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      await artifacts?.finishAttempt(attempt, {
+        status: "failed",
+        startedAt,
+        error: lastError,
+        usage: sessionUsage(error),
+      });
       continue;
     }
+
+    await artifacts?.finishAttempt(attempt, {
+      status: result.isError ? "failed" : "succeeded",
+      startedAt,
+      threadId: result.threadId,
+      output: result.isError ? undefined : result.output,
+      error: result.isError ? result.output || "unknown error" : undefined,
+      usage: result.usage,
+      raw: result.raw,
+    });
 
     if (result.isError) {
       lastError = result.output || "unknown error";
@@ -141,15 +192,17 @@ export async function planNextMilestone(
       (subticket) => subticket.milestone === milestoneNumber && !subticket.done,
     );
     if (!planted) {
-      throw new Error(
+      const message =
         `Greg did not append a buildable milestone ${milestoneNumber} to the ladder. ` +
-          `Expected a new "## Milestone ${milestoneNumber}:" section with "### [ ] ${milestoneNumber}.x" subtickets.`,
-      );
+        `Expected a new "## Milestone ${milestoneNumber}:" section with "### [ ] ${milestoneNumber}.x" subtickets.`;
+      await settle("failed", message);
+      throw new Error(message);
     }
+    await settle("planned");
     return;
   }
 
-  throw new Error(
-    `Greg failed to plan milestone ${milestoneNumber} after ${PLANNER_ATTEMPTS} attempt(s): ${lastError}`,
-  );
+  const message = `Greg failed to plan milestone ${milestoneNumber} after ${PLANNER_ATTEMPTS} attempt(s): ${lastError}`;
+  await settle("failed", message);
+  throw new Error(message);
 }

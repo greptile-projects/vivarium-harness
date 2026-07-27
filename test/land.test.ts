@@ -97,6 +97,14 @@ function fakeGitHub(options: {
       index += 1;
       return current;
     },
+    async commits() {
+      calls.push("commits");
+      return [{ sha: "commit-1", message: "the work" }];
+    },
+    async diff() {
+      calls.push("diff");
+      return "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n";
+    },
     async merge() {
       calls.push("merge");
       return options.merge ?? { merged: true, method: "merge" };
@@ -175,6 +183,16 @@ describe("landArm", () => {
     expect(prompts).toEqual([]);
     expect(record.reviewRounds).toEqual([]);
     expect(landingError(record)).toBeUndefined();
+
+    // The work itself is captured, and captured *before* the merge: the merge
+    // deletes the head ref, so asking afterwards is asking about a branch that
+    // is gone.
+    expect(record.diff).toContain("+new");
+    expect(record.commits?.[0]?.sha).toBe("commit-1");
+    const order = github.calls.filter((call) =>
+      ["commits", "diff", "merge"].includes(call),
+    );
+    expect(order).toEqual(["commits", "diff", "merge"]);
   });
 
   it("sends the reviewed arm back to answer, without handing it the comments", async () => {

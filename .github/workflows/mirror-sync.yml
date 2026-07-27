@@ -63,7 +63,27 @@ jobs:
           MIRROR_REPO: ${{ vars.MIRROR_REPO }}
           HARNESS_REPO: ${{ github.repository }}
           GREPTILE_BOT_LOGIN: ${{ vars.GREPTILE_BOT_LOGIN }}
+          MIRROR_REVIEW_DIR: results/mirror
           # BOT_COMMITTER_NAME / BOT_COMMITTER_EMAIL come from $GITHUB_ENV above.
         run: |
           chmod +x scripts/mirror_sync.sh
           ./scripts/mirror_sync.sh
+
+      # The captured reviews are the control arm's counterfactual — what Greptile
+      # said about code written by the arm that cannot hear it. The runner's disk
+      # is thrown away, so without this step the capture would be as ephemeral as
+      # the job log it replaced. `if: always()` because a run that died mid-sync
+      # may still have captured the review of the PR it was working on, and
+      # `results/` is gitignored so nothing else here would keep it.
+      #
+      # Retention is the ceiling GitHub allows; a permanent home (object storage,
+      # or a commit onto a data branch) is still worth doing before the blog post
+      # is written.
+      - name: Retain captured mirror reviews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-reviews-${{ github.run_id }}-${{ github.run_attempt }}
+          path: results/mirror
+          if-no-files-found: ignore
+          retention-days: 90
