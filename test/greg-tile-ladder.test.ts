@@ -15,6 +15,7 @@ import {
   ensureLadderLinks,
   highestMilestone,
   initLadder,
+  malformedSubticketHeadings,
   nextPendingSubticket,
   parseSubtickets,
   readLadder,
@@ -200,6 +201,31 @@ describe("completeSubticket", () => {
     await expect(completeSubticket(ladderPath, "9.9")).rejects.toThrow(
       /not found in ladder/,
     );
+  });
+
+  // The parse contract's negative space: ### is reserved for subtickets, so a
+  // ###-level line that does not parse is a heading Greg got almost right —
+  // text that would sit on the ladder without ever being built.
+  it("flags ### headings that do not parse as subtickets", async () => {
+    const text = [
+      "## Milestone 1: One",
+      "",
+      "### [ ] 1.1 Fine",
+      "",
+      "## Objective",
+      "",
+      "prose, not a heading",
+      "",
+      "### 1.2 Missing its checkbox",
+      "",
+      "### [x 1.3 Broken box",
+    ].join("\n");
+
+    expect(malformedSubticketHeadings(text)).toEqual([
+      "### 1.2 Missing its checkbox",
+      "### [x 1.3 Broken box",
+    ]);
+    expect(malformedSubticketHeadings("### [ ] 2.1 All good")).toEqual([]);
   });
 
   // Duplicate numbers should never exist (the planner rejects them), but a

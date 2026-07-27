@@ -160,6 +160,18 @@ export function nextPendingSubticket(ladder: string): ParsedSubticket | null {
   return parseSubtickets(ladder).find((subticket) => !subticket.done) ?? null;
 }
 
+// ###-level lines that were meant to be subticket headings but do not parse.
+// The parser silently skips what it cannot read, so a heading Greg got almost
+// right — a missing checkbox, a stray character — would persist as ladder text
+// the loop never sees and never builds. The planner uses this to reject such a
+// turn outright instead. The ladder format reserves ### for subtickets, which
+// is what makes "### that does not parse" a defect rather than prose.
+export function malformedSubticketHeadings(text: string): string[] {
+  return text
+    .split("\n")
+    .filter((line) => /^###(\s|$)/.test(line) && !SUBTICKET_HEADING.test(line));
+}
+
 // Mark a subticket built: flip its checkbox to `[x]` and append the harness run
 // outcome below its description. Called by the loop only after a successful
 // run, so the ladder doubles as the build history both arms can read. Checking

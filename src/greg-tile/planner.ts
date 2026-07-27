@@ -9,7 +9,11 @@ import {
 import type { AttemptRunner } from "../harness/harness.js";
 import { plannerPrompt } from "../harness/prompts.js";
 import { runArmStreaming } from "../harness/session.js";
-import { parseSubtickets, readLadder } from "./ladder.js";
+import {
+  malformedSubticketHeadings,
+  parseSubtickets,
+  readLadder,
+} from "./ladder.js";
 
 // Planning gets one retry: unlike the build arms (which get maxAttempts via
 // runArm), a planner session used to be one-shot, so a single transient hang
@@ -237,6 +241,22 @@ export async function planNextMilestone(
     if (duplicate !== undefined) {
       throw new Error(
         `Greg's turn leaves the ladder with a duplicate subticket number (${duplicate}). ` +
+          "The turn is discarded and the ladder is unchanged.",
+      );
+    }
+
+    // A sibling heading Greg got *almost* right is worse than one he got
+    // wrong: `### 3.2 Title` with its checkbox missing does not parse, so the
+    // planted check above still passes on the siblings that do — and the
+    // malformed one persists as ladder text the loop never sees and never
+    // builds. Every ###-level heading in the appended text must parse.
+    const appendedText =
+      planned?.slice(currentLadder.replace(/\s+$/, "").length) ?? "";
+    const malformed = malformedSubticketHeadings(appendedText);
+    if (malformed.length > 0) {
+      throw new Error(
+        `Greg's turn contains a heading that does not parse as a subticket: ${JSON.stringify(malformed[0])}. ` +
+          "It would sit on the ladder without ever being built. " +
           "The turn is discarded and the ladder is unchanged.",
       );
     }
