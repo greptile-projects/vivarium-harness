@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+D="$STUB_DIR"
+MB="$MIRROR_BARE"
+endpoint=""
+is_write=0
+val=""
+jq_expr=""
+prev=""
+
+for a in "$@"; do
+  case "$a" in
+    repos/*) endpoint="$a" ;;
+    PATCH|POST) is_write=1 ;;
+    value=*) val="${a#value=}" ;;
+  esac
+  [[ "$prev" == "-q" ]] && jq_expr="$a"
+  prev="$a"
+done
+
+case "$1" in
+  api)
+    case "$endpoint" in
+      *"/actions/variables"*)
+        if [[ "$is_write" == 1 ]]; then
+          printf '%s' "$val" > "$D/state"
+        else
+          cat "$D/state" 2>/dev/null
+        fi
+        ;;
+      *"/reviews") printf '%s' "${STUB_REVIEW:-1}" ;;
+      *"/comments") printf '0' ;;
+      *"/commits/"*"/pulls") printf '%s' "${STUB_SRC_PR:-}" ;;
+      *"/commits/"*) : ;;
+      *"/pulls/"*)
+        case "$jq_expr" in
+          .title) printf '%s' "${STUB_SRC_TITLE:-}" ;;
+          *body*)
+            [[ -n "${STUB_SRC_BODY_FAIL:-}" ]] && exit 22
+            printf '%s' "${STUB_SRC_BODY:-}"
+            ;;
+        esac
+        ;;
+      *) : ;;
+    esac
+    ;;
+  pr)
+    case "$2" in
+      list)
+        [[ -f "$D/open_pr" ]] && cat "$D/open_pr"
+        ;;
+      create)
+        head=""
+        title=""
+        body=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --head) head="$2"; shift ;;
+            --title) title="$2"; shift ;;
+            --body) body="$2"; shift ;;
+          esac
+          shift
+        done
+        n=$(( $(cat "$D/counter" 2>/dev/null || echo 0) + 1 ))
+        echo "$n" > "$D/counter"
+        echo "$n $head" >> "$D/prmap"
+        echo "$title" >> "$D/titles"
+        printf '%s' "$body" > "$D/last_body"
+        echo "https://github.com/mirror/pull/$n"
+        ;;
+      merge)
+        n="$3"
+        br="$(awk -v n="$n" '$1==n{print $2}' "$D/prmap" | tail -1)"
+        git -C "$MB" update-ref refs/heads/main \
+          "$(git -C "$MB" rev-parse "refs/heads/$br")"
+        ;;
+      edit)
+        for a in "$@"; do
+          [[ "$a" == "review-timeout" ]] && touch "$D/timeout_marker"
+        done
+        ;;
+    esac
+    ;;
+  label) : ;;
+esac

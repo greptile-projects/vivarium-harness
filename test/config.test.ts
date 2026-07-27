@@ -1,17 +1,33 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parseArgs,
   parseRunMode,
+  validateConfig,
+  CONTAINER_IMAGE,
   IDLE_TIMEOUT_MS,
   MAX_ATTEMPTS,
   RESULTS_DIR,
-} from "../src/config.js";
-import { codexArguments } from "../src/harness.js";
-import { workerPrompt } from "../src/prompt.js";
+  type HarnessConfig,
+} from "../src/harness/config.js";
+import { codexArguments } from "../src/harness/harness.js";
+import { workerPrompt } from "../src/harness/prompts.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
+    ),
+  );
+});
 
 const env = {
-  CONTROL_REPO: "/tmp/control",
-  GREPTILE_REPO: "/tmp/greptile",
+  KOMODO_REPO: "/tmp/komodo",
+  TUATARA_REPO: "/tmp/tuatara",
 };
 
 describe("parseArgs", () => {
@@ -20,19 +36,29 @@ describe("parseArgs", () => {
 
     expect(config.ticket).toBe("ENG-123");
     expect(config.arms.map((arm) => [arm.name, arm.repo])).toEqual([
-      ["control", "/tmp/control"],
-      ["greptile", "/tmp/greptile"],
+      ["komodo", "/tmp/komodo"],
+      ["tuatara", "/tmp/tuatara"],
     ]);
     // The one asymmetry between the arms, and it comes from configuration
     // rather than from a name check somewhere downstream.
     expect(config.arms[0].reviewer).toBeUndefined();
     expect(config.arms[1].reviewer).toBe("greptile-apps[bot]");
+    expect(config.containerImage).toBe(CONTAINER_IMAGE);
+  });
+
+  it("shares the configured image with container launchers", () => {
+    const config = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      VIVARIUM_IMAGE: "vivarium-arm:test",
+    });
+
+    expect(config.containerImage).toBe("vivarium-arm:test");
   });
 
   it("gives a containerized arm full access and a host arm a sandbox", () => {
     const containerized = parseArgs(["--ticket", "ENG-123"], {
       ...env,
-      CONTROL_CONTAINER: "vivarium-control",
+      KOMODO_CONTAINER: "vivarium-komodo",
     });
     // The container is the isolation boundary; inside it the arm needs the
     // network to push a branch and answer a review.
@@ -42,7 +68,7 @@ describe("parseArgs", () => {
     // An explicit setting still wins for both arms.
     const explicit = parseArgs(["--ticket", "ENG-123"], {
       ...env,
-      CONTROL_CONTAINER: "vivarium-control",
+      KOMODO_CONTAINER: "vivarium-komodo",
       CODEX_SANDBOX: "workspace-write",
     });
     expect(explicit.arms.map((arm) => arm.sandbox)).toEqual([
@@ -54,8 +80,8 @@ describe("parseArgs", () => {
   it("passes each arm's GitHub token through for landing", () => {
     const config = parseArgs(["--ticket", "ENG-123"], {
       ...env,
-      CONTROL_GH_TOKEN: "ghp_control",
-      GREPTILE_GH_TOKEN: "ghp_greptile",
+      KOMODO_GH_TOKEN: "ghp_control",
+      TUATARA_GH_TOKEN: "ghp_greptile",
     });
     expect(config.arms.map((arm) => arm.ghToken)).toEqual([
       "ghp_control",
@@ -65,7 +91,7 @@ describe("parseArgs", () => {
 
   it("requires static arm configuration", () => {
     expect(() => parseArgs(["--ticket", "ENG-123"], {})).toThrow(
-      /CONTROL_REPO.*GREPTILE_REPO/,
+      /KOMODO_REPO.*TUATARA_REPO/,
     );
   });
 
@@ -93,12 +119,11 @@ describe("run mode", () => {
     expect(mode.ticket).toBeUndefined();
   });
 
-  it("treats --ticket and --demo as one-ticket runs", () => {
+  it("treats --ticket as a one-ticket run", () => {
     expect(parseRunMode(["--ticket", "ENG-1"], true)).toMatchObject({
       kind: "ticket",
       ticket: "ENG-1",
     });
-    expect(parseRunMode(["--demo"], true).kind).toBe("demo");
   });
 
   it("keeps --plan-only and --unbounded on the ladder", () => {
@@ -115,7 +140,7 @@ describe("run mode", () => {
     expect(() => parseRunMode(["--ticket", "ENG-1", "--plan-only"], true)).toThrow(
       /--plan-only/,
     );
-    expect(() => parseRunMode(["--demo", "--unbounded"], true)).toThrow(
+    expect(() => parseRunMode(["--ticket", "ENG-1", "--unbounded"], true)).toThrow(
       /--unbounded/,
     );
   });
@@ -170,17 +195,82 @@ describe("worker fan-out", () => {
     const prompt = workerPrompt("ENG-123");
 
     expect(prompt).toContain("ENG-123");
-    expect(prompt).not.toMatch(/control arm|greptile arm/i);
+    expect(prompt).not.toMatch(/komodo arm|tuatara arm/i);
   });
 
   it("varies only cwd between Codex calls", () => {
     const prompt = workerPrompt("ENG-123");
-    const control = codexArguments(prompt, "/tmp/control", "workspace-write");
-    const greptile = codexArguments(prompt, "/tmp/greptile", "workspace-write");
-    const { cwd: controlCwd, ...controlShared } = control;
-    const { cwd: greptileCwd, ...greptileShared } = greptile;
+    const komodo = codexArguments(prompt, "/tmp/komodo", "workspace-write");
+    const tuatara = codexArguments(prompt, "/tmp/tuatara", "workspace-write");
+    const { cwd: controlCwd, ...controlShared } = komodo;
+    const { cwd: greptileCwd, ...greptileShared } = tuatara;
 
     expect(controlCwd).not.toBe(greptileCwd);
     expect(controlShared).toEqual(greptileShared);
+  });
+});
+
+// Isolation has to be all-or-nothing. Each arm derives `container` — and so its
+// sandbox — from its own `<ARM>_CONTAINER`, so one unset variable leaves that
+// arm running Codex on the host at workspace-write while the other runs in a
+// container at danger-full-access: different sandbox, different tool reach, and
+// the host-mode arm can read the other arm's checkout and .env directly. The
+// manifest would record it as a perfectly normal run.
+describe("validateConfig containerization", () => {
+  const twoRepos = async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-cfg-"));
+    temporaryDirectories.push(root);
+    const komodo = join(root, "komodo");
+    const tuatara = join(root, "tuatara");
+    await mkdir(komodo, { recursive: true });
+    await mkdir(tuatara, { recursive: true });
+    return { komodo, tuatara };
+  };
+
+  const config = (
+    komodo: string,
+    tuatara: string,
+    containers: { komodo?: string; tuatara?: string },
+  ) =>
+    ({
+      ticket: "t",
+      arms: [
+        { name: "komodo", repo: komodo, container: containers.komodo },
+        { name: "tuatara", repo: tuatara, container: containers.tuatara },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: "results",
+      codexHome: "/tmp/codex",
+      maxAttempts: 1,
+      idleTimeoutMs: 1,
+      land: true,
+      reviewTimeoutMs: 1,
+      reviewPollMs: 1,
+      reviewDebounceMs: 0,
+      reviewRounds: 1,
+    }) as unknown as HarnessConfig;
+
+  it("rejects one arm containerized and the other on the host", async () => {
+    const { komodo, tuatara } = await twoRepos();
+    await expect(
+      validateConfig(config(komodo, tuatara, { komodo: "vivarium-komodo" })),
+    ).rejects.toThrow(/TUATARA_CONTAINER/);
+  });
+
+  it("accepts both containerized", async () => {
+    const { komodo, tuatara } = await twoRepos();
+    const resolved = await validateConfig(
+      config(komodo, tuatara, {
+        komodo: "vivarium-komodo",
+        tuatara: "vivarium-tuatara",
+      }),
+    );
+    expect(resolved.arms.every((arm) => arm.container)).toBe(true);
+  });
+
+  it("accepts neither containerized — the no-isolation smoke path", async () => {
+    const { komodo, tuatara } = await twoRepos();
+    const resolved = await validateConfig(config(komodo, tuatara, {}));
+    expect(resolved.arms.some((arm) => arm.container)).toBe(false);
   });
 });

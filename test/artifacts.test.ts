@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RunArtifacts } from "../src/artifacts.js";
-import type { HarnessConfig } from "../src/config.js";
+import { RunArtifacts } from "../src/harness/artifacts.js";
+import type { HarnessConfig } from "../src/harness/config.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -26,17 +26,19 @@ describe("run artifacts", () => {
     const config: HarnessConfig = {
       ticket: "ENG-123",
       arms: [
-        { name: "control", repo: "/tmp/control" },
-        { name: "greptile", repo: "/tmp/greptile" },
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
       ],
       sandbox: "workspace-write",
       resultsDir: join(root, "results"),
       codexHome,
+      containerImage: "vivarium-arm",
       maxAttempts: 3,
       idleTimeoutMs: 600_000,
       land: false,
       reviewTimeoutMs: 1_000,
       reviewPollMs: 10,
+      reviewDebounceMs: 0,
       reviewRounds: 2,
     };
     const artifacts = await RunArtifacts.create(config, "exact prompt");
@@ -60,12 +62,12 @@ describe("run artifacts", () => {
         repo: arm.repo,
         attempt: 1,
         maxAttempts: 3,
-        status: arm.name === "control" ? "succeeded" : "failed",
+        status: arm.name === "komodo" ? "succeeded" : "failed",
         startedAt: "2026-07-21T00:00:00.000Z",
         completedAt: "2026-07-21T00:01:00.000Z",
         durationMs: 60_000,
         threadId,
-        ...(arm.name === "control"
+        ...(arm.name === "komodo"
           ? { output: `${arm.name} output` }
           : { error: `${arm.name} failed` }),
         artifactDir,
@@ -80,31 +82,31 @@ describe("run artifacts", () => {
       await readFile(
         join(
           artifacts.directory,
-          "control",
+          "komodo",
           "attempt-01",
           "transcript.jsonl",
         ),
         "utf8",
       ),
-    ).toBe('{"arm":"control"}\n');
+    ).toBe('{"arm":"komodo"}\n');
     expect(
       await readFile(
         join(
           artifacts.directory,
-          "greptile",
+          "tuatara",
           "attempt-01",
           "transcript.jsonl",
         ),
         "utf8",
       ),
-    ).toBe('{"arm":"greptile"}\n');
+    ).toBe('{"arm":"tuatara"}\n');
 
     const manifest = JSON.parse(
       await readFile(join(artifacts.directory, "manifest.json"), "utf8"),
     );
     expect(manifest.status).toBe("completed_with_failures");
-    expect(manifest.arms.control.final.transcriptStatus).toBe("copied");
-    expect(manifest.arms.greptile.final.transcriptStatus).toBe("copied");
+    expect(manifest.arms.komodo.final.transcriptStatus).toBe("copied");
+    expect(manifest.arms.tuatara.final.transcriptStatus).toBe("copied");
   });
 
   it("finds a container arm's transcript under its own codex home", async () => {
@@ -124,28 +126,30 @@ describe("run artifacts", () => {
       ticket: "ENG-9",
       arms: [
         {
-          name: "control",
-          repo: "/tmp/control",
-          container: "vivarium-control",
+          name: "komodo",
+          repo: "/tmp/komodo",
+          container: "vivarium-komodo",
           codexHome: armHome,
         },
-        { name: "greptile", repo: "/tmp/greptile" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
       ],
       sandbox: "workspace-write",
       resultsDir: join(root, "results"),
       codexHome: hostHome,
+      containerImage: "vivarium-arm",
       maxAttempts: 1,
       idleTimeoutMs: 600_000,
       land: false,
       reviewTimeoutMs: 1_000,
       reviewPollMs: 10,
+      reviewDebounceMs: 0,
       reviewRounds: 2,
     };
     const artifacts = await RunArtifacts.create(config, "exact prompt");
-    const threadId = "control-thread";
+    const threadId = "komodo-thread";
     await writeFile(
       join(armSessions, `rollout-2026-07-23-${threadId}.jsonl`),
-      '{"arm":"control"}\n',
+      '{"arm":"komodo"}\n',
     );
     const artifactDir = await artifacts.startAttempt(
       config.arms[0],
@@ -155,8 +159,8 @@ describe("run artifacts", () => {
     );
     const persisted = await artifacts.finishArm(
       {
-        arm: "control",
-        repo: "/tmp/control",
+        arm: "komodo",
+        repo: "/tmp/komodo",
         attempt: 1,
         maxAttempts: 1,
         status: "succeeded",
@@ -164,15 +168,15 @@ describe("run artifacts", () => {
         completedAt: "2026-07-23T00:01:00.000Z",
         durationMs: 60_000,
         threadId,
-        output: "control output",
+        output: "komodo output",
         artifactDir,
       },
-      { structuredContent: { threadId, content: "control output" } },
+      { structuredContent: { threadId, content: "komodo output" } },
     );
 
     expect(persisted.transcriptStatus).toBe("copied");
     expect(await readFile(join(artifactDir, "transcript.jsonl"), "utf8")).toBe(
-      '{"arm":"control"}\n',
+      '{"arm":"komodo"}\n',
     );
   });
 });

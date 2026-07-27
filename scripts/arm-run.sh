@@ -3,20 +3,30 @@
 # secrets on the command line.
 #
 # Usage:  scripts/arm-run.sh <komodo|tuatara>
-#         scripts/arm-run.sh <control|greptile>   # the same two arms, by internal id
 #
 # Reads these from .env (override the file with ENV_FILE=/path/to/env). <ARM> is
-# CONTROL or GREPTILE:
+# KOMODO or TUATARA:
 #   <ARM>_CONTAINER    container name to start                        (required)
 #   <ARM>_REPO         host checkout, bind-mounted at /workspace      (required)
 #   <ARM>_GH_TOKEN     GitHub token for this arm            (optional, no default)
 #   <ARM>_CODEX_HOME   host dir whose sessions/ is mounted into the container so
 #                      the harness can copy transcripts. Defaults to
 #                      ~/.vivarium/<container>, matching the harness default.
+#   <ARM>_NOVNC_PORT   host port for this arm's screen, published on 127.0.0.1
+#                      only. Defaults: komodo 6080, tuatara 6081 — the arms must
+#                      differ here or the second container fails to start.
+#
+# Run-wide, and identical for both arms (they are the experiment's controlled
+# environment, not per-arm configuration):
+#   VIVARIUM_DOCKER    1 (default) gives the arm its own nested Docker engine,
+#                      which needs --privileged. 0 skips it.
+#   VIVARIUM_GUI       1 (default) starts X + a window manager + VNC/noVNC.
+#   VIVARIUM_SCREEN    Xvfb geometry. Default 1440x900x24.
 #
 # The arm's checkout (at /workspace) is the only repo it can see; Codex auth is
-# mounted read-only. Each arm gets its own sessions dir — the arms never share
-# one, preserving isolation.
+# mounted read-only. Each arm gets its own sessions dir and its own
+# /var/lib/docker volume — the arms never share either, preserving isolation.
+# The nested engine is deliberately not the host's socket: see the Dockerfile.
 #
 # Build the image once:  docker build -t vivarium-arm .
 # Then:                  scripts/arm-run.sh komodo
@@ -24,26 +34,17 @@
 set -euo pipefail
 
 arm="${1:?arm to start: komodo or tuatara}"
-# The internal identifiers are `control`/`greptile` (they key the env vars and
-# the artifact directories); everything human-facing calls the arms Komodo and
-# Tuatara. Accept either, so nobody has to remember that `control` starts a
-# container named vivarium-komodo.
 case "$arm" in
-  komodo) arm=control ;;
-  tuatara) arm=greptile ;;
-  control | greptile) ;;
+  komodo | tuatara) ;;
   *)
-    echo "error: arm must be control/komodo or greptile/tuatara, got '$arm'" >&2
+    echo "error: arm must be komodo or tuatara, got '$arm'" >&2
     exit 1
     ;;
 esac
 
-# What this arm is called in human-facing output, and the identity its commits
-# carry — so `git log` in the checkout says which arm wrote a line.
-case "$arm" in
-  control) display=komodo ;;
-  greptile) display=tuatara ;;
-esac
+# The identity this arm's commits carry — so `git log` in the checkout says
+# which arm wrote a line.
+display="$arm"
 
 # Load the same .env the harness reads, so arm config lives in one place.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,21 +63,42 @@ container_var="${prefix}_CONTAINER"
 repo_var="${prefix}_REPO"
 token_var="${prefix}_GH_TOKEN"
 home_var="${prefix}_CODEX_HOME"
+novnc_var="${prefix}_NOVNC_PORT"
 
 container="${!container_var:-}"
 repo="${!repo_var:-}"
 token="${!token_var:-}"
 arm_home="${!home_var:-}"
+novnc_port="${!novnc_var:-}"
 
 : "${container:?$container_var must be set in $env_file}"
 : "${repo:?$repo_var must be set in $env_file}"
 
 image="${VIVARIUM_IMAGE:-vivarium-arm}"
 arm_home="${arm_home:-$HOME/.vivarium/$container}"
+want_docker="${VIVARIUM_DOCKER:-1}"
+want_gui="${VIVARIUM_GUI:-1}"
+
+# One published port per arm, because two containers cannot share one. The
+# default differs by arm for that reason alone — inside the container both
+# screens are :99 on port 6080, so nothing the arm can observe differs.
+if [[ -z "$novnc_port" ]]; then
+  case "$arm" in
+    komodo) novnc_port=6080 ;;
+    tuatara) novnc_port=6081 ;;
+  esac
+fi
 
 # Host sink for this arm's Codex sessions; created before mounting so Docker
 # does not materialize it as a root-owned directory.
 mkdir -p "$arm_home/sessions"
+
+# Mounting a nonexistent file makes Docker create a *directory* at both ends,
+# which breaks Codex auth confusingly later — fail here with a clear message.
+if [[ ! -f "$HOME/.codex/auth.json" ]]; then
+  echo "error: $HOME/.codex/auth.json not found — log in with codex on the host first" >&2
+  exit 1
+fi
 
 # The identity this arm's commits carry. Ask GitHub who the arm's token is and
 # commit as that account, so every line on main is attributed to the arm that
@@ -112,9 +134,35 @@ run_args=(
   -e "GIT_AUTHOR_EMAIL=$git_email"
   -e "GIT_COMMITTER_NAME=$git_name"
   -e "GIT_COMMITTER_EMAIL=$git_email"
+  -e "VIVARIUM_DOCKER=$want_docker"
+  -e "VIVARIUM_GUI=$want_gui"
+  # Chromium's default 64MB /dev/shm is where it dies part-way through a page
+  # rather than at startup, which reads as a flaky test rather than a missing
+  # resource. The flags file in the image also passes --disable-dev-shm-usage;
+  # this is the half that helps anything the arm launches without it.
+  --shm-size=1g
 )
+if [[ -n "${VIVARIUM_SCREEN:-}" ]]; then
+  run_args+=(-e "VIVARIUM_SCREEN=$VIVARIUM_SCREEN")
+fi
 if [[ -n "$token" ]]; then
   run_args+=(-e "GH_TOKEN=$token" -e "GITHUB_TOKEN=$token")
+fi
+
+# The nested Docker engine. --privileged is what it costs; the alternative —
+# mounting the host's /var/run/docker.sock — is not a cheaper version of this
+# but a different thing entirely, and it would end the isolation between the
+# arms (one `docker run -v /:/host` reaches the other arm's checkout, `.env`
+# with both tokens, and results/). The volume is per arm and never shared: it
+# is the engine's whole state, so sharing it would be a channel between them.
+if [[ "$want_docker" != "0" ]]; then
+  run_args+=(--privileged -v "$container-docker:/var/lib/docker")
+fi
+
+# The arm's screen, published on the host's loopback only — x11vnc runs with no
+# password, and this port is a live view of a root browser session.
+if [[ "$want_gui" != "0" ]]; then
+  run_args+=(-p "127.0.0.1:$novnc_port:6080")
 fi
 
 # The ladder is Greg's durable state and the arms read it from inside the
@@ -147,3 +195,38 @@ fi
 docker run "${run_args[@]}" "$image"
 
 echo "started $container  ($display — repo: $repo, sessions: $arm_home/sessions)"
+
+# dockerd and the X server take a few seconds, and the harness execs a codex
+# session in as soon as it is told to. An arm that starts a subticket before its
+# engine is up discovers it halfway through, after the work is done — the same
+# class of failure the image's git identity and PATH lines exist to head off. So
+# block here, and report what is wrong rather than leaving it in a log nobody
+# opens.
+if [[ "$want_docker" != "0" || "$want_gui" != "0" ]]; then
+  printf 'waiting for services in %s' "$container"
+  ready=0
+  for _ in $(seq 1 90); do
+    if docker exec "$container" test -f /run/vivarium/ready 2>/dev/null; then
+      ready=1
+      break
+    fi
+    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -q true; then
+      break
+    fi
+    printf '.'
+    sleep 1
+  done
+  echo
+  if [[ "$ready" != 1 ]]; then
+    echo "error: $container came up degraded — its services did not all start" >&2
+    docker exec "$container" sh -c 'tail -n 20 /var/log/vivarium/*.log' >&2 2>&1 || true
+    exit 1
+  fi
+fi
+
+if [[ "$want_docker" != "0" ]]; then
+  echo "  docker: nested engine $(docker exec "$container" docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') on its own /var/lib/docker ($container-docker)"
+fi
+if [[ "$want_gui" != "0" ]]; then
+  echo "  screen: http://127.0.0.1:$novnc_port/vnc.html  (chromium: \`docker exec $container browser <url>\`)"
+fi

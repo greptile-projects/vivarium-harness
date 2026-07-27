@@ -5,14 +5,14 @@ import {
   pullRequestNumber,
   pullRequestUrl,
   slugFromRemote,
-} from "../src/github.js";
-import type { ArmConfig } from "../src/config.js";
-import type { CommandResult, CommandRunner } from "../src/github.js";
+} from "../src/harness/github.js";
+import type { ArmConfig } from "../src/harness/config.js";
+import type { CommandResult, CommandRunner } from "../src/harness/github.js";
 
 const TOKEN = "ghp_thisisthesecretvalue";
 
 const arm = (overrides: Partial<ArmConfig> = {}): ArmConfig => ({
-  name: "greptile",
+  name: "tuatara",
   repo: "/tmp/checkout",
   ...overrides,
 });
@@ -98,7 +98,7 @@ describe("credential handling", () => {
 });
 
 describe("syncToBaseline", () => {
-  test("keeps untracked files by using checkout -f -B, never a clean", async () => {
+  test("resets tracked files with checkout -f -B", async () => {
     const { calls, exec } = recorder({
       "git remote get-url": ok("https://github.com/org/repo.git\n"),
       "git symbolic-ref": ok("origin/trunk\n"),
@@ -112,7 +112,6 @@ describe("syncToBaseline", () => {
       branch: "trunk",
       sha: "deadbeef",
     });
-    expect(calls.some((call) => call.args.includes("clean"))).toBe(false);
     const checkout = calls.find((call) => call.args[0] === "checkout");
     expect(checkout?.args).toEqual([
       "checkout",
@@ -121,6 +120,52 @@ describe("syncToBaseline", () => {
       "trunk",
       "origin/trunk",
     ]);
+  });
+
+  test("clears untracked leftovers, but not node_modules or the ladder", async () => {
+    const { calls, exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/trunk\n"),
+      "git rev-parse": ok("deadbeef\n"),
+    });
+
+    await armGitHub(arm(), exec).syncToBaseline();
+
+    // A scratch file one arm left behind would otherwise ride into the next
+    // subticket while the other arm started clean.
+    const clean = calls.find((call) => call.args[0] === "clean");
+    expect(clean?.args).toEqual([
+      "clean",
+      "-fdx",
+      "-e",
+      "node_modules",
+      "-e",
+      "LADDER.md",
+    ]);
+    // -x takes ignored files too — build output, caches, coverage. The reviewed
+    // arm does strictly more work per rung (it re-runs its checks after
+    // answering a review), so without this it can start the next subticket with
+    // warm caches the other arm lacks: state persisting for one arm and not the
+    // other. The two excludes still protect the only things -x must not take.
+    expect(clean?.args).toContain("-e");
+    expect(clean?.args).toContain("node_modules");
+    expect(clean?.args).toContain("LADDER.md");
+    // …and it runs after the checkout, so it only sees what checkout left.
+    const order = calls.map((call) => call.args[0]);
+    expect(order.indexOf("clean")).toBeGreaterThan(order.indexOf("checkout"));
+  });
+
+  test("a failed clean throws rather than starting the arms asymmetrically", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "git symbolic-ref": ok("origin/main\n"),
+      "git rev-parse": ok("abc123\n"),
+      "git clean": { code: 1, stdout: "", stderr: "permission denied" },
+    });
+
+    await expect(armGitHub(arm(), exec).syncToBaseline()).rejects.toThrow(
+      /permission denied/,
+    );
   });
 
   test("a failed fetch throws rather than silently building on a stale base", async () => {
@@ -181,15 +226,17 @@ describe("conversation", () => {
               state: "COMMENTED",
             },
           ],
-          comments: [
-            {
-              id: 2,
-              author: { login: "makors" },
-              body: "the issue comment",
-              createdAt: "2026-07-25T01:00:00Z",
-            },
-          ],
         }),
+      ),
+      "gh api repos/org/repo/issues/7/comments": ok(
+        JSON.stringify([
+          {
+            id: 2,
+            user: { login: "makors" },
+            body: "the issue comment",
+            created_at: "2026-07-25T01:00:00Z",
+          },
+        ]),
       ),
       "gh api repos/org/repo/pulls/7/comments": ok(
         JSON.stringify([
@@ -233,6 +280,59 @@ describe("conversation", () => {
 
     expect(notes[0]?.inReplyTo).toBeUndefined();
     expect(notes[1]?.inReplyTo).toBe("review-comment:10");
+  });
+
+  test("records reviewer reactions without querying comments that have none", async () => {
+    const { exec, calls } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [] })),
+      "gh api repos/org/repo/issues/7/comments": ok("[]"),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          {
+            id: 10,
+            user: { login: "vivarium-tuatara-bot" },
+            body: "@greptileai fixed",
+            created_at: "2026-07-25T01:00:00Z",
+            reactions: { total_count: 1 },
+          },
+          {
+            id: 11,
+            user: { login: "vivarium-tuatara-bot" },
+            body: "no reaction here",
+            created_at: "2026-07-25T01:01:00Z",
+            reactions: { total_count: 0 },
+          },
+        ]),
+      ),
+      "gh api repos/org/repo/pulls/comments/10/reactions": ok(
+        JSON.stringify([
+          {
+            id: 90,
+            user: { login: "greptile-apps[bot]" },
+            content: "+1",
+            created_at: "2026-07-25T01:02:00Z",
+          },
+        ]),
+      ),
+    });
+
+    const notes = await armGitHub(arm(), exec).conversation(7);
+    const reaction = notes.find((entry) => entry.kind === "reaction");
+
+    expect(reaction).toMatchObject({
+      id: "reaction:review-comment:90",
+      author: "greptile-apps[bot]",
+      body: "+1",
+      inReplyTo: "review-comment:10",
+    });
+    const reactionCalls = calls.filter((call) =>
+      call.args.some((argument) => argument.endsWith("/reactions")),
+    );
+    expect(reactionCalls).toHaveLength(1);
+    expect(reactionCalls[0]?.args).toContain(
+      "repos/org/repo/pulls/comments/10/reactions",
+    );
   });
 });
 
