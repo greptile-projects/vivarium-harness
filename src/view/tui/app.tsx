@@ -2,6 +2,7 @@ import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
 import { armsForDisplay } from "../../harness/arms.js";
 import type { LiveModel } from "../model.js";
+import { confirmQuitPrompt, needsQuitConfirm } from "../quit.js";
 import {
   elapsedSeconds,
   formatDuration,
@@ -90,6 +91,10 @@ export function LiveApp({
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
   const [selectedId, setSelectedId] = useState(initialTab);
   const [anchor, setAnchor] = useState<Anchor>(null);
+  // `q` was pressed with sessions still working: the view is holding on the
+  // question instead of unmounting. Quitting stops the run, so the second key
+  // is the whole safety.
+  const [confirming, setConfirming] = useState(false);
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
@@ -130,6 +135,14 @@ export function LiveApp({
 
   useInput(
     (input, key) => {
+      // The question owns every key while it is up: navigating away from it
+      // would leave a run half-quit, and a stray keystroke must not be the
+      // thing that answers it. Only `y` proceeds; anything else is "no".
+      if (confirming) {
+        if (input === "y" || input === "Y") exit();
+        else setConfirming(false);
+        return;
+      }
       if (key.tab) {
         setSelectedId(stepTab(tabs, selected, key.shift ? -1 : 1));
         setAnchor(null);
@@ -158,7 +171,12 @@ export function LiveApp({
         else if (key.pageDown) scroll(-view);
         else if (input === "g") setAnchor(null);
       }
-      if (input === "q") exit();
+      if (input === "q") {
+        // Nothing left running: the view is a report, and closing a report
+        // needs no confirming.
+        if (needsQuitConfirm(model.live.snapshot())) setConfirming(true);
+        else exit();
+      }
     },
     { isActive: Boolean(isRawModeSupported) },
   );
@@ -262,17 +280,27 @@ export function LiveApp({
       </Box>
 
       {/* One row, always. The path is the first thing to go when the terminal
-          is too narrow for both — the keys are what the human needs here. */}
+          is too narrow for both — the keys are what the human needs here. The
+          pending quit takes the whole row, undimmed: it is a question, and the
+          run is still going until it is answered. */}
       <Box>
-        <Text dimColor wrap="truncate-end">
-          {`↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
-        </Text>
-        <Box flexGrow={1} />
-        {logDir && columns >= 100 ? (
-          <Text dimColor wrap="truncate-start">
-            {logDir}
+        {confirming ? (
+          <Text color="yellow" bold wrap="truncate-end">
+            {confirmQuitPrompt(arms)}
           </Text>
-        ) : null}
+        ) : (
+          <>
+            <Text dimColor wrap="truncate-end">
+              {`↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
+            </Text>
+            <Box flexGrow={1} />
+            {logDir && columns >= 100 ? (
+              <Text dimColor wrap="truncate-start">
+                {logDir}
+              </Text>
+            ) : null}
+          </>
+        )}
       </Box>
     </Box>
   );

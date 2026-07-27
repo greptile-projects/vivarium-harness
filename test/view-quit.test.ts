@@ -1,6 +1,12 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { LiveModel } from "../src/view/model.js";
-import { onViewClosed, quitNotice, stillRunning } from "../src/view/quit.js";
+import {
+  confirmQuitPrompt,
+  needsQuitConfirm,
+  onViewClosed,
+  quitNotice,
+  stillRunning,
+} from "../src/view/quit.js";
 import type { ArmState } from "../src/view/store.js";
 
 // A model with one arm mid-run and one finished, as the store would have it.
@@ -28,7 +34,7 @@ describe("stillRunning", () => {
       arm("tuatara", "starting"),
     ]);
 
-    // Tuatara (tuatara) leads everywhere the two are presented together.
+    // Tuatara leads everywhere the two are presented together.
     expect(running.map((state) => state.arm)).toEqual(["tuatara", "komodo"]);
   });
 
@@ -44,18 +50,17 @@ describe("quitNotice", () => {
   // says it all, and a second message would be noise.
   it("says nothing when the view closes with nothing left running", () => {
     expect(
-      quitNotice([arm("tuatara", "done"), arm("komodo", "done")], {
-        aborting: false,
-      }),
+      quitNotice([arm("tuatara", "done"), arm("komodo", "done")], {}),
     ).toBeNull();
   });
 
-  it("names what is still running and where its feed goes", () => {
+  it("names what it is stopping and where its feed went", () => {
     const notice = quitNotice(
       [arm("tuatara", "working"), arm("komodo", "done")],
-      { logDir: "results/live-x", aborting: false },
+      { logDir: "results/live-x" },
     );
 
+    expect(notice).toContain("stopping 1 session");
     expect(notice).toContain("tuatara");
     expect(notice).not.toContain("komodo");
     // The one thing the reader needs from it: where the run keeps writing.
@@ -65,31 +70,47 @@ describe("quitNotice", () => {
   it("names every running session", () => {
     const notice = quitNotice(
       [arm("tuatara", "working"), arm("komodo", "starting")],
-      { aborting: false },
+      {},
     );
 
+    expect(notice).toContain("stopping 2 sessions");
     expect(notice).toContain("tuatara");
     expect(notice).toContain("komodo");
   });
+});
 
-  it("says something different under --abort-on-quit", () => {
-    const running = [arm("tuatara", "working")];
-    const aborting = quitNotice(running, { aborting: true });
-
-    expect(aborting).toContain("tuatara");
-    // Stopping the run and leaving it alone must not read the same.
-    expect(aborting).not.toBe(quitNotice(running, { aborting: false }));
+describe("needsQuitConfirm", () => {
+  // q ends the run now, so it has to ask first.
+  it("asks while anything is still working", () => {
+    expect(
+      needsQuitConfirm([arm("tuatara", "working"), arm("komodo", "done")]),
+    ).toBe(true);
   });
 
-  it("stays silent under --abort-on-quit when nothing is running", () => {
+  // Nothing to stop: the view is a report, and closing it needs no question.
+  it("does not ask once every session has settled", () => {
     expect(
-      quitNotice([arm("tuatara", "done")], { aborting: true }),
-    ).toBeNull();
+      needsQuitConfirm([arm("tuatara", "done"), arm("komodo", "failed")]),
+    ).toBe(false);
+  });
+
+  it("names the arms it would stop, not just how many", () => {
+    const prompt = confirmQuitPrompt([
+      arm("tuatara", "working"),
+      arm("komodo", "starting"),
+    ]);
+
+    expect(prompt).toContain("2 sessions");
+    expect(prompt).toContain("tuatara");
+    expect(prompt).toContain("komodo");
+    expect(prompt).toContain("y / n");
   });
 });
 
 describe("onViewClosed", () => {
-  it("warns but leaves the run alone by default", () => {
+  // Quitting is quitting: the sessions do not outlive the view that was
+  // watching them.
+  it("stops the run and says which sessions went with it", () => {
     const controller = new AbortController();
     const written: string[] = [];
     const write = spyOn(process.stdout, "write").mockImplementation(
@@ -105,24 +126,10 @@ describe("onViewClosed", () => {
       write.mockRestore();
     }
 
-    expect(controller.signal.aborted).toBe(false);
-    // It said something, and it named the session still working.
-    expect(written.join("")).toContain("tuatara");
-  });
-
-  it("aborts the run under --abort-on-quit", () => {
-    const controller = new AbortController();
-    const write = spyOn(process.stdout, "write").mockImplementation(
-      () => true,
-    );
-
-    try {
-      onViewClosed(modelMidRun(), controller, { abortOnQuit: true });
-    } finally {
-      write.mockRestore();
-    }
-
     expect(controller.signal.aborted).toBe(true);
+    expect(written.join("")).toContain("stopping 1 session");
+    expect(written.join("")).toContain("tuatara");
+    expect(written.join("")).toContain("log/path/<arm>/progress.log");
   });
 
   // The end-of-run unmount: nothing running, so nothing to say and nothing to
@@ -141,7 +148,7 @@ describe("onViewClosed", () => {
     );
 
     try {
-      onViewClosed(model, controller, { abortOnQuit: true });
+      onViewClosed(model, controller, {});
     } finally {
       write.mockRestore();
     }

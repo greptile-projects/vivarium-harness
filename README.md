@@ -79,10 +79,10 @@ session with its context meter, what it's been doing and its answer, plus
 greg's ladder and the raw log. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll, `q`
 quits.
 
-`q` closes the view, not the run — a climb is meant to run for days. anything
-still working keeps going, and its feed keeps landing in
-`results/live-<ts>/<arm>/progress.log`. `--abort-on-quit` if you did mean to
-stop everything.
+`q` quits, and quitting stops the run. while sessions are still working it
+asks first (`y / n`) and names what would be torn down; anything other than
+`y` goes back to watching. ctrl-c stops without asking. what each arm wrote
+before the stop is under `results/live-<ts>/<arm>/progress.log`.
 
 ## if a run gets interrupted
 

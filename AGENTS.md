@@ -72,11 +72,13 @@ bun start -- --help              # the full option + env reference
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
   tab **per arm** with its context meter, activity trail and answer, Greg's
   **ladder** notes, and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
-  scroll the list tabs, `q` quits — the **view**, not the run: the sessions keep
-  working and the CLI says so, naming what is still running. `--abort-on-quit`
-  makes `q` (and Ctrl-C) tear the run down instead, aborting every live session
-  and exiting 1; it is rejected up front with `--no-tui`/`--json`, where there
-  would be no view to quit. It runs on the alternate screen and gives the
+  scroll the list tabs, `q` quits — and quitting **stops the run**. The safety
+  is an in-view confirmation, not a flag: while sessions are still working, `q`
+  names what would be torn down and waits for `y` (any other key goes back to
+  watching); once everything has settled the view is a report and closes
+  without asking. Ctrl-C stops the run without asking — it has one meaning
+  everywhere else and does not acquire a second one here. Stopping live
+  sessions exits 1. It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
   writes one `results/live-<ts>/<arm>/progress.log` per arm either way.
 - **`--json`** prints the machine-readable result and implies `--no-tui`.
@@ -451,7 +453,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   container]` as the exec prefix and points Codex's cwd at the in-container
   workspace. `runner` (the arm launcher) and the two event sinks are injected —
   tests pass a fake runner instead of spawning real Codex. An optional
-  `AbortSignal` (from `--abort-on-quit`) is checked **between attempts** as well
+  `AbortSignal` (from quitting the live view) is checked **between attempts** as well
   as handed to the session: aborting only the attempt in flight would hand
   straight back to the retry loop, which would immediately start another one —
   the opposite of stopping. In `session.ts` that signal joins the *same*
@@ -558,10 +560,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   arm — those live on the model, not the store, because the store is cleared
   between phases and merged pull requests are exactly what should accumulate
   across them). `quit.ts` owns what closing the
-  view means — `quitNotice` is pure, and `onViewClosed` is the shared hook both
-  modes hand to `mountLive`. It decides from the **model**, not the keypress,
-  so the ordinary end-of-run unmount stays silent while an early quit names
-  what is still running. `run.tsx` is the one-ticket run.
+  view means — quitting stops the run. `needsQuitConfirm`/`confirmQuitPrompt`
+  drive the in-view `y / n` question while sessions are still working, and
+  `onViewClosed` is the shared hook both modes hand to `mountLive`: it decides
+  from the **model**, not the keypress, so the ordinary end-of-run unmount
+  stays silent and aborts nothing, while an early quit names what it stopped
+  and aborts the controller every session runs under.
   The live view and the durable artifacts come from the **same single run** —
   watching is a display choice, never a second execution path.
 
