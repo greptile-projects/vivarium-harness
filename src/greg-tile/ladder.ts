@@ -39,6 +39,7 @@ export interface ParsedSubticket {
 }
 
 const SUBTICKET_HEADING = /^###\s+\[( |x|X)\]\s+(\d+(?:\.\d+)?)\s+(.+?)\s*$/;
+const SUBTICKET_HEADING_START = /^###(?!#)/;
 const MILESTONE_HEADING = /^##\s+Milestone\s+(\d+)\s*:/;
 // A trailing " — TICKET-123" on a heading is a ticket id, not part of the
 // title (older ladders carry ids from the retired Linear pipeline). Anything
@@ -169,7 +170,10 @@ export function nextPendingSubticket(ladder: string): ParsedSubticket | null {
 export function malformedSubticketHeadings(text: string): string[] {
   return text
     .split("\n")
-    .filter((line) => /^###(\s|$)/.test(line) && !SUBTICKET_HEADING.test(line));
+    .filter(
+      (line) =>
+        SUBTICKET_HEADING_START.test(line) && !SUBTICKET_HEADING.test(line),
+    );
 }
 
 // Mark a subticket built: flip its checkbox to `[x]` and append the harness run

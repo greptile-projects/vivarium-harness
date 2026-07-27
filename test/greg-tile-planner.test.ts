@@ -355,12 +355,12 @@ describe("planNextMilestone", () => {
   it("rejects a turn whose sibling subticket heading does not parse", async () => {
     const ladderPath = await scratchLadder();
     // 1.1 parses, so the planted check alone would accept the turn — while
-    // 1.2's heading lost its checkbox, so the parser silently drops it and the
-    // loop would never build it.
+    // 1.2's heading lost the whitespace after ###, so the parser silently
+    // drops it and the loop would never build it.
     const runner: AttemptRunner = async (spec) => {
       await appendFile(
         join(spec.cwd, basename(ladderPath)),
-        "\n## Milestone 1: First\n\n### [ ] 1.1 A\n\nbody\n\n### 1.2 Broken sibling\n\nbody\n",
+        "\n## Milestone 1: First\n\n### [ ] 1.1 A\n\nbody\n\n###[ ] 1.2 Broken sibling\n\nbody\n",
         "utf8",
       );
       return { output: "done", isError: false, timedOut: false };

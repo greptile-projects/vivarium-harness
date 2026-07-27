@@ -219,11 +219,16 @@ describe("completeSubticket", () => {
       "### 1.2 Missing its checkbox",
       "",
       "### [x 1.3 Broken box",
+      "",
+      "###[ ] 1.4 Missing heading whitespace",
+      "",
+      "#### Detail heading",
     ].join("\n");
 
     expect(malformedSubticketHeadings(text)).toEqual([
       "### 1.2 Missing its checkbox",
       "### [x 1.3 Broken box",
+      "###[ ] 1.4 Missing heading whitespace",
     ]);
     expect(malformedSubticketHeadings("### [ ] 2.1 All good")).toEqual([]);
   });
