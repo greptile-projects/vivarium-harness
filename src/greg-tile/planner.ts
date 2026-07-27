@@ -205,6 +205,24 @@ export async function planNextMilestone(
       );
     }
 
+    // The prompt tells Greg to ONLY append, and this is where that stops being
+    // advisory: everything already on the ladder must survive as an exact
+    // prefix of the new text. A turn that planted a valid milestone N by
+    // rewriting what came before it — earlier milestones, checked boxes, the
+    // North Star header — would pass the check above and then replace the
+    // climb's durable state wholesale. Trailing whitespace is forgiven so a
+    // tool that normalizes the end of the file cannot fail a legitimate
+    // append.
+    if (
+      planned !== undefined &&
+      !planned.startsWith(currentLadder.replace(/\s+$/, ""))
+    ) {
+      throw new Error(
+        `Greg rewrote existing ladder content instead of only appending milestone ${milestoneNumber}. ` +
+          "The turn is discarded and the ladder is unchanged.",
+      );
+    }
+
     // Carry Greg's validated edit back to the real ladder — written in place,
     // never renamed, so the arms' read-only bind mount keeps showing current
     // text instead of pinning the inode it started on. Only when he actually

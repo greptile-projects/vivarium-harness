@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import {
+  appendFile,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { findTranscript } from "../src/harness/artifacts.js";
@@ -296,6 +303,34 @@ describe("planNextMilestone", () => {
     // The rejected turn never reaches the durable, arm-mounted file: the
     // validation runs on the scratch, before any write-back.
     expect(await readLadder(ladderPath)).not.toContain("Milestone 99");
+  });
+
+  it("rejects a turn that rewrites prior ladder content instead of appending", async () => {
+    const ladderPath = await scratchLadder();
+    await appendFile(
+      ladderPath,
+      "\n## Milestone 1: First\n\n### [x] 1.1 Done\n\nbody\n",
+      "utf8",
+    );
+    // Milestone 2 is present and unchecked — the planted check alone would
+    // accept this — but milestone 1 and the header were deleted.
+    const runner: AttemptRunner = async (spec) => {
+      await writeFile(
+        join(spec.cwd, basename(ladderPath)),
+        "## Milestone 2: Second\n\n### [ ] 2.1 Next\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await expect(
+      planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner),
+    ).rejects.toThrow(/only appending/);
+    // The rewrite never reaches the durable file: prior state survives whole.
+    const ladder = await readLadder(ladderPath);
+    expect(ladder).toContain("## Milestone 1: First");
+    expect(ladder).toContain("### [x] 1.1 Done");
+    expect(ladder).not.toContain("## Milestone 2");
   });
 
   it("accepts a milestone even while an earlier one is still unbuilt (write-ahead)", async () => {
