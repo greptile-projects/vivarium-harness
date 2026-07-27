@@ -130,6 +130,7 @@ export async function planNextMilestone(
     const execution = plannerExecution(base, workspace, sessionDirectory);
 
     let result;
+    let planned: string | undefined;
     try {
       await writeFile(scratchLadder, currentLadder, "utf8");
       result = await runner(
@@ -149,22 +150,13 @@ export async function planNextMilestone(
         () => {},
       );
 
-      // Carry Greg's edit back to the real ladder — written in place, never
-      // renamed, so the arms' read-only bind mount keeps showing current text
-      // instead of pinning the inode it started on. Only when he actually
-      // changed something: an untouched scratch file must not clobber a ladder
-      // that moved underneath us. And only from a session that did not error:
-      // a failed attempt's half-append must not reach the real ladder — the
-      // retry would plan milestone N on top of it and can leave a duplicate,
-      // and the ladder is bind-mounted into both arms, so the garbage would be
-      // briefly visible to them too. An errored session's scratch is discarded
-      // exactly like a thrown one's, and the retry starts from the ladder as
-      // it really is.
+      // Read the scratch now — the finally below deletes it — but write
+      // nothing back yet: the write-back happens after this attempt is known
+      // good, below. An errored session's scratch is never read at all, so its
+      // half-append is discarded exactly like a thrown attempt's and the retry
+      // starts from the ladder as it really is.
       if (!result.isError) {
-        const planned = await readFile(scratchLadder, "utf8");
-        if (planned !== currentLadder) {
-          await writeFile(ladderPath, planned, "utf8");
-        }
+        planned = await readFile(scratchLadder, "utf8");
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -198,7 +190,12 @@ export async function planNextMilestone(
     // This one check rejects a Greg that wrote nothing, appended the wrong
     // milestone number (e.g. 99 when asked for 2, which would resume the climb
     // from the wrong rung), or left every box already checked.
-    const planted = parseSubtickets(await readLadder(ladderPath)).find(
+    //
+    // Validated on the *scratch* text, before anything reaches the real
+    // ladder: a rejected planning turn used to be written back first and then
+    // fail this check, leaving the malformed milestone sitting in the durable,
+    // arm-mounted file the throw was meant to keep it out of.
+    const planted = parseSubtickets(planned ?? "").find(
       (subticket) => subticket.milestone === milestoneNumber && !subticket.done,
     );
     if (!planted) {
@@ -206,6 +203,15 @@ export async function planNextMilestone(
         `Greg did not append a buildable milestone ${milestoneNumber} to the ladder. ` +
           `Expected a new "## Milestone ${milestoneNumber}:" section with "### [ ] ${milestoneNumber}.x" subtickets.`,
       );
+    }
+
+    // Carry Greg's validated edit back to the real ladder — written in place,
+    // never renamed, so the arms' read-only bind mount keeps showing current
+    // text instead of pinning the inode it started on. Only when he actually
+    // changed something: an untouched scratch file must not clobber a ladder
+    // that moved underneath us.
+    if (planned !== undefined && planned !== currentLadder) {
+      await writeFile(ladderPath, planned, "utf8");
     }
     return result.threadId;
   }

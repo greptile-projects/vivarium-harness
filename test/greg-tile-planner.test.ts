@@ -48,9 +48,10 @@ describe("planNextMilestone", () => {
         cwd: spec.cwd,
         saw: await readdir(spec.cwd),
       });
-      // Greg edits the file directly instead of returning structured data.
+      // Greg edits his scratch copy directly instead of returning structured
+      // data; the planner carries the validated edit back to the real ladder.
       await appendFile(
-        ladderPath,
+        join(spec.cwd, basename(ladderPath)),
         "\n## Milestone 1: Repo hosting\n\n### [ ] 1.1 Skeleton — ENG-11\n\nScaffold it.\n",
         "utf8",
       );
@@ -240,14 +241,14 @@ describe("planNextMilestone", () => {
   it("retries once after a transient session failure (e.g. watchdog abort)", async () => {
     const ladderPath = await scratchLadder();
     let attempts = 0;
-    const runner: AttemptRunner = async () => {
+    const runner: AttemptRunner = async (spec) => {
       attempts += 1;
       if (attempts === 1) {
         // First session wedges and is killed by the activity watchdog.
         throw new Error("watchdog aborted greg: no activity for 600000ms");
       }
       await appendFile(
-        ladderPath,
+        join(spec.cwd, basename(ladderPath)),
         "\n## Milestone 1: Repo hosting\n\n### [ ] 1.1 Skeleton\n\nbody\n",
         "utf8",
       );
@@ -280,9 +281,9 @@ describe("planNextMilestone", () => {
     const ladderPath = await scratchLadder();
     // Asked for milestone 2, Greg appends milestone 99 — accepting it would
     // resume the climb from the wrong rung, so the guard must reject it.
-    const runner: AttemptRunner = async () => {
+    const runner: AttemptRunner = async (spec) => {
       await appendFile(
-        ladderPath,
+        join(spec.cwd, basename(ladderPath)),
         "\n## Milestone 99: Way ahead\n\n### [ ] 99.1 Skip ahead\n\nbody\n",
         "utf8",
       );
@@ -292,6 +293,9 @@ describe("planNextMilestone", () => {
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner),
     ).rejects.toThrow(/milestone 2/);
+    // The rejected turn never reaches the durable, arm-mounted file: the
+    // validation runs on the scratch, before any write-back.
+    expect(await readLadder(ladderPath)).not.toContain("Milestone 99");
   });
 
   it("accepts a milestone even while an earlier one is still unbuilt (write-ahead)", async () => {
@@ -302,9 +306,9 @@ describe("planNextMilestone", () => {
       "\n## Milestone 1: First\n\n### [ ] 1.1 Skeleton\n\nbody\n",
       "utf8",
     );
-    const runner: AttemptRunner = async () => {
+    const runner: AttemptRunner = async (spec) => {
       await appendFile(
-        ladderPath,
+        join(spec.cwd, basename(ladderPath)),
         "\n## Milestone 2: Second\n\n### [ ] 2.1 Next\n\nbody\n",
         "utf8",
       );
@@ -325,9 +329,9 @@ describe("planner session preservation", () => {
   // premise is preserving everything to read later.
   it("hands back the planning session's thread id", async () => {
     const ladderPath = await scratchLadder();
-    const runner: AttemptRunner = async (_params, _onEvent) => {
+    const runner: AttemptRunner = async (params, _onEvent) => {
       await appendFile(
-        ladderPath,
+        join(params.cwd, basename(ladderPath)),
         "\n## Milestone 1: M1\n\n### [ ] 1.1 A\n\ndo A\n",
         "utf8",
       );
@@ -353,9 +357,9 @@ describe("planner session preservation", () => {
   // climb must continue, with the gap recorded rather than the rung lost.
   it("returns undefined when the session reported no thread id", async () => {
     const ladderPath = await scratchLadder();
-    const runner: AttemptRunner = async () => {
+    const runner: AttemptRunner = async (spec) => {
       await appendFile(
-        ladderPath,
+        join(spec.cwd, basename(ladderPath)),
         "\n## Milestone 1: M1\n\n### [ ] 1.1 A\n\ndo A\n",
         "utf8",
       );
