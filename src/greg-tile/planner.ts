@@ -147,9 +147,6 @@ export async function planNextMilestone(
         },
         () => {},
       );
-      if (execution.exec) {
-        await preserveContainerSessions(sessionDirectory, base.codexHome);
-      }
 
       // Carry Greg's edit back to the real ladder — written in place, never
       // renamed, so the arms' read-only bind mount keeps showing current text
@@ -164,6 +161,16 @@ export async function planNextMilestone(
       lastError = error instanceof Error ? error.message : String(error);
       continue;
     } finally {
+      // Sessions are preserved in the finally, before the scratch dirs go: a
+      // failed attempt (a watchdog abort, a thrown runner) still produced a
+      // transcript, and deleting it with the scratch dir would lose the record
+      // of exactly the planning turns worth reading. Best-effort — a failed
+      // copy must not turn into a planning retry.
+      if (execution.exec) {
+        await preserveContainerSessions(sessionDirectory, base.codexHome).catch(
+          () => {},
+        );
+      }
       await Promise.all([
         rm(workspace, { recursive: true, force: true }).catch(() => {}),
         rm(sessionDirectory, { recursive: true, force: true }).catch(() => {}),

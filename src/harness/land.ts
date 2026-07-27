@@ -6,7 +6,7 @@ import type {
   PullRequestRef,
   ReviewNote,
 } from "./github.js";
-import { pullRequestUrl } from "./github.js";
+import { pullRequestUrl, sameLogin } from "./github.js";
 import type { StreamResult } from "./session.js";
 import { reviewPrompt } from "./prompts.js";
 
@@ -202,6 +202,10 @@ export async function prepareArm(
 // Wait for something new from the reviewer, or give up. Polls the whole
 // conversation rather than a cursor: comment ids are the only durable identity
 // here, and a review that arrives as three comments at once should count once.
+//
+// The reviewer match goes through `sameLogin`: GraphQL-sourced review bodies
+// drop the `[bot]` suffix REST keeps, and a literal compare silently excluded
+// them — an approval-only review read as reviewer silence.
 async function waitForReview(
   deps: LandDeps,
   pullRequest: number,
@@ -215,13 +219,36 @@ async function waitForReview(
   conversation: ReviewNote[];
   waitedMs: number;
   timedOut: boolean;
+  // Set when the last poll before giving up could not read the conversation:
+  // "the API was dark" must not be recorded as "the reviewer said nothing".
+  error?: string;
 }> {
   const start = deps.now();
+  const fromReviewer = (note: ReviewNote): boolean =>
+    sameLogin(note.author, reviewer) && !seen.has(note.id);
+  let lastError: string | undefined;
   for (;;) {
-    const conversation = await deps.github.conversation(pullRequest);
-    const found = conversation.filter(
-      (note) => note.author === reviewer && !seen.has(note.id),
-    );
+    let conversation: ReviewNote[];
+    try {
+      conversation = await deps.github.conversation(pullRequest);
+      lastError = undefined;
+    } catch (error) {
+      // A failed read is a failed poll, not reviewer silence — keep polling,
+      // and if the whole wait ends this way, say so in the record.
+      lastError = error instanceof Error ? error.message : String(error);
+      if (deps.now() - start >= timeoutMs) {
+        return {
+          found: [],
+          conversation: [],
+          waitedMs: deps.now() - start,
+          timedOut: true,
+          error: lastError,
+        };
+      }
+      await deps.wait(pollMs);
+      continue;
+    }
+    const found = conversation.filter(fromReviewer);
     if (found.length > 0) {
       if (debounceMs <= 0) {
         return { found, conversation, waitedMs: deps.now() - start, timedOut: false };
@@ -236,10 +263,21 @@ async function waitForReview(
       let ids = new Set(found.map((entry) => entry.id));
       for (;;) {
         await deps.wait(debounceMs);
-        settledConversation = await deps.github.conversation(pullRequest);
-        settledFound = settledConversation.filter(
-          (note) => note.author === reviewer && !seen.has(note.id),
-        );
+        let next: ReviewNote[];
+        try {
+          next = await deps.github.conversation(pullRequest);
+        } catch {
+          // The batch in hand is complete as of the last successful read —
+          // hand it over rather than losing it to a failed re-poll.
+          return {
+            found: settledFound,
+            conversation: settledConversation,
+            waitedMs: deps.now() - start,
+            timedOut: false,
+          };
+        }
+        settledConversation = next;
+        settledFound = settledConversation.filter(fromReviewer);
         const grew = settledFound.some((entry) => !ids.has(entry.id));
         if (!grew) {
           return {
@@ -253,10 +291,35 @@ async function waitForReview(
       }
     }
     if (deps.now() - start >= timeoutMs) {
-      return { found: [], conversation, waitedMs: deps.now() - start, timedOut: true };
+      return {
+        found: [],
+        conversation,
+        waitedMs: deps.now() - start,
+        timedOut: true,
+        error: lastError,
+      };
     }
     await deps.wait(pollMs);
   }
+}
+
+// The post-merge conversation is the close-reading record in land.json, so a
+// transient API failure must not quietly become an empty list. Retry; the
+// caller records an explicit gap when even the retries fail.
+async function captureConversation(
+  deps: Pick<LandDeps, "github">,
+  pullRequest: number,
+  attempts = 3,
+): Promise<ReviewNote[]> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await deps.github.conversation(pullRequest);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // Phase one of landing: find the arm's pull request and run its review rounds.
@@ -332,11 +395,14 @@ export async function reviewArm(
           waitedMs: waited.waitedMs,
           timedOut: true,
           found: [],
+          error: waited.error,
         });
         note(
-          round === 1
-            ? `no review within ${Math.round(config.reviewTimeoutMs / 1000)}s — merging unreviewed`
-            : "no further review — done answering",
+          waited.error
+            ? `the conversation could not be read while waiting (${waited.error}) — round ${round} recorded as a timeout, not as reviewer silence`
+            : round === 1
+              ? `no review within ${Math.round(config.reviewTimeoutMs / 1000)}s — merging unreviewed`
+              : "no further review — done answering",
         );
         break;
       }
@@ -448,9 +514,19 @@ export async function mergeArm(
   };
 
   const merge = await deps.github.merge(record.pullRequest.number);
-  const conversation = await deps.github.conversation(
-    record.pullRequest.number,
-  );
+  // An empty conversation and an unreadable one must not look alike in the
+  // record: the comments stay re-fetchable from GitHub, but only if land.json
+  // says they are missing rather than absent.
+  let conversation: ReviewNote[] = [];
+  try {
+    conversation = await captureConversation(deps, record.pullRequest.number);
+  } catch (error) {
+    note(
+      `conversation unavailable at merge time (${
+        error instanceof Error ? error.message : String(error)
+      }) — an empty list here is a gap, re-fetch it from GitHub`,
+    );
+  }
 
   if (!merge.merged) {
     note(`merge failed: ${merge.error ?? "unknown error"}`);
@@ -485,17 +561,28 @@ export async function blockArm(
 ): Promise<LandingRecord> {
   if (record.status !== "ready") return record;
 
-  const note = `not merged: ${reason}`;
-  deps.note(note);
-  const conversation = record.pullRequest
-    ? await deps.github.conversation(record.pullRequest.number).catch(() => [])
-    : [];
+  const notes = [...record.notes, `not merged: ${reason}`];
+  deps.note(`not merged: ${reason}`);
+  let conversation: ReviewNote[] = [];
+  if (record.pullRequest) {
+    try {
+      conversation = await captureConversation(deps, record.pullRequest.number);
+    } catch (error) {
+      // Same rule as mergeArm: an unreadable conversation is recorded as a
+      // gap, never passed off as an empty one.
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(
+        `conversation unavailable while blocking (${message}) — an empty list here is a gap, re-fetch it from GitHub`,
+      );
+      deps.note(`conversation unavailable while blocking (${message})`);
+    }
+  }
   return {
     ...record,
     status: "blocked",
     completedAt: new Date().toISOString(),
     conversation,
-    notes: [...record.notes, note],
+    notes,
   };
 }
 

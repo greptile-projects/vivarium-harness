@@ -4,6 +4,7 @@ import {
   armGitHub,
   pullRequestNumber,
   pullRequestUrl,
+  sameLogin,
   slugFromRemote,
 } from "../src/harness/github.js";
 import type { ArmConfig } from "../src/harness/config.js";
@@ -334,6 +335,159 @@ describe("conversation", () => {
       "repos/org/repo/pulls/comments/10/reactions",
     );
   });
+
+  test("keeps an inline comment's diff anchor", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [] })),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          {
+            id: 10,
+            body: "finding",
+            created_at: "2026-07-25T01:00:00Z",
+            path: "src/session.ts",
+            line: 42,
+            original_line: 40,
+            diff_hunk: "@@ -38,4 +40,4 @@\n context",
+          },
+        ]),
+      ),
+    });
+
+    const notes = await armGitHub(arm(), exec).conversation(7);
+
+    expect(notes[0]).toMatchObject({
+      path: "src/session.ts",
+      line: 42,
+      originalLine: 40,
+      diffHunk: "@@ -38,4 +40,4 @@\n context",
+    });
+  });
+
+  // An empty conversation and an unreadable one must never look alike: a rate
+  // limit during the review wait would read as reviewer silence, and a failure
+  // at merge time would write `conversation: []` into land.json as if the
+  // review never happened.
+  test("throws when the inline comments cannot be read", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [] })),
+      "gh api repos/org/repo/issues/7/comments": ok("[]"),
+      "gh api repos/org/repo/pulls/7/comments": {
+        code: 1,
+        stdout: "",
+        stderr: "HTTP 403: rate limit exceeded",
+      },
+    });
+
+    await expect(armGitHub(arm(), exec).conversation(7)).rejects.toThrow(
+      /rate limit exceeded/,
+    );
+  });
+
+  test("throws when the issue comments cannot be read", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [] })),
+      "gh api repos/org/repo/issues/7/comments": {
+        code: 1,
+        stdout: "",
+        stderr: "HTTP 502",
+      },
+    });
+
+    await expect(armGitHub(arm(), exec).conversation(7)).rejects.toThrow(
+      /HTTP 502/,
+    );
+  });
+
+  test("throws when the reviews cannot be read", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": { code: 1, stdout: "", stderr: "HTTP 500" },
+    });
+
+    await expect(armGitHub(arm(), exec).conversation(7)).rejects.toThrow(
+      /HTTP 500/,
+    );
+  });
+
+  test("throws when the origin remote cannot be resolved", async () => {
+    const { exec } = recorder({
+      "git remote get-url": { code: 128, stdout: "", stderr: "not a repo" },
+      "gh pr view": ok(JSON.stringify({ reviews: [] })),
+    });
+
+    await expect(armGitHub(arm(), exec).conversation(7)).rejects.toThrow(
+      /origin remote/,
+    );
+  });
+});
+
+describe("merge", () => {
+  test("confirms the merge off the pull request state", async () => {
+    const { exec } = recorder({
+      "gh pr merge": ok("merged\n"),
+      "gh pr view 7": ok(
+        JSON.stringify({
+          state: "MERGED",
+          mergedAt: "2026-07-25T01:00:00Z",
+          mergeCommit: { oid: "c".repeat(40) },
+        }),
+      ),
+    });
+
+    const outcome = await armGitHub(arm(), exec).merge(7);
+
+    expect(outcome).toEqual({
+      merged: true,
+      method: "merge",
+      mergedAt: "2026-07-25T01:00:00Z",
+      commit: "c".repeat(40),
+      error: undefined,
+    });
+  });
+
+  // A transient view failure after a successful merge must not record
+  // merge-failed: that halts the climb with the box unchecked while the pull
+  // request sits merged on GitHub, and the re-run rebuilds a solved rung.
+  test("falls back to the merge exit code when the state cannot be re-read", async () => {
+    const { exec, calls } = recorder({
+      "gh pr merge": ok(""),
+      "gh pr view 7": { code: 1, stdout: "", stderr: "HTTP 503" },
+    });
+
+    const outcome = await armGitHub(arm(), exec).merge(7);
+
+    expect(outcome.merged).toBe(true);
+    // The gap is named rather than left as ordinary missing fields.
+    expect(outcome.error).toContain("could not be re-read");
+    // The view was retried before falling back.
+    const views = calls.filter((call) => call.args[1] === "view");
+    expect(views).toHaveLength(3);
+  });
+
+  test("a failed merge with a failed re-read stays failed", async () => {
+    const { exec } = recorder({
+      "gh pr merge": { code: 1, stdout: "", stderr: "merge conflict" },
+      "gh pr view 7": { code: 1, stdout: "", stderr: "HTTP 503" },
+    });
+
+    const outcome = await armGitHub(arm(), exec).merge(7);
+
+    expect(outcome.merged).toBe(false);
+    expect(outcome.error).toContain("merge conflict");
+  });
+
+  test("a failed merge command still counts when the state says MERGED", async () => {
+    const { exec } = recorder({
+      "gh pr merge": { code: 1, stdout: "", stderr: "already merged" },
+      "gh pr view 7": ok(JSON.stringify({ state: "MERGED" })),
+    });
+
+    expect((await armGitHub(arm(), exec).merge(7)).merged).toBe(true);
+  });
 });
 
 describe("headSha", () => {
@@ -412,5 +566,17 @@ describe("pure helpers", () => {
   test("pullRequestNumber reads the number back off a URL", () => {
     expect(pullRequestNumber("https://github.com/org/repo/pull/12")).toBe(12);
     expect(pullRequestNumber("https://github.com/org/repo")).toBeUndefined();
+  });
+
+  // REST says `greptile-apps[bot]`, GraphQL says `greptile-apps`, and the
+  // conversation merges notes from both — so the reviewer match has to treat
+  // the two spellings as one login or review bodies silently fail the filter.
+  test("sameLogin treats the REST and GraphQL bot spellings as one login", () => {
+    expect(sameLogin("greptile-apps", "greptile-apps[bot]")).toBe(true);
+    expect(sameLogin("greptile-apps[bot]", "greptile-apps")).toBe(true);
+    expect(sameLogin("greptile-apps[bot]", "greptile-apps[bot]")).toBe(true);
+    expect(sameLogin("greptile-apps", "other-bot")).toBe(false);
+    // Only a trailing suffix is a bot marker.
+    expect(sameLogin("a[bot]b", "ab")).toBe(false);
   });
 });

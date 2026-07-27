@@ -9,6 +9,7 @@ import type {
 import { pullRequestUrl, slugFromRemote } from "../src/harness/github.js";
 import {
   asksSomething,
+  blockArm,
   landingError,
   mergeArm,
   prepareArm,
@@ -761,4 +762,168 @@ describe("telling an acknowledgement from a comment", () => {
     expect(asksSomething(body("no test covers this"))).toBe(true);
   });
 
+});
+
+describe("the reviewer's two login spellings", () => {
+  // `gh pr view --json reviews` (GraphQL) reports a bot without the `[bot]`
+  // suffix REST keeps, and the conversation merges both sources — so a review
+  // body authored by "greptile-apps" must still count as the configured
+  // "greptile-apps[bot]" reviewer, or an approval-only review reads as
+  // reviewer silence and the round times out.
+  it("counts a GraphQL-spelled review body as reviewer activity", async () => {
+    const reviewBody: ReviewNote = {
+      id: "review:1",
+      kind: "review",
+      author: "greptile-apps",
+      body: "please rename this before merging",
+      createdAt: "2026-07-24T00:00:00Z",
+      state: "COMMENTED",
+    };
+    const github = fakeGitHub({ conversations: [[reviewBody]] });
+    const prompts: string[] = [];
+    const record = await landArm(reviewed, config, succeeded(pr.url), deps(
+      github,
+      async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      },
+    ));
+
+    expect(record.status).toBe("merged");
+    expect(prompts).toHaveLength(1);
+    expect(record.reviewRounds[0]?.timedOut).toBe(false);
+    expect(record.reviewRounds[0]?.found.map((entry) => entry.id)).toEqual([
+      "review:1",
+    ]);
+  });
+});
+
+describe("a conversation that cannot be read", () => {
+  it("keeps polling past a failed read and still finds the review", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "review-comment:1")]],
+    });
+    const conversation = github.conversation.bind(github);
+    let failures = 1;
+    github.conversation = async (pullRequest) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("HTTP 403: rate limit exceeded");
+      }
+      return conversation(pullRequest);
+    };
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(pr.url),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(record.reviewRounds[0]?.timedOut).toBe(false);
+    expect(record.reviewRounds[0]?.found).toHaveLength(1);
+  });
+
+  // "The API was dark" must not be recorded as "the reviewer said nothing":
+  // the two look identical in a timed-out round unless the error is kept.
+  it("records an API-dark wait as a timeout with the error, not as silence", async () => {
+    const github = fakeGitHub({});
+    github.conversation = async () => {
+      throw new Error("HTTP 403: rate limit exceeded");
+    };
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(pr.url),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(record.reviewRounds[0]?.timedOut).toBe(true);
+    expect(record.reviewRounds[0]?.error).toContain("rate limit exceeded");
+  });
+
+  it("records a merge-time capture failure as a gap, never as an empty list", async () => {
+    const github = fakeGitHub({});
+    let attempts = 0;
+    github.conversation = async () => {
+      attempts += 1;
+      throw new Error("HTTP 502");
+    };
+
+    const record = await landArm(komodo, config, succeeded(pr.url), deps(
+      github,
+      answer,
+    ));
+
+    expect(record.status).toBe("merged");
+    expect(record.conversation).toEqual([]);
+    expect(
+      record.notes.some((entry) => entry.includes("conversation unavailable")),
+    ).toBe(true);
+    // Retried before giving up.
+    expect(attempts).toBe(3);
+  });
+
+  it("retries the merge-time capture and keeps a late answer", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "review-comment:9")]],
+    });
+    const conversation = github.conversation.bind(github);
+    let failures = 2;
+    github.conversation = async (pullRequest) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("HTTP 502");
+      }
+      return conversation(pullRequest);
+    };
+
+    const record = await mergeArm(
+      {
+        arm: "komodo",
+        status: "ready",
+        startedAt: "2026-07-24T00:00:00Z",
+        completedAt: "2026-07-24T00:00:00Z",
+        pullRequest: pr,
+        reviewRounds: [],
+        conversation: [],
+        notes: [],
+      },
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(record.conversation).toHaveLength(1);
+  });
+
+  it("records a blocked arm's capture failure as a gap too", async () => {
+    const github = fakeGitHub({});
+    github.conversation = async () => {
+      throw new Error("HTTP 502");
+    };
+
+    const record = await blockArm(
+      {
+        arm: "komodo",
+        status: "ready",
+        startedAt: "2026-07-24T00:00:00Z",
+        completedAt: "2026-07-24T00:00:00Z",
+        pullRequest: pr,
+        reviewRounds: [],
+        conversation: [],
+        notes: [],
+      },
+      "tuatara is merge-failed",
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("blocked");
+    expect(record.conversation).toEqual([]);
+    expect(
+      record.notes.some((entry) => entry.includes("conversation unavailable")),
+    ).toBe(true);
+  });
 });

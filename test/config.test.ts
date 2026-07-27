@@ -46,6 +46,30 @@ describe("parseArgs", () => {
     expect(config.containerImage).toBe(CONTAINER_IMAGE);
   });
 
+  // "" is falsy where the landing phase checks `arm.reviewer`, so an empty
+  // GREPTILE_BOT_LOGIN= line in .env would otherwise switch off every review
+  // round — the experiment's whole variable — while the run reported itself
+  // normal.
+  it("treats a blank reviewer login as unset, never as no reviewer", () => {
+    const blank = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      GREPTILE_BOT_LOGIN: "",
+    });
+    expect(blank.arms[1].reviewer).toBe("greptile-apps[bot]");
+
+    const spaces = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      GREPTILE_BOT_LOGIN: "   ",
+    });
+    expect(spaces.arms[1].reviewer).toBe("greptile-apps[bot]");
+
+    const custom = parseArgs(["--ticket", "ENG-123"], {
+      ...env,
+      GREPTILE_BOT_LOGIN: "other-reviewer[bot]",
+    });
+    expect(custom.arms[1].reviewer).toBe("other-reviewer[bot]");
+  });
+
   it("shares the configured image with container launchers", () => {
     const config = parseArgs(["--ticket", "ENG-123"], {
       ...env,

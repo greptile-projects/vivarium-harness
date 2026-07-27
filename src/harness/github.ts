@@ -69,6 +69,12 @@ export interface ReviewNote {
   createdAt: string;
   url?: string;
   path?: string;
+  // The diff anchor of an inline comment. Preserved because the branch it
+  // points into moves and gets deleted: the body alone says what the reviewer
+  // said, but not where.
+  line?: number;
+  originalLine?: number;
+  diffHunk?: string;
   state?: string;
   inReplyTo?: string;
 }
@@ -136,6 +142,17 @@ export function pullRequestNumber(url: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+// GitHub publishes a bot's login two ways: REST says `greptile-apps[bot]`,
+// GraphQL (`gh pr view --json reviews`) says `greptile-apps`. The conversation
+// merges notes from both, so one configured reviewer string can never
+// literally match every note it authored — review bodies would silently fail
+// the reviewer filter while inline comments passed it. Compare with the
+// suffix stripped from both sides.
+export function sameLogin(left: string, right: string): boolean {
+  const strip = (login: string): string => login.replace(/\[bot\]$/, "");
+  return strip(left) === strip(right);
+}
+
 function parseJson<T>(stdout: string): T | undefined {
   try {
     return JSON.parse(stdout) as T;
@@ -191,6 +208,9 @@ interface GhComment {
 
 interface GhReviewComment extends GhComment {
   path?: string;
+  line?: number;
+  original_line?: number;
+  diff_hunk?: string;
   in_reply_to_id?: number;
 }
 
@@ -250,8 +270,8 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // Two things must survive it, and neither is the arm's work to throw away:
     // `node_modules` (reinstalling per subticket, for days) and `LADDER.md`
     // (a symlink on the host, a bind mount in the container — deleting it
-    // blinds the arm to the ladder). No `-x`: ignored files stay, which is
-    // already most of what needs protecting.
+    // blinds the arm to the ladder). The `-x` on the clean below is deliberate;
+    // see its comment.
     async syncToBaseline() {
       const url = await remote();
       const slug = url ? slugFromRemote(url) : undefined;
@@ -406,18 +426,37 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // reaction counts are available; identities are fetched only for comments
     // whose count is nonzero, avoiding an API call per historical comment on
     // every poll.
+    //
+    // Every call here checks its exit code and throws. A failed `gh` used to
+    // fall through to an empty list, and an empty list is indistinguishable
+    // from a quiet reviewer: a rate limit during the review wait read as
+    // "merging unreviewed", and a failure at merge time wrote `conversation:
+    // []` into land.json — the close-reading record — with nothing anywhere
+    // saying it was a gap. Callers decide what a failure means (a failed poll
+    // is retried; a failed capture is recorded as unavailable), but only if
+    // they can see it.
     async conversation(pullRequest) {
       const notes: ReviewNote[] = [];
 
-      const view = await gh([
-        "pr",
-        "view",
-        String(pullRequest),
-        "--json",
-        "reviews",
-      ]);
-      const parsed =
-        view.code === 0 ? parseJson<GhReviewsResponse>(view.stdout) : undefined;
+      const api = async (args: string[], what: string): Promise<string> => {
+        const result = await gh(args);
+        if (result.code !== 0) {
+          throw new Error(
+            `could not read ${what} of pull request ${pullRequest}: ${
+              result.stderr.trim() ||
+              result.stdout.trim() ||
+              `gh exited ${result.code}`
+            }`,
+          );
+        }
+        return result.stdout;
+      };
+
+      const view = await api(
+        ["pr", "view", String(pullRequest), "--json", "reviews"],
+        "the reviews",
+      );
+      const parsed = parseJson<GhReviewsResponse>(view);
 
       for (const review of parsed?.reviews ?? []) {
         notes.push({
@@ -432,15 +471,27 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       }
       const url = await remote();
       const slug = url ? slugFromRemote(url) : undefined;
-      if (slug) {
+      if (!slug) {
+        // Only GitHub checkouts get here (see isGitHubCheckout), so a missing
+        // slug is a transient git failure — and returning the reviews alone
+        // would be the same silent partial capture the checks above exist to
+        // prevent.
+        throw new Error(
+          `could not resolve the origin remote in ${arm.repo} — comments unread`,
+        );
+      }
+      {
         const addReactions = async (
           comment: GhComment,
           parentKind: "issue-comment" | "review-comment",
           endpoint: string,
         ) => {
           if (!comment.id || (comment.reactions?.total_count ?? 0) === 0) return;
-          const response = await gh(["api", "--paginate", endpoint]);
-          for (const reaction of parseJson<GhReaction[]>(response.stdout) ?? []) {
+          const response = await api(
+            ["api", "--paginate", endpoint],
+            `reactions on comment ${comment.id}`,
+          );
+          for (const reaction of parseJson<GhReaction[]>(response) ?? []) {
             notes.push({
               id: `reaction:${parentKind}:${reaction.id ?? notes.length}`,
               kind: "reaction",
@@ -453,12 +504,11 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           }
         };
 
-        const issueComments = await gh([
-          "api",
-          "--paginate",
-          `repos/${slug}/issues/${pullRequest}/comments`,
-        ]);
-        for (const comment of parseJson<GhComment[]>(issueComments.stdout) ?? []) {
+        const issueComments = await api(
+          ["api", "--paginate", `repos/${slug}/issues/${pullRequest}/comments`],
+          "the issue comments",
+        );
+        for (const comment of parseJson<GhComment[]>(issueComments) ?? []) {
           notes.push({
             id: `issue-comment:${comment.id ?? notes.length}`,
             kind: "issue-comment",
@@ -476,13 +526,11 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
 
         // `--paginate` merges array responses into a single array, so this
         // stays one `JSON.parse` no matter how long the review gets.
-        const inline = await gh([
-          "api",
-          "--paginate",
-          `repos/${slug}/pulls/${pullRequest}/comments`,
-        ]);
-        for (const comment of parseJson<GhReviewComment[]>(inline.stdout) ??
-          []) {
+        const inline = await api(
+          ["api", "--paginate", `repos/${slug}/pulls/${pullRequest}/comments`],
+          "the inline comments",
+        );
+        for (const comment of parseJson<GhReviewComment[]>(inline) ?? []) {
           notes.push({
             id: `review-comment:${comment.id ?? notes.length}`,
             kind: "review-comment",
@@ -491,6 +539,9 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             createdAt: comment.created_at ?? "",
             url: comment.html_url,
             path: comment.path,
+            line: comment.line ?? undefined,
+            originalLine: comment.original_line ?? undefined,
+            diffHunk: comment.diff_hunk ?? undefined,
             inReplyTo:
               comment.in_reply_to_id === undefined
                 ? undefined
@@ -517,22 +568,33 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         "--merge",
         "--delete-branch",
       ]);
-      const view = await gh([
-        "pr",
-        "view",
-        String(pullRequest),
-        "--json",
-        "state,mergedAt,mergeCommit",
-      ]);
-      const parsed =
-        view.code === 0
-          ? parseJson<{
-              state?: string;
-              mergedAt?: string;
-              mergeCommit?: { oid?: string };
-            }>(view.stdout)
-          : undefined;
-      const merged = parsed?.state === "MERGED";
+
+      // The follow-up view is what decides `merged`, so it retries — and when
+      // it never answers, the merge command's own exit code decides instead.
+      // A transient failure here used to record a successful merge as
+      // merge-failed, which halts the climb with the box unchecked while the
+      // pull request sits merged on GitHub; the re-run then rebuilds a solved
+      // rung — the silent desync the merge barrier exists to prevent.
+      let parsed:
+        | {
+            state?: string;
+            mergedAt?: string;
+            mergeCommit?: { oid?: string };
+          }
+        | undefined;
+      for (let attempt = 1; attempt <= 3 && !parsed; attempt += 1) {
+        const view = await gh([
+          "pr",
+          "view",
+          String(pullRequest),
+          "--json",
+          "state,mergedAt,mergeCommit",
+        ]);
+        if (view.code === 0) {
+          parsed = parseJson<typeof parsed>(view.stdout);
+        }
+      }
+      const merged = parsed ? parsed.state === "MERGED" : merge.code === 0;
 
       return {
         merged,
@@ -540,7 +602,9 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         mergedAt: parsed?.mergedAt,
         commit: parsed?.mergeCommit?.oid,
         error: merged
-          ? undefined
+          ? parsed
+            ? undefined
+            : "merge reported success but its state could not be re-read — mergedAt and commit are missing, not absent"
           : merge.stderr.trim() ||
             merge.stdout.trim() ||
             `pull request ${pullRequest} is ${parsed?.state ?? "not merged"}`,

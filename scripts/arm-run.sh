@@ -120,11 +120,23 @@ if [[ -n "$token" ]]; then
   fi
 fi
 
+# Each arm gets a user-defined bridge network of its own. On Docker's default
+# bridge every container can reach every other, and the GUI stack listens on
+# 0.0.0.0 *inside* the container — so from the default bridge, one arm could
+# find the other's noVNC port and watch (or drive) its passwordless screen,
+# and mere reachability already proves another container exists. Containers on
+# different user-defined bridges cannot route to each other, while outbound
+# traffic (GitHub, package registries) is unaffected.
+network="$container-net"
+docker network inspect "$network" >/dev/null 2>&1 ||
+  docker network create "$network" >/dev/null
+
 # Build argv as an array so the optional token flags stay correctly split into
 # separate `-e` / `KEY=value` words.
 run_args=(
   -d --rm
   --name "$container"
+  --network "$network"
   -v "$repo:/workspace"
   -v "$HOME/.codex/auth.json:/codex/auth.json:ro"
   -v "$arm_home/sessions:/codex/sessions"

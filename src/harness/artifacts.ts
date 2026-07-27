@@ -275,13 +275,26 @@ export class RunArtifacts {
       json(record),
     );
 
-    if (persisted.threadId && persisted.transcript) {
+    // Retried from scratch, not only when the first copy succeeded: Codex can
+    // flush the session file after the session settles, and the review rounds
+    // run long after that — a transcript recorded `not-found` at finishArm is
+    // usually on disk by now, and leaving it `not-found` forever loses the
+    // whole session record over a timing accident.
+    if (persisted.threadId) {
       const codexHome = this.armCodexHomes[persisted.arm] ?? this.codexHome;
       const source = await findTranscript(
         join(codexHome, "sessions"),
         persisted.threadId,
       );
-      if (source) await copyFile(source, persisted.transcript);
+      if (source) {
+        const destination =
+          persisted.transcript ??
+          join(persisted.artifactDir, "transcript.jsonl");
+        await copyFile(source, destination);
+        persisted.transcript = destination;
+        persisted.transcriptSource = source;
+        persisted.transcriptStatus = "copied";
+      }
     }
 
     if (persisted.error !== undefined) {

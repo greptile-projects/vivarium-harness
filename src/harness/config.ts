@@ -207,7 +207,11 @@ export function parseArgs(
         sandbox: armSandbox(sandbox, env.TUATARA_CONTAINER),
         // The one asymmetry between the arms: this one has a reviewer whose
         // comments it has to answer on the record before its work lands.
-        reviewer: env.GREPTILE_BOT_LOGIN ?? REVIEWER_LOGIN,
+        // Blank falls back too, not just unset: "" is falsy where the landing
+        // phase checks `arm.reviewer`, so an empty GREPTILE_BOT_LOGIN= line in
+        // .env would silently switch off every review round — the experiment's
+        // whole variable — while the run reported itself normal.
+        reviewer: env.GREPTILE_BOT_LOGIN?.trim() || REVIEWER_LOGIN,
       },
     ],
     sandbox: sandbox ?? "workspace-write",

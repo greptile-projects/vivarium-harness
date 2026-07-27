@@ -163,7 +163,10 @@ inspect_arm() {
   if [[ "$branch" != "$main_branch" ]]; then
     git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
     if [[ -n "${open_pr:-}" ]] && command -v gh >/dev/null 2>&1; then
-      if (cd "$repo" && GH_TOKEN="$token" gh pr close "${open_pr%% *}" \
+      # open_pr is "#12 title"; gh wants the bare number, not "#12".
+      local pr_number="${open_pr%% *}"
+      pr_number="${pr_number#\#}"
+      if (cd "$repo" && GH_TOKEN="$token" gh pr close "$pr_number" \
         --comment "Closed by resume-clean.sh: the run building this subticket was interrupted; it will be rebuilt from a clean baseline." \
         >/dev/null 2>&1); then
         log "  closed $open_pr"

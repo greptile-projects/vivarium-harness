@@ -35,7 +35,7 @@ An example of an append to \`LOG.md\`: \`2026-07-26T22:57:40Z: Created this repo
 ## PR Instructions
 Your checkout is on the repository's default branch, at the commit the last piece of work landed on. You will need to checkout a new branch, create commits on it, and push it to GitHub using the \`gh\` CLI. Do **not** merge the PR yourself, it will be merged by the agent orchestrator.
 
-When you create a PR, always prefix the title *first* with \`codex\`. Example: \`[codex] nuked the codebase\`.
+When you create a PR, its title MUST begin with the literal prefix \`[codex] \` — the bracketed marker exactly as written, followed by one space, before anything else. Example: \`[codex] nuked the codebase\`.
 
 In addition, the description of each PR MUST begin with the original ticket, verbatim, in the following format:
 
@@ -53,7 +53,7 @@ End your final message in this exchange with a line of exactly this shape, and n
 PR: [pull request URL]
 <end_format>
 
-Work autonomously: do not ask the human/orchestrator questions or clarifications, request intervention, or wait for further instructions. You are expected to come back with a completed task and a PR; if you run into issues, diagnose failures and try alternative approaches. If, and only if, you cannot resolve a required blocker, you may ask for intervention - but note that this is a last resort.`;
+Work autonomously: do not ask the human/orchestrator questions or clarifications, request intervention, or wait for further instructions. You are expected to come back with a completed task and a PR; if you run into issues, diagnose failures and try alternative approaches.`;
 
 // Fetch both PR-level and inline review conversations.
 const fetchInstructions = (

@@ -100,4 +100,4 @@ else
   done
 fi
 
-echo "chromium on $DISPLAY — DevTools: http://127.0.0.1:$port (profile: $profile)"
+echo "chromium on $DISPLAY - DevTools: http://127.0.0.1:$port (profile: $profile)"

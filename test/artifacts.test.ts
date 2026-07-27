@@ -177,4 +177,80 @@ describe("run artifacts", () => {
       '{"arm":"komodo"}\n',
     );
   });
+
+  // Codex can flush a session file after the session settles, so the copy at
+  // finishArm can miss it — and the landing record is written long after,
+  // when the file exists. Leaving the arm `not-found` forever would lose the
+  // whole session record over a timing accident.
+  it("recovers at landing time a transcript the first copy missed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const codexHome = join(root, "codex");
+    const sessions = join(codexHome, "sessions", "2026", "07", "27");
+    await mkdir(sessions, { recursive: true });
+
+    const config: HarnessConfig = {
+      ticket: "ENG-7",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome,
+      containerImage: "vivarium-arm",
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+    };
+    const artifacts = await RunArtifacts.create(config, "exact prompt");
+    const threadId = "late-thread";
+    const artifactDir = await artifacts.startAttempt(
+      config.arms[0],
+      { prompt: "exact prompt", cwd: "/tmp/komodo" },
+      "2026-07-27T00:00:00.000Z",
+      1,
+    );
+    // The session file does not exist yet when the arm finishes…
+    const finished = await artifacts.finishArm({
+      arm: "komodo",
+      repo: "/tmp/komodo",
+      attempt: 1,
+      maxAttempts: 1,
+      status: "succeeded",
+      startedAt: "2026-07-27T00:00:00.000Z",
+      completedAt: "2026-07-27T00:01:00.000Z",
+      durationMs: 60_000,
+      threadId,
+      output: "komodo output",
+      artifactDir,
+    });
+    expect(finished.transcriptStatus).toBe("not-found");
+
+    // …and appears before the landing record is written.
+    await writeFile(
+      join(sessions, `rollout-2026-07-27-${threadId}.jsonl`),
+      '{"arm":"komodo","late":true}\n',
+    );
+    const landed = await artifacts.recordLanding(
+      {
+        arm: "komodo",
+        status: "merged",
+        startedAt: "2026-07-27T00:01:00.000Z",
+        completedAt: "2026-07-27T00:02:00.000Z",
+        reviewRounds: [],
+        conversation: [],
+        notes: [],
+      },
+      finished,
+    );
+
+    expect(landed.transcriptStatus).toBe("copied");
+    expect(await readFile(join(artifactDir, "transcript.jsonl"), "utf8")).toBe(
+      '{"arm":"komodo","late":true}\n',
+    );
+  });
 });
