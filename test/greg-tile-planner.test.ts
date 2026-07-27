@@ -333,6 +333,25 @@ describe("planNextMilestone", () => {
     expect(ladder).not.toContain("## Milestone 2");
   });
 
+  it("rejects a turn that duplicates a subticket number", async () => {
+    const ladderPath = await scratchLadder();
+    // Milestone 1 is present and unchecked — but 1.1 appears twice, and the
+    // loop would rebuild whichever twin stays unchecked forever.
+    const runner: AttemptRunner = async (spec) => {
+      await appendFile(
+        join(spec.cwd, basename(ladderPath)),
+        "\n## Milestone 1: First\n\n### [ ] 1.1 A\n\nbody\n\n### [ ] 1.1 A again\n\nbody\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await expect(
+      planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
+    ).rejects.toThrow(/duplicate subticket number \(1\.1\)/);
+    expect(await readLadder(ladderPath)).not.toContain("## Milestone 1");
+  });
+
   it("accepts a milestone even while an earlier one is still unbuilt (write-ahead)", async () => {
     const ladderPath = await scratchLadder();
     // Milestone 1 was planned but never built — the write-ahead case.

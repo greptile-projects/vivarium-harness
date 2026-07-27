@@ -184,16 +184,22 @@ export async function completeSubticket(
   const ladder = await readLadder(ladderPath);
   const lines = ladder.split("\n");
 
-  const headingIndex = lines.findIndex((line) => {
-    const match = line.match(SUBTICKET_HEADING);
-    return match?.[2] === number;
-  });
-  if (headingIndex === -1) {
+  // Prefer the first *unchecked* heading with this number. Numbers should be
+  // unique (the planner rejects duplicates), but if one ever slips in by
+  // hand-edit, flipping the first match could hit an already-checked twin and
+  // leave the built rung looking pending forever — the loop would rebuild it
+  // indefinitely. Falling back to any match keeps a re-complete of an
+  // already-checked box idempotent.
+  const matches = lines
+    .map((line, index) => ({ index, match: line.match(SUBTICKET_HEADING) }))
+    .filter(({ match }) => match?.[2] === number);
+  if (matches.length === 0) {
     throw new Error(`Cannot complete subticket ${number}: not found in ladder`);
   }
+  const target = matches.find(({ match }) => match?.[1] === " ") ?? matches[0]!;
 
   // Flip the checkbox on the heading line only.
-  lines[headingIndex] = lines[headingIndex].replace(/\[( |x|X)\]/, "[x]");
+  lines[target.index] = lines[target.index]!.replace(/\[( |x|X)\]/, "[x]");
 
   await writeFile(ladderPath, lines.join("\n"), "utf8");
 }

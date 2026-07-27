@@ -223,6 +223,24 @@ export async function planNextMilestone(
       );
     }
 
+    // A duplicate subticket number is the one malformed shape the loop cannot
+    // survive: completeSubticket flips the first heading that matches the
+    // number, so a duplicated 3.1 can leave an unchecked twin that
+    // nextPendingSubticket keeps finding — the climb rebuilds the same rung
+    // forever. Rejected here, while the ladder is still untouched.
+    const numbers = parseSubtickets(planned ?? "").map(
+      (subticket) => subticket.number,
+    );
+    const duplicate = numbers.find(
+      (number, index) => numbers.indexOf(number) !== index,
+    );
+    if (duplicate !== undefined) {
+      throw new Error(
+        `Greg's turn leaves the ladder with a duplicate subticket number (${duplicate}). ` +
+          "The turn is discarded and the ladder is unchanged.",
+      );
+    }
+
     // Carry Greg's validated edit back to the real ladder — written in place,
     // never renamed, so the arms' read-only bind mount keeps showing current
     // text instead of pinning the inode it started on. Only when he actually

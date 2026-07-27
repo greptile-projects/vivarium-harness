@@ -201,6 +201,38 @@ describe("completeSubticket", () => {
       /not found in ladder/,
     );
   });
+
+  // Duplicate numbers should never exist (the planner rejects them), but a
+  // hand-edit can still produce one — and flipping the first match would hit
+  // the already-checked twin, leave the built rung pending, and send the loop
+  // rebuilding it forever.
+  it("flips the unchecked twin when a number is duplicated", async () => {
+    const root = await mkdtemp(join(tmpdir(), "greg-ladder-"));
+    temporaryDirectories.push(root);
+    const ladderPath = join(root, "LADDER.md");
+    await writeFile(
+      ladderPath,
+      [
+        "## Milestone 1: One",
+        "",
+        "### [x] 1.1 Done already",
+        "",
+        "body",
+        "",
+        "### [ ] 1.1 The twin",
+        "",
+        "body",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await completeSubticket(ladderPath, "1.1");
+    const ladder = await readLadder(ladderPath);
+
+    expect(ladder).toContain("### [x] 1.1 The twin");
+    expect(nextPendingSubticket(ladder)).toBeNull();
+  });
 });
 
 describe("outcome lines", () => {
