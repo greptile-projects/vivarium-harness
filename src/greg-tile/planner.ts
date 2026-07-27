@@ -120,8 +120,8 @@ export async function planNextMilestone(
     // and that "Tuatara is presented first" was in his context on *every*
     // planning turn — automatically, with no action on his part. The same
     // directory also holds `results/` (both arms' pull requests and
-    // transcripts), `.env` (both repo paths and both tokens), and the two
-    // checkouts as siblings. `prompts.ts` tells him he is blind to the
+    // transcripts), `.env` (both repo URLs and both tokens), and, on the host
+    // smoke path, both checkouts. `prompts.ts` tells him he is blind to the
     // builders; this is what makes that true rather than merely asserted.
     //
     // The scratch directory is outside the repo, so even a `..` walk lands in

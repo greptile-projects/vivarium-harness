@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readdir, rename, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
+import type { TranscriptCapture } from "./environment.js";
 import type { Baseline } from "./github.js";
 import type { LandingRecord } from "./land.js";
 
@@ -20,7 +28,13 @@ export interface PersistedArmResult {
   artifactDir: string;
   transcript?: string;
   transcriptSource?: string;
-  transcriptStatus?: "copied" | "not-found" | "unavailable-no-thread-id";
+  transcriptStatus?:
+    | "copied"
+    | "partial"
+    | "not-found"
+    | "copy-failed"
+    | "unavailable-no-thread-id";
+  transcriptError?: string;
 }
 
 interface RunManifest {
@@ -32,6 +46,7 @@ interface RunManifest {
   startedAt: string;
   completedAt?: string;
   error?: string;
+  cleanupError?: string;
   // Where each arm's checkout stood before the run — the two should match, and
   // when they do not that is the finding, not a detail.
   baselines?: Partial<Record<ArmName, Baseline>>;
@@ -98,10 +113,6 @@ export class RunArtifacts {
   readonly runId: string;
   readonly directory: string;
   private readonly codexHome: string;
-  // Per-arm host CODEX_HOME, used to locate that arm's transcript. Containerized
-  // arms write sessions inside the container, so their home differs from the
-  // run-wide one; arms absent here fall back to `codexHome`.
-  private readonly armCodexHomes: Record<string, string>;
   private manifest: RunManifest;
   private manifestWrite: Promise<void> = Promise.resolve();
 
@@ -110,12 +121,10 @@ export class RunArtifacts {
     directory: string,
     codexHome: string,
     startedAt: string,
-    armCodexHomes: Record<string, string>,
   ) {
     this.runId = runId;
     this.directory = directory;
     this.codexHome = codexHome;
-    this.armCodexHomes = armCodexHomes;
     this.manifest = {
       schemaVersion: 3,
       runId,
@@ -133,18 +142,11 @@ export class RunArtifacts {
     const runId = `${startedAt.replaceAll(":", "-")}-${randomUUID()}`;
     const directory = resolve(config.resultsDir, runId);
     const globalCodexHome = resolve(config.codexHome);
-    const armCodexHomes: Record<string, string> = {};
-    for (const arm of config.arms) {
-      armCodexHomes[arm.name] = arm.codexHome
-        ? resolve(arm.codexHome)
-        : globalCodexHome;
-    }
     const artifacts = new RunArtifacts(
       runId,
       directory,
       globalCodexHome,
       startedAt,
-      armCodexHomes,
     );
 
     await mkdir(directory, { recursive: true });
@@ -201,6 +203,7 @@ export class RunArtifacts {
   async finishArm(
     result: PersistedArmResult,
     rawResponse?: unknown,
+    captureTranscript?: TranscriptCapture,
   ): Promise<PersistedArmResult> {
     const directory = result.artifactDir;
     const persisted = { ...result };
@@ -215,24 +218,7 @@ export class RunArtifacts {
       await atomicWrite(join(directory, "error.txt"), `${result.error}\n`);
     }
 
-    if (result.threadId) {
-      const codexHome = this.armCodexHomes[result.arm] ?? this.codexHome;
-      const source = await findTranscript(
-        join(codexHome, "sessions"),
-        result.threadId,
-      );
-      if (source) {
-        const destination = join(directory, "transcript.jsonl");
-        await copyFile(source, destination);
-        persisted.transcript = destination;
-        persisted.transcriptSource = source;
-        persisted.transcriptStatus = "copied";
-      } else {
-        persisted.transcriptStatus = "not-found";
-      }
-    } else {
-      persisted.transcriptStatus = "unavailable-no-thread-id";
-    }
+    await this.captureTranscript(persisted, captureTranscript);
 
     await atomicWrite(join(directory, "status.json"), json(persisted));
     const previous = this.manifest.arms[result.arm];
@@ -267,6 +253,7 @@ export class RunArtifacts {
   async recordLanding(
     record: LandingRecord,
     result: PersistedArmResult,
+    captureTranscript?: TranscriptCapture,
   ): Promise<PersistedArmResult> {
     const persisted = { ...result };
     await mkdir(join(this.directory, record.arm), { recursive: true });
@@ -280,22 +267,7 @@ export class RunArtifacts {
     // run long after that — a transcript recorded `not-found` at finishArm is
     // usually on disk by now, and leaving it `not-found` forever loses the
     // whole session record over a timing accident.
-    if (persisted.threadId) {
-      const codexHome = this.armCodexHomes[persisted.arm] ?? this.codexHome;
-      const source = await findTranscript(
-        join(codexHome, "sessions"),
-        persisted.threadId,
-      );
-      if (source) {
-        const destination =
-          persisted.transcript ??
-          join(persisted.artifactDir, "transcript.jsonl");
-        await copyFile(source, destination);
-        persisted.transcript = destination;
-        persisted.transcriptSource = source;
-        persisted.transcriptStatus = "copied";
-      }
-    }
+    await this.captureTranscript(persisted, captureTranscript);
 
     if (persisted.error !== undefined) {
       await atomicWrite(
@@ -332,6 +304,71 @@ export class RunArtifacts {
     this.manifest.error = error instanceof Error ? error.message : String(error);
     await atomicWrite(join(this.directory, "error.txt"), `${this.manifest.error}\n`);
     await this.writeManifest();
+  }
+
+  // Ephemeral teardown happens after the run's irreversible work. A failure
+  // here must remain visible without rewriting a completed run as failed (or
+  // replacing the primary error from an already-failed run).
+  async recordCleanupError(error: unknown): Promise<void> {
+    this.manifest.cleanupError =
+      error instanceof Error ? error.message : String(error);
+    await atomicWrite(
+      join(this.directory, "cleanup-error.txt"),
+      `${this.manifest.cleanupError}\n`,
+    );
+    await this.writeManifest();
+  }
+
+  // Transcript export is evidence collection, not arm execution. Keep a
+  // failed copy as an explicit diagnostic, but never make successful work
+  // retry or prevent a ready pull request from merging because Docker or the
+  // host session directory was temporarily unavailable.
+  private async captureTranscript(
+    persisted: PersistedArmResult,
+    captureTranscript?: TranscriptCapture,
+  ): Promise<void> {
+    if (!persisted.threadId) {
+      persisted.transcriptStatus = "unavailable-no-thread-id";
+      return;
+    }
+
+    const destination =
+      persisted.transcript ??
+      join(persisted.artifactDir, "transcript.jsonl");
+    const staging = `${destination}.${randomUUID()}.capture`;
+    try {
+      const source = captureTranscript
+        ? await captureTranscript(
+            persisted.arm,
+            persisted.threadId,
+            staging,
+          )
+        : await findTranscript(
+            join(this.codexHome, "sessions"),
+            persisted.threadId,
+          );
+      if (!source) {
+        await rm(staging, { force: true }).catch(() => {});
+        if (!persisted.transcript) persisted.transcriptStatus = "not-found";
+        return;
+      }
+      if (!captureTranscript) await copyFile(source, staging);
+      // A landing-time refresh must not write over the only durable copy until
+      // the replacement is complete. `rename` is atomic within this artifact
+      // directory, so a failed docker cp leaves the earlier transcript intact.
+      await rename(staging, destination);
+      persisted.transcript = destination;
+      persisted.transcriptSource = source;
+      persisted.transcriptStatus = "copied";
+      delete persisted.transcriptError;
+    } catch (error) {
+      await rm(staging, { force: true }).catch(() => {});
+      persisted.transcriptStatus = persisted.transcript
+        ? "partial"
+        : "copy-failed";
+      persisted.transcriptError =
+        error instanceof Error ? error.message : String(error);
+    }
   }
 
   private attemptDirectory(arm: ArmName, attempt: number): string {

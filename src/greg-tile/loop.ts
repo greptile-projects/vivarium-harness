@@ -22,7 +22,8 @@ import {
 } from "../harness/state.js";
 import { planNextMilestone } from "./planner.js";
 
-// The one shared ladder, mounted into both checkouts.
+// The one shared ladder, mounted into both arm containers (or symlinked into
+// local checkouts on the host-only smoke path).
 export const LADDER_PATH = resolve("LADDER.md");
 
 // The runaway guard (defined in config.ts with the other fixed constants) is
@@ -59,14 +60,17 @@ export interface GregDeps {
 }
 
 // The shared preamble of both loop entrypoints: seed the ladder file if this is
-// the very first run, and make sure each checkout can see it.
+// the very first run. Container launchers mount it themselves; host smoke-test
+// checkouts get the legacy symlink.
 async function setupLadder(
   base: HarnessConfig,
   ladderPath: string,
   log: (message: string) => void,
 ): Promise<void> {
   await initLadder(ladderPath, NORTH_STAR);
-  const repos = base.arms.map((arm) => arm.repo);
+  const repos = base.arms
+    .filter((arm) => arm.container === undefined)
+    .map((arm) => arm.repo);
   for (const link of await ensureLadderLinks(ladderPath, repos)) {
     log(link.message);
   }

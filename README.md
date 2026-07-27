@@ -47,20 +47,22 @@ needs [bun](https://bun.sh), docker, and an authenticated codex CLI
 
 ```bash
 bun install
-cp .env.example .env    # point KOMODO_REPO / TUATARA_REPO at two checkouts
+cp .env.example .env    # set two HTTPS remotes and the matching arm tokens
 docker build -t vivarium-arm .
-scripts/arm-run.sh komodo
-scripts/arm-run.sh tuatara
 ```
 
-`.env` is the one place deployment config lives — checkouts, container names,
-the shared image, and each arm's github token. both the harness and
-`arm-run.sh` read it, so nothing goes on the command line.
+`.env` is the one place deployment config lives — repository URLs, container
+name prefixes, the shared image, and each arm's github token. for every
+subticket the harness creates two fresh containers from that image,
+`arm-run.sh` clones one remote into each private `/workspace`, and the token
+stays in `GH_TOKEN`, never in the remote URL. after build, retries, review, and
+merge, transcripts are copied into the run artifacts and the containers,
+nested-docker volumes, browser profiles, and networks are destroyed.
 
-each arm container brings its own **docker daemon** (nested, not the host's
+each fresh arm container brings its own **docker daemon** (nested, not the host's
 socket — that would let either arm reach the other's checkout and this file)
 and its own **screen**: an X display with chromium on it, so an arm can
-actually look at the page it built. `arm-run.sh` prints a
+actually look at the page it built. the harness reports a
 `http://127.0.0.1:6080/vnc.html` link per arm if you want to watch.
 
 ## run
@@ -87,13 +89,13 @@ before the stop is under `results/live-<ts>/<arm>/progress.log`.
 ## if a run gets interrupted
 
 start it again — a box is only checked after its run succeeded, so the next
-`bun start` picks that subticket up. clean the checkouts first, though, or the
-arm that already pushed re-solves a solved ticket in seconds, "wins", and that
-rung's comparison is quietly junk:
+`bun start` starts both arms from fresh clones and picks that subticket up.
+normally the harness tears its ephemeral resources down even on failure; after
+a host crash, remove anything it could not reach:
 
 ```bash
-scripts/resume-clean.sh          # what did the interrupted run leave behind?
-scripts/resume-clean.sh --apply  # reset both arms to origin/main
+scripts/resume-clean.sh          # report leftover ephemeral environments
+scripts/resume-clean.sh --apply  # close discoverable PRs and destroy them
 ```
 
 it never touches `main`, and already-merged work is reported rather than thrown

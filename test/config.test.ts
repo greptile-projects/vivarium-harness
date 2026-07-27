@@ -275,14 +275,78 @@ describe("validateConfig containerization", () => {
   });
 
   it("accepts both containerized", async () => {
-    const { komodo, tuatara } = await twoRepos();
     const resolved = await validateConfig(
-      config(komodo, tuatara, {
+      config(
+        "https://github.com/example/vivarium-komodo.git",
+        "https://github.com/example/vivarium-tuatara.git",
+        {
         komodo: "vivarium-komodo",
         tuatara: "vivarium-tuatara",
-      }),
+        },
+      ),
     );
     expect(resolved.arms.every((arm) => arm.container)).toBe(true);
+    expect(resolved.arms.map((arm) => arm.repo)).toEqual([
+      "https://github.com/example/vivarium-komodo.git",
+      "https://github.com/example/vivarium-tuatara.git",
+    ]);
+  });
+
+  it("rejects local checkout paths in container mode", async () => {
+    const { komodo, tuatara } = await twoRepos();
+    await expect(
+      validateConfig(
+        config(komodo, tuatara, {
+          komodo: "vivarium-komodo",
+          tuatara: "vivarium-tuatara",
+        }),
+      ),
+    ).rejects.toThrow(/HTTPS GitHub clone URL/);
+  });
+
+  it("rejects the same container remote in both arms", async () => {
+    await expect(
+      validateConfig(
+        config(
+          "https://github.com/example/repo.git",
+          "https://github.com/EXAMPLE/REPO",
+          {
+            komodo: "vivarium-komodo",
+            tuatara: "vivarium-tuatara",
+          },
+        ),
+      ),
+    ).rejects.toThrow(/different GitHub repositories/);
+  });
+
+  it("rejects credentials embedded in a container remote", async () => {
+    await expect(
+      validateConfig(
+        config(
+          "https://secret@github.com/example/komodo.git",
+          "https://github.com/example/tuatara.git",
+          {
+            komodo: "vivarium-komodo",
+            tuatara: "vivarium-tuatara",
+          },
+        ),
+      ),
+    ).rejects.toThrow(/must not contain credentials/);
+  });
+
+  it("rejects duplicate ephemeral container name prefixes", async () => {
+    await expect(
+      validateConfig(
+        config(
+          "https://github.com/example/komodo.git",
+          "https://github.com/example/tuatara.git",
+          {
+            komodo: "vivarium-arm",
+            tuatara: "vivarium-arm",
+          },
+        ),
+      ),
+    ).rejects.toThrow(/different name prefixes/);
   });
 
   it("accepts neither containerized — the no-isolation smoke path", async () => {

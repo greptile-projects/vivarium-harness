@@ -54,17 +54,14 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 
 export interface ArmConfig {
   name: ArmName;
-  // Host path to the arm's checkout: the bind-mount source and where the
-  // harness runs its own file ops (artifacts, greptile review).
+  // Container mode: the Git remote cloned into /workspace by arm-run.sh.
+  // Host smoke-test mode: the local checkout path. The deployment mode makes
+  // the interpretation unambiguous, while keeping one configuration key.
   repo: string;
   // When set, the arm's codex runs via `docker exec` in this container instead
-  // of on the host, giving each arm an isolated filesystem.
+  // of on the host. In real runs this is a stable name prefix; runHarness adds
+  // a unique suffix and creates a fresh container for each subticket.
   container?: string;
-  // Host CODEX_HOME for this arm — the directory whose `sessions/` the harness
-  // scans to recover the arm's transcript. Containerized arms write sessions
-  // inside the container, so this must point at the host dir arm-run.sh mounts
-  // in. Unset means fall back to the run-wide CODEX_HOME.
-  codexHome?: string;
   // GitHub token the *harness* acts with on this arm's behalf (finding the pull
   // request, reading the review, merging). The same token the container gets,
   // so the record shows one identity per arm rather than the operator's.
@@ -149,20 +146,6 @@ function positiveFromEnv(
   return parsed;
 }
 
-// A containerized arm writes its Codex sessions inside the container, so they
-// must land on a host directory the harness can scan. arm-run.sh mounts
-// $HOME/.vivarium/<container>/sessions into the container's CODEX_HOME; mirror
-// that convention here so finishArm finds the transcript. Host-mode arms
-// (no container) return undefined and fall back to the run-wide CODEX_HOME.
-function armCodexHomeFromEnv(
-  explicit: string | undefined,
-  container: string | undefined,
-): string | undefined {
-  if (explicit) return explicit;
-  if (container) return join(homedir(), ".vivarium", container);
-  return undefined;
-}
-
 export function parseArgs(
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -188,10 +171,6 @@ export function parseArgs(
         name: "komodo",
         repo: env.KOMODO_REPO,
         container: env.KOMODO_CONTAINER,
-        codexHome: armCodexHomeFromEnv(
-          env.KOMODO_CODEX_HOME,
-          env.KOMODO_CONTAINER,
-        ),
         ghToken: env.KOMODO_GH_TOKEN,
         sandbox: armSandbox(sandbox, env.KOMODO_CONTAINER),
       },
@@ -199,10 +178,6 @@ export function parseArgs(
         name: "tuatara",
         repo: env.TUATARA_REPO,
         container: env.TUATARA_CONTAINER,
-        codexHome: armCodexHomeFromEnv(
-          env.TUATARA_CODEX_HOME,
-          env.TUATARA_CONTAINER,
-        ),
         ghToken: env.TUATARA_GH_TOKEN,
         sandbox: armSandbox(sandbox, env.TUATARA_CONTAINER),
         // The one asymmetry between the arms: this one has a reviewer whose
@@ -287,21 +262,6 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
 export async function validateConfig(
   config: HarnessConfig,
 ): Promise<HarnessConfig> {
-  const canonicalRepos = await Promise.all(
-    config.arms.map(async (arm) => {
-      const repo = await realpath(arm.repo);
-      const info = await stat(repo);
-      if (!info.isDirectory()) {
-        throw new Error(`${repo} is not a directory`);
-      }
-      return repo;
-    }),
-  );
-
-  if (canonicalRepos[0] === canonicalRepos[1]) {
-    throw new Error("KOMODO_REPO and TUATARA_REPO must be different checkouts");
-  }
-
   // Isolation has to be all-or-nothing. Each arm derives `container` — and
   // therefore its sandbox — from its own `<ARM>_CONTAINER`, so one unset or
   // typo'd variable (or a container that failed to start) would leave that arm
@@ -318,6 +278,66 @@ export async function validateConfig(
     throw new Error(
       `every arm must be containerized or none may be — set ${missing.join(" and ")}, or unset the others to run both on the host`,
     );
+  }
+
+  if (containerized.length === config.arms.length) {
+    const containerPrefixes = config.arms.map((arm) => arm.container as string);
+    for (const [index, prefix] of containerPrefixes.entries()) {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(prefix)) {
+        throw new Error(
+          `${config.arms[index]!.name.toUpperCase()}_CONTAINER must be a valid Docker name prefix`,
+        );
+      }
+    }
+    if (containerPrefixes[0] === containerPrefixes[1]) {
+      throw new Error(
+        "KOMODO_CONTAINER and TUATARA_CONTAINER must use different name prefixes",
+      );
+    }
+
+    const remotes = config.arms.map((arm) => arm.repo.trim());
+    for (const [index, remote] of remotes.entries()) {
+      if (/^https:\/\/[^/]*@/.test(remote)) {
+        throw new Error(
+          `${config.arms[index]!.name.toUpperCase()}_REPO must not contain credentials; use the matching *_GH_TOKEN`,
+        );
+      }
+      if (!/^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/.test(remote)) {
+        throw new Error(
+          `${config.arms[index]!.name.toUpperCase()}_REPO must be an HTTPS GitHub clone URL in container mode`,
+        );
+      }
+    }
+    const normalized = remotes.map((remote) =>
+      remote.replace(/\.git$/, "").toLowerCase(),
+    );
+    if (normalized[0] === normalized[1]) {
+      throw new Error(
+        "KOMODO_REPO and TUATARA_REPO must be different GitHub repositories",
+      );
+    }
+    return {
+      ...config,
+      arms: config.arms.map((arm, index) => ({
+        ...arm,
+        repo: remotes[index]!,
+      })) as [ArmConfig, ArmConfig],
+    };
+  }
+
+  const canonicalRepos = await Promise.all(
+    config.arms.map(async (arm) => {
+      const repo = await realpath(arm.repo);
+      const info = await stat(repo);
+      if (!info.isDirectory()) {
+        throw new Error(`${repo} is not a directory`);
+      }
+      return repo;
+    }),
+  );
+
+  if (canonicalRepos[0] === canonicalRepos[1]) {
+    throw new Error("KOMODO_REPO and TUATARA_REPO must be different checkouts");
   }
 
   return {
@@ -357,26 +377,26 @@ other key goes back to watching. Ctrl-C stops the run without asking.
 Exit code is 1 whenever an arm exhausts its retries or the run throws.
 
 Required environment:
-  KOMODO_REPO=<path>      Checkout without access to Greptile comments
-  TUATARA_REPO=<path>     Checkout with access to Greptile comments
+  KOMODO_REPO=<url>       HTTPS GitHub clone URL for Komodo
+  TUATARA_REPO=<url>      HTTPS GitHub clone URL for Tuatara
 
 Optional environment:
   KOMODO_CONTAINER=<name>     Run Komodo's codex via docker exec in that
-                          container (arm-run.sh mounts the checkout at
-                          /workspace). Unset runs on the host with no isolation.
+                          container. arm-run.sh clones KOMODO_REPO into its
+                          private /workspace. Unset uses KOMODO_REPO as a
+                          local checkout path, for smoke tests only.
   TUATARA_CONTAINER=<name>    Same, for Tuatara.
-  KOMODO_CODEX_HOME=<path>    Host dir whose sessions/ holds the arm's Codex
-  TUATARA_CODEX_HOME=<path>   transcript. Containerized arms default to
-                          ~/.vivarium/<container>; host arms use CODEX_HOME.
   KOMODO_GH_TOKEN=<token>     GitHub token per arm: the container pushes and
   TUATARA_GH_TOKEN=<token>    opens its pull request with it, and the harness
                           merges with it, so each arm lands under its own
-                          identity. Unset falls back to the host's gh auth.
+                          identity. Required by arm-run.sh; host smoke tests
+                          may omit it and fall back to the host's gh auth.
   CODEX_SANDBOX=<mode>    Overrides both arms. Unset, a containerized arm runs
                           danger-full-access (it needs the network to push and
                           to answer a review; the container is the boundary)
                           and a host arm runs workspace-write.
-  CODEX_HOME=<path>       Defaults to ~/.codex; used to copy transcripts
+  CODEX_HOME=<path>       Defaults to ~/.codex; used by Greg and host smoke
+                          sessions. Arm transcripts are copied from containers.
   VIVARIUM_IMAGE=<image>  Container image used by arm-run.sh and Greg's
                           isolated planner. Defaults to ${CONTAINER_IMAGE}.
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
