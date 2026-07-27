@@ -5,6 +5,7 @@ import {
   pullRequestNumber,
   pullRequestUrl,
   slugFromRemote,
+  threadFlagsFrom,
 } from "../src/harness/github.js";
 import type { ArmConfig } from "../src/harness/config.js";
 import type { CommandResult, CommandRunner } from "../src/harness/github.js";
@@ -333,6 +334,210 @@ describe("conversation", () => {
     expect(reactionCalls[0]?.args).toContain(
       "repos/org/repo/pulls/comments/10/reactions",
     );
+  });
+
+  // Once the arm pushes a fix, GitHub marks the comment outdated and nulls
+  // `line`. `original_line` and the hunk are then the only record of what was
+  // being complained about — and without them "which code did this finding refer
+  // to" is answerable only by another API call against a repo that has to still
+  // exist.
+  test("keeps what an inline comment pointed at, outdated or not", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [], comments: [] })),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          {
+            id: 20,
+            body: "this leaks the token",
+            created_at: "2026-07-25T01:00:00Z",
+            path: "src/github.ts",
+            line: null,
+            original_line: 167,
+            diff_hunk: "@@ -160,7 +160,7 @@\n-  echo password=$TOKEN",
+          },
+        ]),
+      ),
+    });
+
+    const [note] = await armGitHub(arm(), exec).conversation(7);
+
+    expect(note?.path).toBe("src/github.ts");
+    expect(note?.line).toBeUndefined();
+    expect(note?.originalLine).toBe(167);
+    expect(note?.diffHunk).toContain("echo password=$TOKEN");
+  });
+
+  // "Rejected suggestions" is one of the brief's named outcomes, and no amount of
+  // reading the bodies settles it: resolution lives only in GraphQL.
+  test("marks each inline comment's thread resolved or not", async () => {
+    const { exec, calls } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [], comments: [] })),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          { id: 30, body: "fixed this one", created_at: "2026-07-25T01:00:00Z" },
+          { id: 31, body: "argued with this", created_at: "2026-07-25T02:00:00Z" },
+        ]),
+      ),
+      "gh api graphql": ok(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      isResolved: true,
+                      isOutdated: true,
+                      comments: { nodes: [{ databaseId: 30 }] },
+                    },
+                    {
+                      isResolved: false,
+                      isOutdated: false,
+                      comments: { nodes: [{ databaseId: 31 }] },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+      ),
+    });
+
+    const notes = await armGitHub(arm(), exec).conversation(7);
+
+    expect(notes[0]?.resolved).toBe(true);
+    expect(notes[0]?.outdated).toBe(true);
+    expect(notes[1]?.resolved).toBe(false);
+    // The query is asked against the slug parsed from origin, not a guess.
+    const graphql = calls.find((call) => call.args.includes("graphql"));
+    expect(graphql?.args).toContain("owner=org");
+    expect(graphql?.args).toContain("number=7");
+  });
+
+  // A failed query must leave the fields absent, because `resolved: false` is a
+  // claim ("the arm did not resolve it") and undefined is the truth ("we do not
+  // know").
+  test("leaves resolution unknown when the query fails", async () => {
+    const { exec } = recorder({
+      "git remote get-url": ok("https://github.com/org/repo.git\n"),
+      "gh pr view": ok(JSON.stringify({ reviews: [], comments: [] })),
+      "gh api repos/org/repo/pulls/7/comments": ok(
+        JSON.stringify([
+          { id: 40, body: "finding", created_at: "2026-07-25T01:00:00Z" },
+        ]),
+      ),
+      "gh api graphql": { code: 1, stdout: "", stderr: "rate limited" },
+    });
+
+    const [note] = await armGitHub(arm(), exec).conversation(7);
+
+    expect(note?.resolved).toBeUndefined();
+    expect(note?.outdated).toBeUndefined();
+  });
+});
+
+describe("threadFlagsFrom", () => {
+  test("keys every comment in a thread to that thread's flags", () => {
+    const flags = threadFlagsFrom(
+      JSON.stringify({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  {
+                    isResolved: true,
+                    isOutdated: false,
+                    // A finding and the arm's reply share one thread, so both
+                    // carry its resolution.
+                    comments: {
+                      nodes: [{ databaseId: 1 }, { databaseId: 2 }],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+    expect(flags.get("review-comment:1")).toEqual({
+      resolved: true,
+      outdated: false,
+    });
+    expect(flags.get("review-comment:2")?.resolved).toBe(true);
+  });
+
+  test("is empty rather than throwing on anything unexpected", () => {
+    expect(threadFlagsFrom("").size).toBe(0);
+    expect(threadFlagsFrom("not json").size).toBe(0);
+    expect(threadFlagsFrom(JSON.stringify({ data: {} })).size).toBe(0);
+  });
+});
+
+describe("the pull request itself", () => {
+  // The record has to stand on its own: a repository can be renamed, made
+  // private, or have its branch force-pushed over.
+  test("captures the description the arm wrote", async () => {
+    const { exec } = recorder({
+      "gh pr view 7": ok(
+        JSON.stringify({
+          number: 7,
+          url: "https://github.com/org/repo/pull/7",
+          title: "1.1 Do the thing",
+          headRefName: "subticket-1-1",
+          baseRefName: "main",
+          body: "## Original Ticket\n\nBuild the storage layer.",
+          state: "OPEN",
+        }),
+      ),
+    });
+
+    const ref = await armGitHub(arm(), exec).findPullRequest({
+      url: "https://github.com/org/repo/pull/7",
+    });
+
+    expect(ref?.body).toContain("## Original Ticket");
+    expect(ref?.baseRefName).toBe("main");
+  });
+
+  test("captures the diff and the commits behind it", async () => {
+    const patch = "--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+    const { exec } = recorder({
+      "gh pr diff 7": ok(patch),
+      "gh pr view 7": ok(
+        JSON.stringify({
+          commits: [
+            {
+              oid: "aaa111",
+              messageHeadline: "add storage",
+              messageBody: "with tests",
+              committedDate: "2026-07-25T01:00:00Z",
+              authors: [{ login: "vivarium-komodo" }],
+            },
+          ],
+        }),
+      ),
+    });
+    const github = armGitHub(arm(), exec);
+
+    expect(await github.diff(7)).toBe(patch);
+    expect(await github.commits(7)).toEqual([
+      {
+        sha: "aaa111",
+        message: "add storage\n\nwith tests",
+        authors: ["vivarium-komodo"],
+        committedAt: "2026-07-25T01:00:00Z",
+      },
+    ]);
+  });
+
+  test("an empty or failed diff is undefined, not an empty patch", async () => {
+    const { exec } = recorder({ "gh pr diff 7": { code: 1, stdout: "", stderr: "no" } });
+    expect(await armGitHub(arm(), exec).diff(7)).toBeUndefined();
   });
 });
 

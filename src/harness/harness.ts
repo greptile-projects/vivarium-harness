@@ -15,8 +15,10 @@ import {
   type LandingRecord,
 } from "./land.js";
 import { retryPrompt, workerPrompt } from "./prompts.js";
+import { harnessProvenance, type HarnessProvenance } from "./provenance.js";
 import {
   runArmStreaming,
+  sessionUsage,
   type CodexMsg,
   type StreamParams,
   type StreamResult,
@@ -56,6 +58,9 @@ export interface HarnessDeps {
   github?: GitHubFactory;
   wait?: (ms: number) => Promise<void>;
   now?: () => number;
+  // Which harness commit is producing this run. Injected for the same reason as
+  // the rest of this: the default shells out to git, and the suite does not.
+  provenance?: () => Promise<HarnessProvenance>;
 }
 
 export interface HarnessRunResult {
@@ -154,6 +159,7 @@ export async function runArm(
       attempt,
     );
 
+    const stderrLog = artifacts.attemptStderrLog(arm.name, attempt);
     const base = {
       arm: arm.name,
       repo: arm.repo,
@@ -161,6 +167,7 @@ export async function runArm(
       maxAttempts: config.maxAttempts,
       startedAt: startedAt.toISOString(),
       artifactDir,
+      stderrLog,
     };
 
     try {
@@ -175,6 +182,8 @@ export async function runArm(
           threadId,
           exec,
           signal,
+          stderrPath: stderrLog,
+          ghToken: arm.ghToken,
         },
         (msg) => onEvent(arm.name, msg),
       );
@@ -190,6 +199,7 @@ export async function runArm(
             durationMs: Date.now() - startedAt.getTime(),
             threadId,
             error: previousError,
+            usage: result.usage,
           },
           result.raw,
         );
@@ -204,6 +214,7 @@ export async function runArm(
           durationMs: Date.now() - startedAt.getTime(),
           threadId,
           output: result.output,
+          usage: result.usage,
         },
         result.raw,
       );
@@ -216,6 +227,9 @@ export async function runArm(
         durationMs: Date.now() - startedAt.getTime(),
         threadId,
         error: previousError,
+        // A thrown session still spent what it spent — the watchdog abort is the
+        // expensive case, not the cheap one.
+        usage: sessionUsage(error),
       });
     }
   }
@@ -241,7 +255,8 @@ export async function runHarness(
   deps: HarnessDeps = {},
 ): Promise<HarnessRunResult> {
   const prompt = workerPrompt(config.ticket);
-  const artifacts = await RunArtifacts.create(config, prompt);
+  const provenance = await (deps.provenance ?? harnessProvenance)();
+  const artifacts = await RunArtifacts.create(config, prompt, provenance);
   const runner = deps.runner ?? runArmStreaming;
   const github = deps.github ?? gitHubForArm;
   const wait = deps.wait ?? sleep;
@@ -283,6 +298,10 @@ export async function runHarness(
               threadId: result.threadId,
               exec,
               signal,
+              // One file per arm for every round: the rounds all continue one
+              // thread and are not attempts, and each session stamps a header.
+              stderrPath: artifacts.reviewStderrLog(arm.name),
+              ghToken: arm.ghToken,
             },
             (msg) => onEvent(arm.name, msg),
           ),
@@ -358,6 +377,7 @@ export async function runHarness(
           : mergeArm(record, deps);
       }),
     );
+
 
     const results = await Promise.all(
       landings.map(async (record, index) => {

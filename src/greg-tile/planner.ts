@@ -8,7 +8,7 @@ import {
 } from "../harness/config.js";
 import type { AttemptRunner } from "../harness/harness.js";
 import { plannerPrompt } from "../harness/prompts.js";
-import { runArmStreaming } from "../harness/session.js";
+import { runArmStreaming, sessionUsage } from "../harness/session.js";
 import { parseSubtickets, readLadder } from "./ladder.js";
 
 // Planning gets one retry: unlike the build arms (which get maxAttempts via
@@ -96,6 +96,75 @@ async function preserveContainerSessions(
 // planner's raw reasoning is on disk but unfindable among hundreds of siblings,
 // which for an experiment whose whole premise is "preserve everything, read it
 // later" is the same as losing it.
+// What `preservePlannerSession` in loop.ts cannot record, because it only sees
+// the thread id of the attempt that *succeeded*: the prompt as sent, the ladder
+// Greg was actually shown, what the subprocess said on stderr, and the outcome
+// of each attempt including the ones that failed. Written flat into the same
+// `results/planner/` directory and named the same way, so there is one place to
+// look and no second manifest to drift.
+//
+// A planning session is where the reasoning behind a rung lives, and the ladder
+// diff is its only other trace. Fails open, exactly like preservePlannerSession:
+// the milestone is on the ladder either way, and losing the record of *how* must
+// not unwind it.
+// Undefined when no results directory is configured (only the unit tests), which
+// is what turns the whole record off rather than guarding at every call site.
+function plannerRecordPath(
+  base: HarnessConfig,
+  milestone: number,
+  attempt: number,
+  suffix: string,
+): string | undefined {
+  if (!base.resultsDir) return undefined;
+  const stem = `milestone-${milestone}-attempt-${String(attempt).padStart(2, "0")}`;
+  return join(base.resultsDir, "planner", `${stem}-${suffix}`);
+}
+
+async function recordPlannerInputs(
+  base: HarnessConfig,
+  milestone: number,
+  attempt: number,
+  prompt: string,
+  ladderBefore: string,
+): Promise<void> {
+  const promptPath = plannerRecordPath(base, milestone, attempt, "prompt.txt");
+  const ladderPathOut = plannerRecordPath(
+    base,
+    milestone,
+    attempt,
+    "ladder-before.md",
+  );
+  if (!promptPath || !ladderPathOut) return;
+  try {
+    await mkdir(join(base.resultsDir, "planner"), { recursive: true });
+    await Promise.all([
+      writeFile(promptPath, `${prompt}\n`, "utf8"),
+      // Per attempt, not per milestone: a retry re-reads the ladder, so what a
+      // failed attempt half-appended is visible only as the difference between
+      // two of these.
+      writeFile(ladderPathOut, ladderBefore, "utf8"),
+    ]);
+  } catch {
+    // ignore
+  }
+}
+
+async function recordPlannerOutcome(
+  base: HarnessConfig,
+  milestone: number,
+  attempt: number,
+  outcome: Record<string, unknown>,
+): Promise<void> {
+  const path = plannerRecordPath(base, milestone, attempt, "outcome.json");
+  if (!path) return;
+  try {
+    await mkdir(join(base.resultsDir, "planner"), { recursive: true });
+    await writeFile(path, `${JSON.stringify(outcome, null, 2)}\n`, "utf8");
+  } catch {
+    // ignore
+  }
+}
+
 export async function planNextMilestone(
   base: HarnessConfig,
   ladderPath: string,
@@ -130,22 +199,38 @@ export async function planNextMilestone(
     const scratchLadder = join(workspace, basename(ladderPath));
     const execution = plannerExecution(base, workspace, sessionDirectory);
 
+    const prompt = plannerPrompt(
+      currentLadder,
+      milestoneNumber,
+      basename(ladderPath),
+    );
+    const stderrPath = plannerRecordPath(
+      base,
+      milestoneNumber,
+      attempt,
+      "codex-stderr.log",
+    );
+    await recordPlannerInputs(
+      base,
+      milestoneNumber,
+      attempt,
+      prompt,
+      currentLadder,
+    );
+
     let result;
     try {
       await writeFile(scratchLadder, currentLadder, "utf8");
       result = await runner(
         {
           arm: "greg",
-          prompt: plannerPrompt(
-            currentLadder,
-            milestoneNumber,
-            basename(ladderPath),
-          ),
+          prompt,
           cwd: execution.cwd,
           sandbox: execution.sandbox,
           codexHome: base.codexHome,
           idleTimeoutMs: base.idleTimeoutMs,
           exec: execution.exec,
+          stderrPath,
         },
         () => {},
       );
@@ -164,6 +249,13 @@ export async function planNextMilestone(
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      await recordPlannerOutcome(base, milestoneNumber, attempt, {
+        attempt,
+        status: "failed",
+        error: lastError,
+        // The watchdog abort forty minutes in was not free.
+        usage: sessionUsage(error),
+      });
       continue;
     } finally {
       await Promise.all([
@@ -171,6 +263,15 @@ export async function planNextMilestone(
         rm(sessionDirectory, { recursive: true, force: true }).catch(() => {}),
       ]);
     }
+
+    await recordPlannerOutcome(base, milestoneNumber, attempt, {
+      attempt,
+      status: result.isError ? "failed" : "succeeded",
+      threadId: result.threadId,
+      error: result.isError ? result.output || "unknown error" : undefined,
+      output: result.isError ? undefined : result.output,
+      usage: result.usage,
+    });
 
     if (result.isError) {
       lastError = result.output || "unknown error";

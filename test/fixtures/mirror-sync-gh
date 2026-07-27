@@ -29,8 +29,26 @@ case "$1" in
           cat "$D/state" 2>/dev/null
         fi
         ;;
-      *"/reviews") printf '%s' "${STUB_REVIEW:-1}" ;;
-      *"/comments") printf '0' ;;
+      *"/reviews")
+        if [[ -n "$jq_expr" ]]; then
+          printf '%s' "${STUB_REVIEW:-1}"
+        elif [[ -n "${STUB_REVIEW_FETCH_FAIL:-}" ]]; then
+          exit 22
+        elif [[ "${STUB_REVIEW:-1}" == 0 ]]; then
+          printf '[]'
+        else
+          printf '[{"id":901,"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","submitted_at":"2026-01-01T00:00:00Z","body":"stub greptile review body"}]'
+        fi
+        ;;
+      *"/comments")
+        if [[ -n "$jq_expr" ]]; then
+          printf '0'
+        elif [[ "$endpoint" == *"/pulls/"* ]]; then
+          printf '[{"id":902,"user":{"login":"greptile-apps[bot]"},"path":"file.txt","line":1,"diff_hunk":"@@ -1 +1 @@","body":"stub inline finding"}]'
+        else
+          printf '[]'
+        fi
+        ;;
       *"/commits/"*"/pulls") printf '%s' "${STUB_SRC_PR:-}" ;;
       *"/commits/"*) : ;;
       *"/pulls/"*)

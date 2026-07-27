@@ -43,6 +43,14 @@ POLL_INTERVAL="${POLL_INTERVAL:-60}"     # seconds between review checks
 POLL_TIMEOUT="${POLL_TIMEOUT:-3600}"     # 1 hour; matches REVIEW_TIMEOUT_MS so both arms wait equally
 TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
 
+# Where each mirror review is written. This is the control arm's counterfactual —
+# what Greptile says about the code written by the arm that cannot hear it — and
+# it is the one artifact of the experiment that has no other home: Komodo's own
+# PRs carry no review, and the pipeline used to check only whether a review
+# *existed* before merging past it. On the mirror PR it survives only as long as
+# the private mirror does; in Actions logs, not even that long.
+MIRROR_REVIEW_DIR="${MIRROR_REVIEW_DIR:-results/mirror}"
+
 # Committer identity for mirror commits. In CI the workflow overrides these with
 # the `vivarium-mirror[bot]` app identity; this fallback only applies to manual
 # local runs. The Komodo agent stays the *author* (--author passthrough).
@@ -134,6 +142,78 @@ has_greptile_review() { # <pr-number>
   [[ "${a:-0}" -gt 0 || "${b:-0}" -gt 0 ]]
 }
 
+# Read one paginated mirror API collection, retrying. Exhaustion is fatal for the
+# same reason `source_pr_field` is: this runs *before* the merge, nothing has
+# advanced, and a rerun resumes at exactly this PR — while merging past a review
+# we failed to keep loses it for good.
+mirror_collection() { # <api-path> <human name> -> JSON array on stdout
+  local path="$1" what="$2" attempt out
+  for attempt in 1 2 3; do
+    if out="$(gh_mirror api --paginate "$path" 2>/dev/null)"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    log "could not read ${what} (attempt ${attempt}/3)"
+    sleep "$API_RETRY_SLEEP"
+  done
+  die "could not read ${what} after 3 attempts; refusing to merge past a review \
+it cannot keep (state unchanged, rerun to retry)"
+}
+
+# Write the mirror PR's whole conversation to disk before it is merged.
+#
+# Each collection lands as the raw API response in its own file: the bodies are
+# never interpolated into a shell or jq argument, and the inline comments arrive
+# with `path`, `line` and `diff_hunk`, which is the code each finding was written
+# against. `meta.json` is built from known-safe fields only (repo names, numbers,
+# a sha, a login) and carries the join this record exists for — mirror PR to
+# source PR to the Komodo commit being reviewed.
+#
+# Thread *resolution* is deliberately not captured here, though the harness does
+# capture it for Tuatara. Resolution measures whether an arm accepted or rejected
+# a finding, and on the mirror nobody ever answers — the pipeline merges the PR
+# unanswered, which is the control condition itself. Every thread here would read
+# "unresolved" for a reason that has nothing to do with the code.
+capture_review() { # <pr-number> <source-sha> <timed-out:true|false>
+  local n="$1" sha="$2" timed_out="$3"
+  local short dir src_pr src_pr_url
+  short="$(g rev-parse --short=7 "$sha")"
+  dir="${MIRROR_REVIEW_DIR}/${short}-mirror-pr-${n}"
+  mkdir -p "$dir" || die "could not create ${dir}"
+
+  mirror_collection "repos/${MIRROR_REPO}/pulls/${n}/reviews" \
+    "reviews on mirror #${n}" > "${dir}/reviews.json"
+  mirror_collection "repos/${MIRROR_REPO}/issues/${n}/comments" \
+    "issue comments on mirror #${n}" > "${dir}/issue-comments.json"
+  mirror_collection "repos/${MIRROR_REPO}/pulls/${n}/comments" \
+    "inline review comments on mirror #${n}" > "${dir}/review-comments.json"
+
+  src_pr="$(source_pr_number "$sha")"
+  src_pr_url="null"
+  [[ -n "$src_pr" ]] && src_pr_url="\"https://github.com/${SOURCE_REPO}/pull/${src_pr}\""
+
+  cat > "${dir}/meta.json" <<EOF || die "could not write ${dir}/meta.json"
+{
+  "schemaVersion": 1,
+  "capturedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "reviewer": "${GREPTILE_BOT_LOGIN}",
+  "timedOut": ${timed_out},
+  "mirror": {
+    "repo": "${MIRROR_REPO}",
+    "pullRequest": ${n},
+    "url": "https://github.com/${MIRROR_REPO}/pull/${n}"
+  },
+  "source": {
+    "repo": "${SOURCE_REPO}",
+    "sha": "${sha}",
+    "pullRequest": ${src_pr:-null},
+    "url": ${src_pr_url}
+  }
+}
+EOF
+  log "PR #${n}: captured review into ${dir}"
+}
+
 ensure_timeout_label() {
   gh_mirror label create "$TIMEOUT_LABEL" -R "$MIRROR_REPO" \
     --description "Greptile review did not arrive before timeout" --color BFD4F2 \
@@ -141,7 +221,7 @@ ensure_timeout_label() {
 }
 
 wait_then_merge() { # <pr-number> <source-sha>
-  local n="$1" sha="$2" waited=0
+  local n="$1" sha="$2" waited=0 timed_out=false
   log "PR #${n}: waiting for Greptile review (login=${GREPTILE_BOT_LOGIN}, timeout=${POLL_TIMEOUT}s)"
   while true; do
     if has_greptile_review "$n"; then
@@ -152,11 +232,16 @@ wait_then_merge() { # <pr-number> <source-sha>
       log "PR #${n}: review timed out after ${waited}s; labeling '${TIMEOUT_LABEL}' and proceeding"
       ensure_timeout_label
       gh_mirror pr edit "$n" -R "$MIRROR_REPO" --add-label "$TIMEOUT_LABEL" >/dev/null 2>&1 || true
+      timed_out=true
       break
     fi
     sleep "$POLL_INTERVAL"
     waited=$(( waited + POLL_INTERVAL ))
   done
+  # Before the merge: after it, the review is still on the PR but this pipeline
+  # never looks at the PR again, and the timeout case is worth recording as an
+  # empty capture rather than as a missing file.
+  capture_review "$n" "$sha" "$timed_out"
   # --merge (never squash): the authored commit must land as-is.
   gh_mirror pr merge "$n" -R "$MIRROR_REPO" --merge >/dev/null
   log "PR #${n}: merged"

@@ -54,6 +54,20 @@ export interface PullRequestRef {
   headRefName: string;
   state: string;
   checks?: string;
+  // The description the arm wrote. The prompt requires it to open with the
+  // ticket verbatim, so this is the arm's own statement of what it was asked
+  // for — and the reviewer read it before anything else.
+  body?: string;
+  baseRefName?: string;
+}
+
+// One commit on the pull request. Kept so the record says what the arm actually
+// did in what order without the repository having to still be there.
+export interface CommitRef {
+  sha: string;
+  message: string;
+  authors?: string[];
+  committedAt?: string;
 }
 
 // One entry in a pull request's conversation: a review body, an inline review
@@ -71,6 +85,26 @@ export interface ReviewNote {
   path?: string;
   state?: string;
   inReplyTo?: string;
+  // Where an inline comment points, and at what. `line` is what GitHub reports
+  // *now*: an arm that pushes a fix makes the comment outdated and GitHub nulls
+  // it, which is exactly when `originalLine` and `diffHunk` become the only
+  // record of what was being complained about. Keeping the hunk is what makes
+  // "which code did this finding refer to" answerable from the artifacts
+  // instead of from a later API call against a repository that has to still
+  // exist.
+  line?: number;
+  originalLine?: number;
+  diffHunk?: string;
+  // Whether the thread was resolved, and whether GitHub considers it outdated.
+  // `resolved: false` on a thread the arm argued with and `resolved: true` on
+  // one it fixed is the difference between a rejected suggestion and an accepted
+  // one — which the brief asks for by name and no amount of reading the bodies
+  // can settle.
+  //
+  // **undefined means unknown, not unresolved.** These live only in GraphQL, so
+  // a REST-only run (or a failed query) leaves them absent rather than false.
+  resolved?: boolean;
+  outdated?: boolean;
 }
 
 export interface MergeOutcome {
@@ -94,6 +128,11 @@ export interface ArmGitHub {
     branch?: string;
   }): Promise<PullRequestRef | undefined>;
   conversation(pullRequest: number): Promise<ReviewNote[]>;
+  // The pull request's final diff, and the commits that made it. Captured before
+  // the merge so the local record can show what changed without depending on
+  // GitHub still serving the branch.
+  diff(pullRequest: number): Promise<string | undefined>;
+  commits(pullRequest: number): Promise<CommitRef[]>;
   // The commit the branch currently points at. Recorded on both sides of every
   // review round, because an arm that amends or force-pushes to address a
   // comment makes the reviewed commits unreachable from the branch and GitHub
@@ -192,6 +231,60 @@ interface GhComment {
 interface GhReviewComment extends GhComment {
   path?: string;
   in_reply_to_id?: number;
+  line?: number | null;
+  original_line?: number | null;
+  diff_hunk?: string;
+}
+
+// Thread resolution is not in REST at all — `/pulls/{n}/comments` has no such
+// field — so it takes one GraphQL query. 100 threads and 100 comments each is
+// well past anything a Greptile review produces; the alternative is paginating a
+// query whose answer is a pair of booleans.
+const REVIEW_THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviewThreads(first:100){
+        nodes{ isResolved isOutdated comments(first:100){ nodes{ databaseId } } }
+      }
+    }
+  }
+}`;
+
+interface GhReviewThreads {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        reviewThreads?: {
+          nodes?: {
+            isResolved?: boolean;
+            isOutdated?: boolean;
+            comments?: { nodes?: { databaseId?: number }[] };
+          }[];
+        };
+      };
+    };
+  };
+}
+
+// Map each inline comment's id to its thread's resolution flags. A comment whose
+// thread could not be read is simply absent, which is what leaves the note's
+// fields undefined rather than false.
+export function threadFlagsFrom(
+  stdout: string,
+): Map<string, { resolved: boolean; outdated: boolean }> {
+  const flags = new Map<string, { resolved: boolean; outdated: boolean }>();
+  const parsed = parseJson<GhReviewThreads>(stdout);
+  const threads =
+    parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+  for (const thread of threads) {
+    const resolved = thread.isResolved === true;
+    const outdated = thread.isOutdated === true;
+    for (const comment of thread.comments?.nodes ?? []) {
+      if (typeof comment.databaseId !== "number") continue;
+      flags.set(`review-comment:${comment.databaseId}`, { resolved, outdated });
+    }
+  }
+  return flags;
 }
 
 interface GhReaction {
@@ -323,7 +416,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // forgets to quote its URL still opened a real pull request.
     async findPullRequest(hint) {
       const fields =
-        "number,url,title,headRefName,state,statusCheckRollup";
+        "number,url,title,headRefName,baseRefName,body,state,statusCheckRollup";
       const number = hint.url ? pullRequestNumber(hint.url) : undefined;
 
       if (number !== undefined) {
@@ -481,20 +574,54 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           "--paginate",
           `repos/${slug}/pulls/${pullRequest}/comments`,
         ]);
+        // One extra call for what REST does not carry. Best-effort: a failure
+        // leaves every note's resolution undefined, which reads as unknown.
+        //
+        // This runs on every poll of the review wait too, where the answer is
+        // discarded — kept that way on purpose rather than splitting this into a
+        // two-mode method: at a 30s poll and a 15m timeout that is tens of
+        // one-point queries per subticket against a 5000/hour budget.
+        const [owner, name] = slug.split("/");
+        const threads = await gh([
+          "api",
+          "graphql",
+          "-f",
+          `query=${REVIEW_THREADS_QUERY}`,
+          "-F",
+          `owner=${owner}`,
+          "-F",
+          `name=${name}`,
+          "-F",
+          `number=${pullRequest}`,
+        ]);
+        const flags =
+          threads.code === 0
+            ? threadFlagsFrom(threads.stdout)
+            : new Map<string, { resolved: boolean; outdated: boolean }>();
+
         for (const comment of parseJson<GhReviewComment[]>(inline.stdout) ??
           []) {
+          const id = `review-comment:${comment.id ?? notes.length}`;
+          const thread = flags.get(id);
           notes.push({
-            id: `review-comment:${comment.id ?? notes.length}`,
+            id,
             kind: "review-comment",
             author: comment.user?.login ?? "unknown",
             body: comment.body ?? "",
             createdAt: comment.created_at ?? "",
             url: comment.html_url,
             path: comment.path,
+            // `line` is null once the arm's fix makes the comment outdated;
+            // `original_line` and the hunk are what survive that.
+            line: comment.line ?? undefined,
+            originalLine: comment.original_line ?? undefined,
+            diffHunk: comment.diff_hunk,
             inReplyTo:
               comment.in_reply_to_id === undefined
                 ? undefined
                 : `review-comment:${comment.in_reply_to_id}`,
+            resolved: thread?.resolved,
+            outdated: thread?.outdated,
           });
           await addReactions(
             comment,
@@ -507,6 +634,46 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       return notes.sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt),
       );
+    },
+
+    // `gh pr diff` rather than a local `git diff`: the arm's branch may already
+    // have been force-pushed over, and this asks GitHub what the pull request
+    // *is* rather than what the checkout happens to hold.
+    async diff(pullRequest) {
+      const result = await gh(["pr", "diff", String(pullRequest)]);
+      return result.code === 0 && result.stdout.length > 0
+        ? result.stdout
+        : undefined;
+    },
+
+    async commits(pullRequest) {
+      const view = await gh([
+        "pr",
+        "view",
+        String(pullRequest),
+        "--json",
+        "commits",
+      ]);
+      if (view.code !== 0) return [];
+      const parsed = parseJson<{
+        commits?: {
+          oid?: string;
+          messageHeadline?: string;
+          messageBody?: string;
+          committedDate?: string;
+          authors?: { login?: string; name?: string }[];
+        }[];
+      }>(view.stdout);
+      return (parsed?.commits ?? []).map((commit) => ({
+        sha: String(commit.oid ?? ""),
+        message: [commit.messageHeadline, commit.messageBody]
+          .filter((part) => part !== undefined && part !== "")
+          .join("\n\n"),
+        authors: commit.authors
+          ?.map((author) => author.login ?? author.name ?? "")
+          .filter((author) => author !== ""),
+        committedAt: commit.committedDate,
+      }));
     },
 
     async merge(pullRequest) {
@@ -556,6 +723,9 @@ function toRef(value: Record<string, unknown>): PullRequestRef {
     url: String(value.url ?? ""),
     title: String(value.title ?? ""),
     headRefName: String(value.headRefName ?? ""),
+    baseRefName:
+      typeof value.baseRefName === "string" ? value.baseRefName : undefined,
+    body: typeof value.body === "string" ? value.body : undefined,
     state: String(value.state ?? "UNKNOWN"),
     checks: Array.isArray(rollup)
       ? summarizeChecks(rollup as Record<string, unknown>[])

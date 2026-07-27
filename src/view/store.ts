@@ -1,4 +1,8 @@
-import type { CodexMsg } from "../harness/session.js";
+import {
+  contextWindowFrom,
+  tokenUsageFrom,
+  type CodexMsg,
+} from "../harness/session.js";
 
 export type ArmStatus = "starting" | "working" | "done" | "failed";
 
@@ -84,12 +88,10 @@ export function summarize(msg: CodexMsg): string {
       return describeItem(msg.item) ?? msg.type;
     case "agent_message":
       return `answer: ${(str(msg.message) ?? "").slice(0, 60)}`;
-    case "token_count": {
-      const info = msg.info as
-        | { total_token_usage?: { total_tokens?: unknown } }
-        | undefined;
-      return `tokens ${num(info?.total_token_usage?.total_tokens) ?? "?"}`;
-    }
+    // Codex's usage shape is parsed in exactly one place (stream.ts), which is
+    // the one place a test pins it.
+    case "token_count":
+      return `tokens ${tokenUsageFrom(msg)?.totalTokens ?? "?"}`;
     case "task_complete":
       return `done in ${num(msg.duration_ms) ?? "?"}ms`;
     default:
@@ -154,7 +156,7 @@ export class LiveStore {
         state.threadId = str(msg.thread_id) ?? state.threadId;
         break;
       case "task_started":
-        state.contextWindow = num(msg.model_context_window) ?? state.contextWindow;
+        state.contextWindow = contextWindowFrom(msg) ?? state.contextWindow;
         break;
       case "mcp_startup_update":
         setActivity(state, `starting MCP: ${str(msg.server) ?? "?"}`);
@@ -175,13 +177,10 @@ export class LiveStore {
       case "agent_message":
         state.answer = str(msg.message) ?? state.answer;
         break;
-      case "token_count": {
-        const info = msg.info as
-          | { total_token_usage?: { total_tokens?: unknown } }
-          | undefined;
-        state.tokens = num(info?.total_token_usage?.total_tokens) ?? state.tokens;
+      case "token_count":
+        state.tokens = tokenUsageFrom(msg)?.totalTokens ?? state.tokens;
+        state.contextWindow = contextWindowFrom(msg) ?? state.contextWindow;
         break;
-      }
       default:
         break;
     }

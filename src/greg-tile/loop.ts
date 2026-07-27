@@ -209,7 +209,22 @@ export async function runGreg(
     // the subticket is left unchecked so a re-run retries it.
     let run: HarnessRunResult;
     try {
-      run = await harness({ ...base, ticket: pending.description });
+      run = await harness({
+        ...base,
+        ticket: pending.description,
+        // Snapshotted into the run: the whole ladder is mounted into both
+        // checkouts, so it is part of what the arms could read.
+        ladderPath,
+        // Which rung this run is: the ticket body alone leaves the run's own
+        // artifacts unable to say, and the only link was the outcome line the
+        // ladder gets *afterwards* — which a halted run never gets at all.
+        subticket: {
+          number: pending.number,
+          milestone: pending.milestone,
+          title: pending.title,
+          ticket: pending.ticket,
+        },
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`  ${pending.number}: harness error — ${message}`);

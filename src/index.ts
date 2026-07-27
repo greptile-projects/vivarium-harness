@@ -42,7 +42,10 @@ async function main(): Promise<void> {
     const logs = `${logDir}/<arm>/progress.log`;
 
     if (mode.kind !== "ladder") {
-      const config = await validateConfig(parseArgs(argv, process.env));
+      const base = await validateConfig(parseArgs(argv, process.env));
+      // The run records where its own progress logs went, so the two directories
+      // can be paired later without comparing timestamps by eye.
+      const config = { ...base, logDir };
       await mkdir(logDir, { recursive: true });
 
       if (!useTui) {
@@ -94,9 +97,12 @@ async function main(): Promise<void> {
     // Ladder mode. Greg adds no configuration of its own — it reuses the arm
     // setup and fills the ticket per subticket, so the placeholder below is
     // only there to satisfy the shared parser.
-    const base = await validateConfig(
-      parseArgs(["--ticket", "greg-planner", ...argv], process.env),
-    );
+    const base = {
+      ...(await validateConfig(
+        parseArgs(["--ticket", "greg-planner", ...argv], process.env),
+      )),
+      logDir,
+    };
     await mkdir(logDir, { recursive: true });
     const limit = mode.unbounded ? Infinity : MAX_MILESTONES;
 

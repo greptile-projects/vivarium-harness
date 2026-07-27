@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { findTranscript } from "../src/harness/artifacts.js";
@@ -7,6 +7,7 @@ import type { HarnessConfig } from "../src/harness/config.js";
 import type { AttemptRunner } from "../src/harness/harness.js";
 import { initLadder, readLadder } from "../src/greg-tile/ladder.js";
 import { planNextMilestone } from "../src/greg-tile/planner.js";
+import { attachSessionUsage } from "../src/harness/session.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -332,5 +333,90 @@ describe("planner session preservation", () => {
     expect(
       await planNextMilestone(base, ladderPath, "", 1, runner),
     ).toBeUndefined();
+  });
+
+  // The thread id finds the transcript, but not what Greg was *given*: the prompt
+  // as sent and the ladder he was actually shown. Those go beside the transcript,
+  // per attempt — including attempts that failed, whose thread ids never make it
+  // back here at all.
+  it("writes each attempt's prompt, ladder and outcome beside the transcript", async () => {
+    const ladderPath = await scratchLadder();
+    const resultsDir = join(dirname(ladderPath), "results");
+    const runner: AttemptRunner = async () => {
+      await appendFile(
+        ladderPath,
+        "\n## Milestone 1: M1\n\n### [ ] 1.1 A\n\ndo A\n",
+        "utf8",
+      );
+      return {
+        output: "appended",
+        isError: false,
+        timedOut: false,
+        threadId: "greg-thread",
+        usage: { totalTokens: 8_400 },
+      };
+    };
+
+    await planNextMilestone(
+      { ...base, resultsDir } as HarnessConfig,
+      ladderPath,
+      await readLadder(ladderPath),
+      1,
+      runner,
+    );
+
+    const planner = join(resultsDir, "planner");
+    expect(
+      await readFile(join(planner, "milestone-1-attempt-01-prompt.txt"), "utf8"),
+    ).toContain("Greg Tile");
+    const before = await readFile(
+      join(planner, "milestone-1-attempt-01-ladder-before.md"),
+      "utf8",
+    );
+    expect(before).toContain("North Star");
+    expect(before).not.toContain("Milestone 1: M1");
+
+    const outcome = JSON.parse(
+      await readFile(join(planner, "milestone-1-attempt-01-outcome.json"), "utf8"),
+    );
+    expect(outcome.status).toBe("succeeded");
+    expect(outcome.threadId).toBe("greg-thread");
+    expect(outcome.usage.totalTokens).toBe(8_400);
+  });
+
+  it("records a failed attempt, and what it spent before dying", async () => {
+    const ladderPath = await scratchLadder();
+    const resultsDir = join(dirname(ladderPath), "results");
+    const runner: AttemptRunner = async () => {
+      throw attachSessionUsage(
+        new Error("watchdog aborted greg: no activity for 600000ms"),
+        { totalTokens: 33_000 },
+      );
+    };
+
+    await expect(
+      planNextMilestone(
+        { ...base, resultsDir } as HarnessConfig,
+        ladderPath,
+        await readLadder(ladderPath),
+        1,
+        runner,
+      ),
+    ).rejects.toThrow(/watchdog aborted greg/);
+
+    const planner = join(resultsDir, "planner");
+    // Both attempts, not just the last: each is a fresh session, so their costs
+    // genuinely add.
+    for (const attempt of ["01", "02"]) {
+      const outcome = JSON.parse(
+        await readFile(
+          join(planner, `milestone-1-attempt-${attempt}-outcome.json`),
+          "utf8",
+        ),
+      );
+      expect(outcome.status).toBe("failed");
+      expect(outcome.error).toContain("watchdog aborted greg");
+      expect(outcome.usage.totalTokens).toBe(33_000);
+    }
   });
 });

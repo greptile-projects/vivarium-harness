@@ -95,6 +95,7 @@ type SyncOverrides = {
   sourceTitle?: string;
   sourceBody?: string;
   sourceBodyFail?: string;
+  reviewFetchFail?: string;
   pollTimeout?: string;
 };
 
@@ -105,6 +106,12 @@ class Scenario {
   readonly stubDir: string;
   readonly work: string;
   readonly rootSha: string;
+
+  // Where mirror_sync.sh writes each captured review. Per scenario, so nothing
+  // lands in the repo's real results/ directory.
+  get reviewDir(): string {
+    return join(this.path, "reviews");
+  }
 
   private constructor(
     path: string,
@@ -177,6 +184,8 @@ class Scenario {
       STUB_SRC_TITLE: overrides.sourceTitle ?? "",
       STUB_SRC_BODY: overrides.sourceBody ?? "",
       STUB_SRC_BODY_FAIL: overrides.sourceBodyFail ?? "",
+      STUB_REVIEW_FETCH_FAIL: overrides.reviewFetchFail ?? "",
+      MIRROR_REVIEW_DIR: this.reviewDir,
       API_RETRY_SLEEP: "0",
       MIRROR_PUSH_TOKEN: "dummy",
       HARNESS_ORG_TOKEN: "dummy",
@@ -206,6 +215,24 @@ class Scenario {
 
   async body(): Promise<string> {
     return await readFile(join(this.stubDir, "last_body"), "utf8");
+  }
+
+  // The capture directory mirror_sync.sh writes before merging one PR.
+  async captureDir(sourceSha: string, pr: number): Promise<string> {
+    const short = await git(this.sourceBare, "rev-parse", "--short=7", sourceSha);
+    return join(this.reviewDir, `${short}-mirror-pr-${pr}`);
+  }
+
+  async capture(sourceSha: string, pr: number, file: string): Promise<string> {
+    return await readFile(join(await this.captureDir(sourceSha, pr), file), "utf8");
+  }
+
+  async mirrorMain(): Promise<string> {
+    return await git(this.mirrorBare, "rev-parse", "refs/heads/main");
+  }
+
+  async log(): Promise<string> {
+    return await optionalFile(join(this.path, "out.log"));
   }
 
   async expectTreeAt(sourceSha: string): Promise<void> {
@@ -419,6 +446,78 @@ Added the storage interface.`;
     );
     expect(
       result.stderr.match(/could not read description.*\(attempt /g),
+    ).toHaveLength(3);
+  });
+
+  // The review of the mirror IS the control arm's counterfactual — what Greptile
+  // says about code written by the arm that cannot hear it. The pipeline used to
+  // check only that a review *existed* and then merge past it, so the findings
+  // themselves lived on the mirror PR and in an expiring Actions log, and in no
+  // artifact of the experiment.
+  test("captures the mirror review before merging past it", async () => {
+    const scenario = await Scenario.create();
+    const head = await scenario.commit("v2", "1.3 Reviewed commit");
+
+    const result = await scenario.run({ sourcePr: "45" });
+    expect(result.code).toBe(0);
+
+    expect(await scenario.capture(head, 1, "reviews.json")).toContain(
+      "stub greptile review body",
+    );
+    // Inline comments keep path/line/diff_hunk — the code each finding was
+    // written against, which a body alone does not say.
+    expect(await scenario.capture(head, 1, "review-comments.json")).toContain(
+      "diff_hunk",
+    );
+
+    const meta = JSON.parse(await scenario.capture(head, 1, "meta.json"));
+    expect(meta.timedOut).toBe(false);
+    expect(meta.source.pullRequest).toBe(45);
+    expect(meta.source.sha).toBe(head);
+    expect(meta.mirror.pullRequest).toBe(1);
+
+    // Captured before the merge: afterwards this pipeline never looks at the PR
+    // again.
+    const log = await scenario.log();
+    expect(log.indexOf("captured review into")).toBeLessThan(
+      log.indexOf(": merged"),
+    );
+  });
+
+  // A review that never arrives is a real observation about the pipeline, so it
+  // is recorded as an empty capture rather than as a missing file — those read
+  // the same to anyone counting rungs later.
+  test("records a timed-out review as an empty capture", async () => {
+    const scenario = await Scenario.create();
+    const head = await scenario.commit("v2", "unreviewed commit");
+
+    expect(
+      (await scenario.run({ review: "0", pollTimeout: "0" })).code,
+    ).toBe(0);
+
+    const meta = JSON.parse(await scenario.capture(head, 1, "meta.json"));
+    expect(meta.timedOut).toBe(true);
+    expect((await scenario.capture(head, 1, "reviews.json")).trim()).toBe("[]");
+  });
+
+  // Capturing runs before the merge precisely so this can fail closed: merging
+  // past a review we could not read loses it for good, while dying costs a rerun
+  // that resumes at the same open PR.
+  test("stops the merge when the review cannot be read", async () => {
+    const scenario = await Scenario.create();
+    await scenario.commit("v2", "unreadable review");
+    const stateBefore = await scenario.state();
+
+    const result = await scenario.run({ reviewFetchFail: "1" });
+
+    expect(result.code).not.toBe(0);
+    expect(await scenario.state()).toBe(stateBefore);
+    expect(await scenario.mirrorMain()).toBe(scenario.rootSha);
+    expect(result.stderr).toContain(
+      "refusing to merge past a review it cannot keep",
+    );
+    expect(
+      result.stderr.match(/could not read reviews on mirror.*\(attempt /g),
     ).toHaveLength(3);
   });
 });

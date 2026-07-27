@@ -2,12 +2,13 @@ import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
 import type {
   ArmGitHub,
   Baseline,
+  CommitRef,
   MergeOutcome,
   PullRequestRef,
   ReviewNote,
 } from "./github.js";
 import { pullRequestUrl } from "./github.js";
-import type { StreamResult } from "./session.js";
+import type { StreamResult, TokenUsage } from "./session.js";
 import { reviewPrompt } from "./prompts.js";
 
 // What happens to an arm's work *after* its Codex session says it is done: find
@@ -40,7 +41,14 @@ export interface ReviewRound {
   reviewedSha?: string;
   respondedSha?: string;
   respondedAt?: string;
+  // The instruction the arm was handed this round, and what it said back. The
+  // answer alone is half a record: `reviewPrompt` has changed before and will
+  // again, and a reply reads differently depending on whether the arm was told
+  // this was its last round.
+  prompt?: string;
   response?: string;
+  // What the round cost. Cumulative for the arm's thread — see TokenUsage.
+  usage?: TokenUsage;
   error?: string;
   // The reviewer came back with nothing to answer — an approval, a thumbs-up,
   // "no further comments". The arm was not sent back for this round, and the
@@ -135,6 +143,16 @@ export interface LandingRecord {
   // the close-reading input: the reviewer's findings and the arm's answers,
   // in one chronological list.
   conversation: ReviewNote[];
+  // What the arm actually changed. Captured before the merge, so the record can
+  // show the work without GitHub having to still serve the branch — the diff
+  // lands beside `land.json` as `pull-request.diff` rather than inside it,
+  // because a four-thousand-line patch encoded as a JSON string is not something
+  // anyone can close-read.
+  commits?: CommitRef[];
+  diff?: string;
+  // Where that patch was written. Filled in by `RunArtifacts.recordLanding`,
+  // which is the only thing here that knows about disk.
+  diffFile?: string;
   merge?: MergeOutcome;
   notes: string[];
 }
@@ -383,9 +401,12 @@ export async function reviewArm(
         pullRequest.headRefName,
       );
 
-      const answer = await deps.reply(
-        reviewPrompt(pullRequest.url, round, config.reviewRounds),
+      const instruction = reviewPrompt(
+        pullRequest.url,
+        round,
+        config.reviewRounds,
       );
+      const answer = await deps.reply(instruction);
       // And after: the pair is what says whether the arm pushed a fix or only
       // replied. Equal shas mean it argued and changed nothing.
       const respondedSha = await deps.github.headSha(
@@ -416,6 +437,10 @@ export async function reviewArm(
         reviewedSha,
         respondedSha,
         respondedAt: new Date().toISOString(),
+        // What the arm was handed. `reviewPrompt` has changed before and a
+        // reply reads differently depending on whether the arm was told this
+        // was its last round.
+        prompt: instruction,
         // `response` is what the arm *said*; a session that errored said
         // nothing. Setting it unconditionally made every non-timed-out round
         // count as answered — including one whose Codex turn died on spawn —
@@ -423,6 +448,7 @@ export async function reviewArm(
         // "did the reviewed arm engage with its review" was not measuring
         // engagement at all. The failure text is still kept, as `error`.
         response: answer.isError ? undefined : answer.output,
+        usage: answer.usage,
         error: answer.isError ? answer.output : undefined,
       });
 
@@ -433,7 +459,14 @@ export async function reviewArm(
     }
   }
 
-  return done("ready", { branch, pullRequest, reviewRounds });
+  // Captured here, at the end of review: every arm reaches this point, it is
+  // strictly before any merge (the barrier runs after both reviews), and
+  // `--delete-branch` will remove the head ref — so an arm that ends up blocked
+  // by its peer still keeps the record of what it built.
+  const commits = await deps.github.commits(pullRequest.number);
+  const diff = await deps.github.diff(pullRequest.number);
+
+  return done("ready", { branch, pullRequest, reviewRounds, commits, diff });
 }
 
 // Phase two: the irreversible step. Only a "ready" record merges; anything else
@@ -455,6 +488,7 @@ export async function mergeArm(
   const conversation = await deps.github.conversation(
     record.pullRequest.number,
   );
+
 
   if (!merge.merged) {
     note(`merge failed: ${merge.error ?? "unknown error"}`);
