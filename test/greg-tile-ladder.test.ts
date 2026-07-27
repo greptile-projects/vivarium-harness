@@ -225,9 +225,12 @@ describe("outcome lines", () => {
       ],
     } as unknown as HarnessRunResult;
 
+    // What the line has to carry, not how it words it: the run, its status,
+    // the arm that failed, and where the artifacts are.
     const outcome = runOutcome(run);
-    expect(outcome).toContain("Run `run-42`: completed_with_failures");
-    expect(outcome).toContain("failed arms: tuatara");
+    expect(outcome).toContain("run-42");
+    expect(outcome).toContain("completed_with_failures");
+    expect(outcome).toContain("tuatara");
     expect(outcome).toContain("/results/run-42");
   });
 });

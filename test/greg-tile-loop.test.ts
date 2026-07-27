@@ -39,7 +39,6 @@ async function makeSetup(): Promise<{
     containerImage: "vivarium-arm",
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
-    land: false,
     reviewTimeoutMs: 1_000,
     reviewPollMs: 10,
     reviewDebounceMs: 0,
@@ -108,8 +107,6 @@ describe("runGreg", () => {
           harnessTickets.push(harnessConfig.ticket);
           return fakeRun(`run-${harnessTickets.length}`);
         },
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -166,8 +163,6 @@ describe("runGreg", () => {
           ]);
         },
         harness: async () => fakeRun("r"),
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -200,8 +195,6 @@ describe("runGreg", () => {
           throw new Error("nothing should need planning");
         },
         harness: async () => fakeRun("r"),
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -233,8 +226,6 @@ describe("runGreg", () => {
           if (call === 1) throw new Error("docker daemon unavailable");
           return fakeRun("run-2");
         },
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -279,8 +270,6 @@ describe("runGreg", () => {
           }
           return fakeRun("run-2");
         },
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -316,8 +305,6 @@ describe("runGreg", () => {
           ]);
         },
         harness: async () => fakeRun("r"),
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -328,115 +315,6 @@ describe("runGreg", () => {
     expect(await readFile(ladderPath, "utf8")).toContain(
       "## Milestone 2: Next up",
     );
-  });
-});
-
-describe("Linear closing from the loop", () => {
-  it("closes each built subticket's issue using the id stamped by filing", async () => {
-    const { base, ladderPath } = await makeSetup();
-    const closed: Array<string | undefined> = [];
-
-    await runGreg(
-      base,
-      1,
-      {
-        plan: async (_base, path) =>
-          appendMilestone(path, 1, "Milestone", [
-            { title: "A", ticket: "GRE-10", description: "do A" },
-            { title: "B", ticket: "GRE-11", description: "do B" },
-          ]),
-        file: async () => {},
-        close: async (ticket) => {
-          closed.push(ticket);
-        },
-        harness: async () => fakeRun("r"),
-        log: () => {},
-      },
-      ladderPath,
-    );
-
-    expect(closed).toEqual(["GRE-10", "GRE-11"]);
-  });
-
-  it("halts when closing fails, leaving the box checked (the build did succeed)", async () => {
-    const { base, ladderPath } = await makeSetup();
-
-    const runPromise = runGreg(
-      base,
-      1,
-      {
-        plan: async (_base, path) =>
-          appendMilestone(path, 1, "Milestone", [
-            { title: "A", ticket: "GRE-10", description: "do A" },
-            { title: "B", ticket: "GRE-11", description: "do B" },
-          ]),
-        file: async () => {},
-        close: async (ticket) => {
-          throw new Error(`failed to close ${ticket} in Linear: 500`);
-        },
-        harness: async () => fakeRun("r"),
-        log: () => {},
-      },
-      ladderPath,
-    );
-
-    await expect(runPromise).rejects.toThrow(/failed to close GRE-10 in Linear/);
-
-    // The build itself succeeded, so the box is checked; the halt is about the
-    // board drifting, and the second subticket was never started.
-    const ladder = await readFile(ladderPath, "utf8");
-    expect(ladder).toContain("### [x] 1.1 A — GRE-10");
-    expect(ladder).toContain("### [ ] 1.2 B — GRE-11");
-  });
-});
-
-describe("Linear filing from the loop", () => {
-  it("files each milestone right after it is planned", async () => {
-    const { base, ladderPath } = await makeSetup();
-    const filed: number[] = [];
-
-    await planAhead(
-      base,
-      2,
-      {
-        plan: async (_base, path, _ladder, milestoneNumber) =>
-          appendMilestone(path, milestoneNumber, `M${milestoneNumber}`, [
-            { title: "A", description: "do A" },
-          ]),
-        file: async (_path, milestoneNumber) => {
-          filed.push(milestoneNumber);
-        },
-        log: () => {},
-      },
-      ladderPath,
-    );
-
-    expect(filed).toEqual([1, 2]);
-  });
-
-  it("keeps climbing when the filer throws — ids are bookkeeping, not build state", async () => {
-    const { base, ladderPath } = await makeSetup();
-    const logs: string[] = [];
-
-    const built = await runGreg(
-      base,
-      1,
-      {
-        plan: async (_base, path) =>
-          appendMilestone(path, 1, "Milestone", [
-            { title: "A", description: "do A" },
-          ]),
-        file: async () => {
-          throw new Error("linear is down");
-        },
-        harness: async () => fakeRun("r"),
-        log: (message) => logs.push(message),
-      },
-      ladderPath,
-    );
-
-    expect(built.map((subticket) => subticket.number)).toEqual(["1.1"]);
-    expect(logs.join("\n")).toContain("linear is down");
   });
 });
 
@@ -466,8 +344,6 @@ describe("planAhead", () => {
           harnessCalls += 1;
           return fakeRun("should-not-run");
         },
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -501,8 +377,6 @@ describe("planAhead", () => {
             { title: "A", description: "do A" },
             { title: "B", description: "do B" },
           ]),
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -536,8 +410,6 @@ describe("planAhead", () => {
       {
         plan: async (_base, path, _ladder, milestoneNumber) =>
           plans[milestoneNumber - 1](path),
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -600,8 +472,6 @@ describe("durable climb record", () => {
             ],
           } as unknown as HarnessRunResult;
         },
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,
@@ -640,8 +510,6 @@ describe("durable climb record", () => {
           return "thread-greg-1";
         },
         harness: async () => fakeRun("run-1"),
-        file: async () => {},
-        close: async () => {},
         log: () => {},
       },
       ladderPath,

@@ -86,7 +86,7 @@ Your PR has been reviewed by Greptile, an autonomous code review agent. This is 
   - It convinced you: push the fix and say so on the thread.
   - You still disagree: state your final position. You may treat that thread as settled and stop replying to restatements; re-engage only for a new argument, evidence, or question.
   - It asked something: answer it, or ask a question back.
-  - Nothing new remains: say nothing. Do not reply justoh to acknowledge a reply.
+  - Nothing new remains: say nothing. Do not reply just to acknowledge a reply.
 - **Important!** A silent fix does not count as addressing it, and your PR will be rejected by the agent orchestrator. Disagreeing is a legitimate outcome; collaborate with Greptile to resolve the issue.
 - Thread-level closure does not close review of the whole PR. Fixes may produce new root comments elsewhere, and those must still be addressed.
 - Do not reopen settled threads or re-answer comments you already answered. Push fixes to the same branch, keep checks passing, and resolve threads you have addressed on GitHub.
@@ -159,7 +159,7 @@ Read \`${ladderFile}\` before making any changes, and then, with all context in 
 - Subtickets MUST be PR-shaped, and PR-sized. However, ambition is *always* more important than keeping PRs tidy - agents should be challenged and given ambitious tasks when possible.
 - Keep the subtickets compact, such as the example. :)
 - Tasks should be independently actionable to an amnesic worker - the worker will receive only this ticket.
-- Do NOT file any tickets, call Linear tools, or invent ticket IDs. The harness files the milestone and adds IDs (e.g., \` — GRE-12\`) afterward.
+- Do NOT file any tickets, call external ticketing tools, or invent ticket IDs.
 
 ## Ladder Format
 Append the milestone using the exact Markdown structure below. The example is structural only; replace its subject matter, then repeat the subticket block for ${milestoneNumber}.2 and each remaining subticket.
@@ -186,5 +186,5 @@ What is the smallest repository boundary that later work can depend on?
 <end_format>
 
 ## Agent Format and Expectations
-Work autonomously: do not ask for clarification, request intervention, or wait for further instructions. Change only \`${ladderFile}\`. Once the milestone has been appended, you are done; your reply text is ignored because the edited ladder is the result. Your changes will be later copied to a Linear dashboard.`;
+Work autonomously: do not ask for clarification, request intervention, or wait for further instructions. Change only \`${ladderFile}\`. Once the milestone has been appended, you are done; your reply text is ignored because the edited ladder is the result.`;
 }

@@ -1,6 +1,6 @@
-import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { atomicWrite } from "./artifacts.js";
 import type { HarnessRunResult } from "./harness.js";
 import type { LandingRecord, LandingStatus } from "./land.js";
 
@@ -96,13 +96,10 @@ export async function readClimbState(path: string): Promise<ClimbState> {
 
 async function write(path: string, state: ClimbState): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(
-    temporary,
+  await atomicWrite(
+    path,
     `${JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2)}\n`,
-    "utf8",
   );
-  await rename(temporary, path);
 }
 
 export function armRecord(record: LandingRecord): StateArmRecord {

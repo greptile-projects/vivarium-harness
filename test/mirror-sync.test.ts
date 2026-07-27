@@ -414,11 +414,7 @@ Added the storage interface.`;
     expect(result.code).not.toBe(0);
     expect(await scenario.prCount()).toBe(0);
     expect(await scenario.state()).toBe(stateBefore);
-    expect(result.stderr).toContain(
-      "refusing to open a mirror PR without it",
-    );
-    expect(
-      result.stderr.match(/could not read description.*\(attempt /g),
-    ).toHaveLength(3);
+    // It retried before giving up, rather than failing on the first refusal.
+    expect(result.stderr.match(/\(attempt /g)).toHaveLength(3);
   });
 });

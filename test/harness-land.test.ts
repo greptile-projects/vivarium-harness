@@ -52,7 +52,6 @@ async function makeConfig(): Promise<HarnessConfig> {
     containerImage: "vivarium-arm",
     maxAttempts: 1,
     idleTimeoutMs: 600_000,
-    land: true,
     reviewTimeoutMs: 100,
     reviewPollMs: 10,
     reviewDebounceMs: 0,
@@ -140,7 +139,8 @@ describe("runHarness landing", () => {
     expect(komodo).toHaveLength(1);
     expect(tuatara).toHaveLength(2);
     expect(tuatara[1]?.threadId).toBe("thread-tuatara");
-    expect(tuatara[1]?.prompt).toContain("has been reviewed");
+    // …and that second turn is the review round for its own pull request.
+    expect(tuatara[1]?.prompt).toContain(urlFor("tuatara"));
 
     const manifest = JSON.parse(
       await readFile(join(run.artifactDir, "manifest.json"), "utf8"),

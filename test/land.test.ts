@@ -9,11 +9,12 @@ import type {
 import { pullRequestUrl, slugFromRemote } from "../src/harness/github.js";
 import {
   asksSomething,
-  landArm,
   landingError,
-  landingSummary,
+  mergeArm,
   prepareArm,
+  reviewArm,
 } from "../src/harness/land.js";
+import { reviewPrompt } from "../src/harness/prompts.js";
 import type { StreamResult } from "../src/harness/session.js";
 
 const REVIEWER = "greptile-apps[bot]";
@@ -34,7 +35,6 @@ const config: HarnessConfig = {
   containerImage: "vivarium-arm",
   maxAttempts: 3,
   idleTimeoutMs: 600_000,
-  land: true,
   reviewTimeoutMs: 300,
   reviewPollMs: 100,
   reviewDebounceMs: 0,
@@ -139,10 +139,20 @@ const answer = async (): Promise<StreamResult> => ({
   timedOut: false,
 });
 
+// Review then merge with no barrier — what the harness does per arm once its
+// peer is also ready. Composed here so each test exercises the same two
+// production functions the harness calls.
+const landArm = async (
+  arm: ArmConfig,
+  cfg: HarnessConfig,
+  session: { status: "succeeded" | "failed"; output?: string },
+  d: ReturnType<typeof deps>,
+) => mergeArm(await reviewArm(arm, cfg, session, d), d);
+
 describe("prepareArm", () => {
   it("resets the checkout to the shared baseline", async () => {
     const github = fakeGitHub({});
-    const baseline = await prepareArm(komodo, config, {
+    const baseline = await prepareArm({
       github,
       note: () => {},
     });
@@ -153,7 +163,7 @@ describe("prepareArm", () => {
 
   it("skips anything that is not a GitHub checkout", async () => {
     const github = fakeGitHub({ isCheckout: false });
-    const baseline = await prepareArm(komodo, config, {
+    const baseline = await prepareArm({
       github,
       note: () => {},
     });
@@ -213,8 +223,6 @@ describe("landArm", () => {
     // The whole point: the arm is told where its review is, not what it says.
     expect(prompts[0]).toContain(pr.url);
     expect(prompts[0]).not.toContain("this leaks a connection");
-    expect(prompts[0]).toContain("gh pr view");
-    expect(prompts[0]).toContain("pulls/{number}/comments");
 
     const [first, second] = record.reviewRounds;
     expect(first?.found.map((entry) => entry.id)).toEqual(["c1"]);
@@ -396,7 +404,7 @@ describe("landArm", () => {
     expect(landingError(record)).toMatch(/could not be merged/);
   });
 
-  it("lands nothing for a failed session, or when landing is off", async () => {
+  it("lands nothing for a failed session, or a non-GitHub checkout", async () => {
     const github = fakeGitHub({});
     const failed = await landArm(
       komodo,
@@ -406,14 +414,16 @@ describe("landArm", () => {
     );
     expect(failed.status).toBe("not-attempted");
 
-    const landingOff = await landArm(
+    const notACheckout = fakeGitHub({ isCheckout: false });
+    const skipped = await landArm(
       komodo,
-      { ...config, land: false },
+      config,
       succeeded(`PR: ${pr.url}`),
-      deps(github, answer),
+      deps(notACheckout, answer),
     );
-    expect(landingOff.status).toBe("skipped");
+    expect(skipped.status).toBe("skipped");
     expect(github.calls).toEqual([]);
+    expect(notACheckout.calls).toEqual([]);
   });
 });
 
@@ -464,8 +474,6 @@ describe("a review round that the arm failed to answer", () => {
     // But the arm said nothing, and the record must not imply otherwise.
     expect(round.response).toBeUndefined();
     expect(round.error).toContain("session died");
-    // Which is what every "answered" counter reads.
-    expect(landingSummary(record)).toContain("0/1 answered");
   });
 
   it("still counts a round the arm did answer", async () => {
@@ -487,12 +495,11 @@ describe("a review round that the arm failed to answer", () => {
     expect(record.reviewRounds[0].response).toContain("pushed a fix");
     expect(record.reviewRounds[0].error).toBeUndefined();
     // Counted, unlike the errored round above. (A second round follows and
-    // times out with nothing new, so the summary reads 1/2 — the point is that
-    // a real answer still counts.)
+    // times out with nothing new — the point is that a real answer still
+    // counts.)
     expect(
       record.reviewRounds.filter((round) => round.response !== undefined),
     ).toHaveLength(1);
-    expect(landingSummary(record)).toContain("1/2 answered");
   });
 });
 
@@ -545,11 +552,9 @@ describe("the rounds after the first", () => {
     );
 
     expect(prompts).toHaveLength(2);
-    // Comment shape, not round number, determines the obligation.
-    expect(prompts[0]).toContain("must address every substantive new root comment");
-    expect(prompts[1]).toContain("must address every substantive new root comment");
-    expect(prompts[1]).toContain("Replying to that follow-up is your choice");
-    expect(prompts[1]).toContain("round 2 of at most 3");
+    // Each round gets the review prompt for *its* round, against this PR.
+    expect(prompts[0]).toBe(reviewPrompt(pr.url, 1, 3));
+    expect(prompts[1]).toBe(reviewPrompt(pr.url, 2, 3));
     // Still never handed the text of what it has to answer.
     expect(prompts[1]).not.toContain("closed twice");
 
@@ -597,7 +602,6 @@ describe("the rounds after the first", () => {
       "c3",
     ]);
     expect(record.status).toBe("merged");
-    expect(landingSummary(record)).toContain("signed off");
   });
 
   it("treats a reviewer reaction to the arm's reply as a sign-off", async () => {

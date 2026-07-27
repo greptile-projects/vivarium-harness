@@ -2,11 +2,10 @@
 # Put both arm checkouts back on a clean, *symmetric* baseline before resuming an
 # interrupted climb.
 #
-# Usage:  scripts/resume-clean.sh [--apply] [--reconcile-linear]
+# Usage:  scripts/resume-clean.sh [--apply]
 #
 #   (no flags)          report what an interrupted run left behind; change nothing
 #   --apply             actually discard it and reset both arms to origin/main
-#   --reconcile-linear  also run the ladder/Linear reconcile pass (src/greg-tile/reconcile.ts)
 #
 # Reads KOMODO_REPO / TUATARA_REPO (and the matching *_GH_TOKEN) from .env, the
 # same file the harness and arm-run.sh read. Override with ENV_FILE.
@@ -38,13 +37,11 @@
 set -euo pipefail
 
 apply=false
-reconcile=false
 for argument in "$@"; do
   case "$argument" in
     --apply) apply=true ;;
-    --reconcile-linear) reconcile=true ;;
     -h | --help)
-      sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -157,12 +154,12 @@ inspect_arm() {
   # its commits are unmerged, which is the whole point of discarding them.
   local main_branch="${base#origin/}"
   git -C "$repo" checkout --quiet --force -B "$main_branch" "$base"
-  # Same clean as the harness's syncToBaseline (src/harness/github.ts), with the same
-  # two excludes: LADDER.md is the arm's read-only view of the ladder (a
-  # symlink on the host, a bind mount in the container) and is not the arm's
-  # work to discard; node_modules is excluded explicitly rather than trusting
-  # every arm repo to gitignore it. No -x: ignored files stay.
-  git -C "$repo" clean --quiet -fd -e node_modules -e LADDER.md
+  # The same clean as the harness's syncToBaseline (src/harness/github.ts):
+  # -x so ignored files (build output, caches) go too, and the same two
+  # excludes — LADDER.md is the arm's read-only view of the ladder (a symlink
+  # on the host, a bind mount in the container) and is not the arm's work to
+  # discard; node_modules is expensive and identical for both arms.
+  git -C "$repo" clean --quiet -fdx -e node_modules -e LADDER.md
   if [[ "$branch" != "$main_branch" ]]; then
     git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
     if [[ -n "${open_pr:-}" ]] && command -v gh >/dev/null 2>&1; then
@@ -189,9 +186,4 @@ elif [[ "$apply" == true ]]; then
 else
   log "interrupted work found in: $dirty_arms"
   log "re-run with --apply to discard it and reset both arms to the same baseline"
-fi
-
-if [[ "$reconcile" == true ]]; then
-  log "reconciling LADDER.md against Linear"
-  (cd "$root" && bun src/greg-tile/reconcile.ts)
 fi

@@ -184,11 +184,8 @@ export function landingSummary(record: LandingRecord): string {
 // every subticket begins from the commit the previous one merged. Returns
 // undefined for a checkout that is not a GitHub clone.
 export async function prepareArm(
-  arm: ArmConfig,
-  config: HarnessConfig,
   deps: Pick<LandDeps, "github" | "note">,
 ): Promise<Baseline | undefined> {
-  if (!config.land) return undefined;
   if (!(await deps.github.isGitHubCheckout())) {
     deps.note("not a GitHub checkout — skipping baseline sync");
     return undefined;
@@ -295,7 +292,6 @@ export async function reviewArm(
   });
 
   if (session.status === "failed") return done("not-attempted");
-  if (!config.land) return done("skipped");
   if (!(await deps.github.isGitHubCheckout())) return done("skipped");
 
   const branch = await deps.github.currentBranch();
@@ -501,17 +497,6 @@ export async function blockArm(
     conversation,
     notes: [...record.notes, note],
   };
-}
-
-// The whole landing for one arm, review then merge, with no barrier between.
-// Kept for the one-ticket path, where there is no peer to stay in step with.
-export async function landArm(
-  arm: ArmConfig,
-  config: HarnessConfig,
-  session: { status: "succeeded" | "failed"; output?: string },
-  deps: LandDeps,
-): Promise<LandingRecord> {
-  return mergeArm(await reviewArm(arm, config, session, deps), deps);
 }
 
 // A subticket's deliverable is a merged pull request, so a session that opened

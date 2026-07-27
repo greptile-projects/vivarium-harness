@@ -102,7 +102,7 @@ export function codexToolArguments(
 
 // What a Codex session is allowed to inherit. An allowlist, not a copy of
 // `process.env`: Bun loads `.env`, so the harness process holds `KOMODO_REPO`,
-// `TUATARA_REPO`, both `<ARM>_GH_TOKEN`s and `LINEAR_API_KEY`. Forwarding all
+// `TUATARA_REPO` and both `<ARM>_GH_TOKEN`s. Forwarding all
 // of it meant one `env | grep REPO` told a host-mode arm it was one of two and
 // where the other one lived — and handed it the other arm's token, which
 // reaches the other arm's repository around its own token's scope. Container

@@ -43,7 +43,6 @@ async function makeConfig(): Promise<{
     containerImage: "vivarium-arm",
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
-    land: false,
     reviewTimeoutMs: 1_000,
     reviewPollMs: 10,
     reviewDebounceMs: 0,

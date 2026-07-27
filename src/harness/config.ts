@@ -90,11 +90,6 @@ export interface HarnessConfig {
   containerImage: string;
   maxAttempts: number;
   idleTimeoutMs: number;
-  // Sync each checkout to origin's default branch before the arms start, and
-  // merge what they open when they finish. `parseArgs` always sets this true;
-  // it stays a field so landing can be switched off for a checkout that is not
-  // a clone, and `land.test.ts` covers that path.
-  land: boolean;
   reviewTimeoutMs: number;
   reviewPollMs: number;
   reviewDebounceMs: number;
@@ -152,17 +147,6 @@ function positiveFromEnv(
     throw new Error(`${name} must be a non-negative number`);
   }
   return parsed;
-}
-
-function idleTimeoutFromEnv(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") return IDLE_TIMEOUT_MS;
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms < 0) {
-    throw new Error(
-      "IDLE_TIMEOUT_MS must be a non-negative number of milliseconds",
-    );
-  }
-  return ms;
 }
 
 // A containerized arm writes its Codex sessions inside the container, so they
@@ -231,8 +215,11 @@ export function parseArgs(
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
     containerImage: env.VIVARIUM_IMAGE ?? CONTAINER_IMAGE,
     maxAttempts: MAX_ATTEMPTS,
-    idleTimeoutMs: idleTimeoutFromEnv(env.IDLE_TIMEOUT_MS),
-    land: true,
+    idleTimeoutMs: positiveFromEnv(
+      "IDLE_TIMEOUT_MS",
+      env.IDLE_TIMEOUT_MS,
+      IDLE_TIMEOUT_MS,
+    ),
     reviewTimeoutMs: positiveFromEnv(
       "REVIEW_TIMEOUT_MS",
       env.REVIEW_TIMEOUT_MS,
@@ -359,9 +346,8 @@ export const usage = `Usage:
 
 Options:
   --unbounded             Do not pause after ${MAX_MILESTONES} milestones (never returns).
-  --plan-only             Plan rungs onto the ladder and file their Linear
-                          tickets; build nothing. A later \`bun start\` builds
-                          everything queued this way.
+  --plan-only             Plan rungs onto the ladder; build nothing. A later
+                          \`bun start\` builds everything queued this way.
   --ticket <description>  Skip the ladder: run this one ticket through both
                           arms and exit. For debugging the harness itself.
   --tui / --no-tui        Force the live view on/off (default: on when stdout

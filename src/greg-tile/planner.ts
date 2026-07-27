@@ -79,10 +79,8 @@ async function preserveContainerSessions(
 // Run one fresh, stateless Greg session to plan the next milestone by editing
 // the ladder file directly. Never continues a thread — statelessness is the
 // point; the ladder is the only carried state. Greg runs with write access
-// scoped to the ladder's directory so he can append to the file. He does NOT
-// file Linear tickets — the loop does that mechanically afterwards (see
-// linear.ts for why a headless Codex session cannot). Returns nothing: the
-// loop re-reads the ladder to see what was added.
+// scoped to the ladder's directory so he can append to the file. Returns
+// nothing: the loop re-reads the ladder to see what was added.
 //
 // Only *session* failures (the runner throwing — e.g. a watchdog abort — or
 // Codex reporting an error) are retried, each time with a fresh session and a

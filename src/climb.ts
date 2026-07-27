@@ -83,7 +83,6 @@ export async function runGregLive(
       onEvent(params.arm, msg),
     );
 
-  // `file` is left to the loop's default (the mechanical Linear filer).
   const deps: Partial<GregDeps> = {
     plan: async (config, ladderPath, ladder, milestoneNumber) => {
       model.setPhase(`milestone ${milestoneNumber} · planning`, ["greg"]);

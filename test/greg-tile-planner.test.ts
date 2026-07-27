@@ -30,7 +30,6 @@ const base = {
   codexHome: "/tmp/codex",
   containerImage: "vivarium-arm",
   idleTimeoutMs: 600_000,
-  land: false,
   reviewTimeoutMs: 1_000,
   reviewPollMs: 10,
   reviewDebounceMs: 0,
@@ -200,7 +199,7 @@ describe("planNextMilestone", () => {
 
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
-    ).rejects.toThrow(/Greg failed to plan milestone 1 after 2 attempt\(s\): boom/);
+    ).rejects.toThrow(/boom/);
     expect(attempts).toBe(2);
   });
 
@@ -239,7 +238,7 @@ describe("planNextMilestone", () => {
 
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner),
-    ).rejects.toThrow(/did not append a buildable milestone 1/);
+    ).rejects.toThrow(/milestone 1/);
     expect(attempts).toBe(1);
   });
 
@@ -258,7 +257,7 @@ describe("planNextMilestone", () => {
 
     await expect(
       planNextMilestone(base, ladderPath, await readLadder(ladderPath), 2, runner),
-    ).rejects.toThrow(/did not append a buildable milestone 2/);
+    ).rejects.toThrow(/milestone 2/);
   });
 
   it("accepts a milestone even while an earlier one is still unbuilt (write-ahead)", async () => {

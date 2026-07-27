@@ -51,7 +51,9 @@ function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-async function atomicWrite(path: string, contents: string): Promise<void> {
+// Shared with state.ts — every durable record in results/ goes through the
+// same temp-file + rename move.
+export async function atomicWrite(path: string, contents: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   await writeFile(temporary, contents, "utf8");
   await rename(temporary, path);
@@ -153,7 +155,13 @@ export class RunArtifacts {
       atomicWrite(
         join(directory, "config.json"),
         json({
-          arms: config.arms,
+          // The record is meant to be published; a token is the one part of an
+          // arm's config that must not be. Its presence is still recorded —
+          // "did this arm push under its own identity" is worth knowing later.
+          arms: config.arms.map((arm) => ({
+            ...arm,
+            ghToken: arm.ghToken ? "[redacted]" : undefined,
+          })),
           sandbox: config.sandbox,
           resultsDir: resolve(config.resultsDir),
           codexHome: resolve(config.codexHome),

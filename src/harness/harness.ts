@@ -16,6 +16,7 @@ import {
 } from "./land.js";
 import { retryPrompt, workerPrompt } from "./prompts.js";
 import {
+  codexToolArguments,
   runArmStreaming,
   type CodexMsg,
   type StreamParams,
@@ -86,19 +87,6 @@ export function armExecution(
   };
 }
 
-export function codexArguments(
-  prompt: string,
-  repo: string,
-  sandbox: SandboxMode,
-): Record<string, unknown> {
-  return {
-    prompt,
-    cwd: repo,
-    sandbox,
-    "approval-policy": "never",
-  };
-}
-
 export async function runArm(
   arm: ArmConfig,
   prompt: string,
@@ -140,12 +128,15 @@ export async function runArm(
         : continuing
           ? recovery
           : `${prompt}\n\n${recovery}`;
+    // The recorded request is built from the same function that builds the
+    // real tool call, so request.json shows what was actually sent — the
+    // ambient-tooling kill-switches included.
     const request = continuing
       ? { tool: "codex-reply", threadId, prompt: attemptPrompt }
       : {
           tool: "codex",
           ...(arm.container ? { container: arm.container } : {}),
-          ...codexArguments(attemptPrompt, workspace, sandbox),
+          ...codexToolArguments({ prompt: attemptPrompt, cwd: workspace, sandbox }),
         };
     const artifactDir = await artifacts.startAttempt(
       arm,
@@ -256,7 +247,7 @@ export async function runHarness(
     // up front means a sync failure costs nothing already in flight.
     const baselines: Partial<Record<ArmName, Baseline>> = {};
     for (const arm of config.arms) {
-      const baseline = await prepareArm(arm, config, {
+      const baseline = await prepareArm({
         github: github(arm),
         note: (text) => note(arm.name, text),
       });

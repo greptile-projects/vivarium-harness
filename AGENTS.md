@@ -6,7 +6,7 @@ fork by which agent happens to be running.
 
 ## What this is
 
-An A/B harness that runs the **same Linear ticket through two Codex workers at
+An A/B harness that runs the **same ticket through two Codex workers at
 once** — **Tuatara** (the Greptile-enabled checkout) and **Komodo** (the plain
 checkout) — and durably records everything each one did, so the two outcomes
 can be compared. Tuatara is presented first in human-facing output. `tuatara`
@@ -127,8 +127,7 @@ in the normal `bun test` suite.
 Runtime is **Bun** (not Node) — use `bun`, not `npm`/`node`. Source is authored
 in ESM TypeScript/TSX but imports use `.js` specifiers (NodeNext resolution),
 so keep writing `./foo.js` in imports even though the file is `foo.ts`. Bun
-auto-loads `.env`, which is how arm config and `LINEAR_API_KEY` reach every
-command above.
+auto-loads `.env`, which is how arm config reaches every command above.
 
 ## Container setup (standard path for real runs)
 
@@ -140,9 +139,8 @@ Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives a containerized
 arm `danger-full-access` — it has to push, open a PR and answer a review, and
 the container is the boundary — and a host arm `workspace-write`),
 `GREPTILE_BOT_LOGIN` / `REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review
-phase, `CODEX_HOME`, `VIVARIUM_IMAGE`, `IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0` disables), and
-`LINEAR_API_KEY` for the `linear` MCP server Greg's planner files tickets
-through. See `.env.example` for the annotated list.
+phase, `CODEX_HOME`, `VIVARIUM_IMAGE`, and `IDLE_TIMEOUT_MS` (watchdog, default
+`240000`, `0` disables). See `.env.example` for the annotated list.
 
 ```bash
 docker build -t vivarium-arm .
@@ -285,8 +283,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   change the `Dockerfile` and change it here too, or the arm never learns what
   it gained. The two capabilities it cannot find by looking around are named
   explicitly — `docker` is the arm's *own* nested daemon, not the host's, and
-  `$DISPLAY` is a real screen reachable with `browser` — and
-  `prompts.test.ts` pins both. `workerPrompt(ticket)` builds
+  `$DISPLAY` is a real screen reachable with `browser`. No test asserts what
+  any of this text *says* — prompt wording is the experiment's dial and is
+  rewritten freely, so pinning phrases would only manufacture churn.
+  `workerPrompt(ticket)` builds
   the single autonomous
   worker instruction, and it asks for a branch, a pushed commit, a pull request
   opened with `gh`, and a closing `PR: <url>` line. It also fixes the pull
@@ -337,7 +337,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
 - **`src/harness/github.ts`** — everything the harness does to git and GitHub *outside*
   Codex, bound per arm (`armGitHub(arm, exec)` → `ArmGitHub`) so a caller never
   passes a repo or a token around: `syncToBaseline` (fetch + `checkout -f -B`
-  onto origin's default branch, then `clean -fd -e node_modules -e LADDER.md`
+  onto origin's default branch, then `clean -fdx -e node_modules -e LADDER.md`
   — `checkout -f` only restores *tracked* files, so without the clean a scratch
   file one arm dropped rides into the next subticket while the other arm starts
   clean, which is an input differing between the arms in an experiment built on
@@ -363,8 +363,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   baseline before a subticket starts; `reviewArm` finds the pull request and
   runs the review rounds (all reversible — it never touches either main), and
   `mergeArm` performs the one irreversible step, with the harness holding a
-  barrier between them. `landArm` composes the two for the one-ticket path,
-  where there is no peer to stay in step with. Both arms take the identical path: the reviewed
+  barrier between them. Both arms take the identical path: the reviewed
   arm's extra rounds come from `arm.reviewer` being set in config, never from a
   name check here. A round waits for something new from that login, hands the
   arm a `reviewPrompt` on **its own Codex thread**, and repeats up to
@@ -482,7 +481,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   deliberately **left alone**: explicit deployment config, not ambient state.
   `cleanEnv` is an **allowlist**, not a copy of `process.env`, for the same
   reason: Bun loads `.env`, so the harness process holds both repo paths, both
-  `<ARM>_GH_TOKEN`s and `LINEAR_API_KEY`, and forwarding all of it let a
+  `<ARM>_GH_TOKEN`s, and forwarding all of it let a
   host-mode arm learn it was one of two — and reach the other arm's repository
   with the other arm's token, around its own token's scope.
   The override must be set in the **tool call**: on the `mcp-server` path
@@ -674,7 +673,6 @@ neither:
 ```bash
 scripts/resume-clean.sh                     # report only; changes nothing
 scripts/resume-clean.sh --apply             # reset both arms to origin/main
-scripts/resume-clean.sh --apply --reconcile-linear
 ```
 
 It never touches `main` beyond fast-forwarding to `origin/main` — main is the
@@ -682,16 +680,6 @@ accumulated climb. Work that already **merged** is reported, not discarded,
 with a warning: if the crash beat the checkbox, check that box by hand or the
 next run builds it twice. On a clean shutdown the whole thing is a no-op, so it
 can sit unconditionally in front of `bun start` in a systemd unit.
-
-`--reconcile-linear` runs `src/greg-tile/reconcile.ts`, which fixes the two ways
-Linear drifts from the ladder (neither self-heals, and neither affects the
-build — ids are bookkeeping): an issue left open because the crash landed
-between `completeSubticket` and `close`, and subtickets left unstamped because
-it landed inside the filer, which only ever runs right after planning. It reads
-the ladder — still the only source of truth — and makes Linear agree. Unlike
-the close inside the climb, this pass **fails open**: the drift has already
-happened and this exists to shrink it, so one unreachable issue must not
-abandon the rest. Re-running finishes whatever was left.
 
 ## Artifact layout
 
@@ -731,22 +719,28 @@ network. When changing the retry/threading logic in `harness.ts` or the artifact
 schema in `artifacts.ts`, update `test/harness.test.ts` /
 `test/artifacts.test.ts` accordingly.
 
+**No test asserts what a prompt says.** The prompts are hand-authored and are
+the experiment's independent variable, so a test pinning their phrasing fails on
+every rewrite while catching nothing. `prompts.test.ts` covers only what is
+mechanical: the values a prompt has to carry (the ticket, the pull request URL,
+the ladder), and the one cross-module contract — the `### [ ] N.M` subticket
+heading `plannerPrompt` dictates has to be the heading `greg-tile/ladder.ts`
+parses back out. The same rule holds for human-facing output elsewhere: assert
+the data a message carries (ids, URLs, paths, counts) and the behaviour around
+it, never the prose.
+
 The landing phase is faked the same way, one level out: `test/land.test.ts`
 injects an `ArmGitHub` that answers from a script (including "the review arrives
 on the third poll") plus a fake clock, and `test/harness-land.test.ts` drives a
 whole `runHarness` with both fakes to check the artifacts it leaves behind.
 Apart from the mirror-sync integration suite above, nothing in the suite runs
-`git`; nothing invokes the real `gh`, Docker, or Linear.
+`git`; nothing invokes the real `gh` or Docker.
 
 Greg's tests do the same one level up: `greg-tile-loop.test.ts` injects fake `plan` /
 `harness` / `log` deps (`GregDeps`) and a temp ladder path, `greg-tile-ladder.test.ts`
 covers the markdown parse/complete/link logic, and `greg-tile-planner.test.ts` fakes
-the runner to check the "did Greg actually append milestone N" guard (the prompt
-text it sends is asserted in `prompts.test.ts`, beside the module that builds
-it), and `greg-tile-reconcile.test.ts` fakes the filer/closer to check what a
-half-filed, half-closed ladder asks Linear for — and that one failure does not
-abandon the rest of the pass. Nothing in the suite touches Docker, Linear, or
-the real `LADDER.md`.
+the runner to check the "did Greg actually append milestone N" guard. Nothing
+in the suite touches Docker or the real `LADDER.md`.
 
 `view-fullscreen.test.ts` covers the terminal handoff without rendering Ink:
 `restoreOnExit` is the pure lifecycle seam, so the regression it pins (the

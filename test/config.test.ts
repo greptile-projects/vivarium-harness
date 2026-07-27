@@ -12,7 +12,7 @@ import {
   RESULTS_DIR,
   type HarnessConfig,
 } from "../src/harness/config.js";
-import { codexArguments } from "../src/harness/harness.js";
+import { codexToolArguments } from "../src/harness/session.js";
 import { workerPrompt } from "../src/harness/prompts.js";
 
 const temporaryDirectories: string[] = [];
@@ -175,13 +175,13 @@ describe("run mode", () => {
     // The flag arms a key in a view that will not exist, so the run it was
     // meant to be able to kill would run to completion regardless.
     expect(() => parseRunMode(["--abort-on-quit", "--no-tui"], true)).toThrow(
-      /no live view/,
+      /--abort-on-quit/,
     );
     expect(() => parseRunMode(["--abort-on-quit", "--json"], true)).toThrow(
-      /no live view/,
+      /--abort-on-quit/,
     );
     expect(() => parseRunMode(["--abort-on-quit"], false)).toThrow(
-      /no live view/,
+      /--abort-on-quit/,
     );
     // Explicitly asking for the view makes it coherent again.
     expect(
@@ -200,8 +200,16 @@ describe("worker fan-out", () => {
 
   it("varies only cwd between Codex calls", () => {
     const prompt = workerPrompt("ENG-123");
-    const komodo = codexArguments(prompt, "/tmp/komodo", "workspace-write");
-    const tuatara = codexArguments(prompt, "/tmp/tuatara", "workspace-write");
+    const komodo = codexToolArguments({
+      prompt,
+      cwd: "/tmp/komodo",
+      sandbox: "workspace-write",
+    });
+    const tuatara = codexToolArguments({
+      prompt,
+      cwd: "/tmp/tuatara",
+      sandbox: "workspace-write",
+    });
     const { cwd: controlCwd, ...controlShared } = komodo;
     const { cwd: greptileCwd, ...greptileShared } = tuatara;
 
@@ -243,7 +251,6 @@ describe("validateConfig containerization", () => {
       codexHome: "/tmp/codex",
       maxAttempts: 1,
       idleTimeoutMs: 1,
-      land: true,
       reviewTimeoutMs: 1,
       reviewPollMs: 1,
       reviewDebounceMs: 0,

@@ -13,12 +13,6 @@ import {
   readLadder,
   runOutcome,
 } from "./ladder.js";
-import {
-  closeSubticketInLinear,
-  fileMilestoneInLinear,
-  type MilestoneFiler,
-  type SubticketCloser,
-} from "./linear.js";
 import { NORTH_STAR } from "../harness/prompts.js";
 import {
   recordPlannerSession,
@@ -60,32 +54,21 @@ export interface GregDeps {
     ladder: string,
     milestoneNumber: number,
   ) => Promise<string | undefined>;
-  // Files the freshly planned milestone in Linear (rung milestone + chained
-  // issues) and stamps the ids onto the ladder headings. Mechanical, so it
-  // belongs to the loop — Greg's headless session cannot do it (codex blocks
-  // destructive MCP tool calls on an approval no headless session can answer).
-  file: MilestoneFiler;
-  // Moves a built subticket's Linear issue to Done after its box is checked.
-  // Fails CLOSED (halts the run) — see closeSubticketInLinear.
-  close: SubticketCloser;
   harness: (config: HarnessConfig) => Promise<HarnessRunResult>;
   log: (message: string) => void;
 }
 
-// Ticket ids are bookkeeping, not build state: a filing failure logs and the
-// climb continues. The filer itself already swallows Linear errors; this guard
-// also covers an injected filer that throws.
-async function fileSafely(
-  file: MilestoneFiler,
+// The shared preamble of both loop entrypoints: seed the ladder file if this is
+// the very first run, and make sure each checkout can see it.
+async function setupLadder(
+  base: HarnessConfig,
   ladderPath: string,
-  milestoneNumber: number,
   log: (message: string) => void,
 ): Promise<void> {
-  try {
-    await file(ladderPath, milestoneNumber, log);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log(`  Linear filing failed (continuing without ids): ${message}`);
+  await initLadder(ladderPath, NORTH_STAR);
+  const repos = base.arms.map((arm) => arm.repo);
+  for (const link of await ensureLadderLinks(ladderPath, repos)) {
+    log(link.message);
   }
 }
 
@@ -149,16 +132,10 @@ export async function runGreg(
   ladderPath: string = LADDER_PATH,
 ): Promise<BuiltSubticket[]> {
   const plan = deps.plan ?? planNextMilestone;
-  const file = deps.file ?? fileMilestoneInLinear;
-  const close = deps.close ?? closeSubticketInLinear;
   const harness = deps.harness ?? runHarness;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
 
-  await initLadder(ladderPath, NORTH_STAR);
-  const repos = base.arms.map((arm) => arm.repo);
-  for (const link of await ensureLadderLinks(ladderPath, repos)) {
-    log(link.message);
-  }
+  await setupLadder(base, ladderPath, log);
 
   const built: BuiltSubticket[] = [];
   // Distinct milestones this run has built subtickets under — the unit the
@@ -178,7 +155,6 @@ export async function runGreg(
       log(`\n=== Milestone ${milestoneNumber}: planning ===`);
       const threadId = await plan(base, ladderPath, ladder, milestoneNumber);
       await preservePlannerSession(base, milestoneNumber, threadId, log);
-      await fileSafely(file, ladderPath, milestoneNumber, log);
       const planned = nextPendingSubticket(await readLadder(ladderPath));
       log(
         `Milestone ${milestoneNumber} planned${
@@ -241,10 +217,6 @@ export async function runGreg(
       log(`  ${pending.number}: state not recorded (continuing): ${message}`);
     }
     log(`  ${pending.number}: ${runOutcome(run)}`);
-    // Close the built subticket's Linear issue. Deliberately NOT fail-open
-    // like filing: a throw here halts the climb (the box stays checked — the
-    // build itself succeeded), so the board can never silently drift.
-    await close(pending.ticket, pending.number, log);
     milestonesTouched.add(pending.milestone);
     built.push({
       number: pending.number,
@@ -257,9 +229,8 @@ export async function runGreg(
   return built;
 }
 
-// Greg without the harness: plans milestones onto the ladder — filing Linear
-// tickets and appending checkbox subtickets exactly as `runGreg` would — but
-// never builds anything. Unlike `runGreg`, this keeps planning new milestones
+// Greg without the harness: plans milestones onto the ladder — appending
+// checkbox subtickets exactly as `runGreg` would — but never builds anything. Unlike `runGreg`, this keeps planning new milestones
 // even while earlier ones are still unbuilt (`runGreg`'s "no pending subticket"
 // gate would otherwise stop it after the first). Nothing is checked off, so a
 // later `runGreg` picks up and builds every subticket queued here, oldest
@@ -272,14 +243,9 @@ export async function planAhead(
   ladderPath: string = LADDER_PATH,
 ): Promise<PlannedSubticket[]> {
   const plan = deps.plan ?? planNextMilestone;
-  const file = deps.file ?? fileMilestoneInLinear;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
 
-  await initLadder(ladderPath, NORTH_STAR);
-  const repos = base.arms.map((arm) => arm.repo);
-  for (const link of await ensureLadderLinks(ladderPath, repos)) {
-    log(link.message);
-  }
+  await setupLadder(base, ladderPath, log);
 
   const planned: PlannedSubticket[] = [];
 
@@ -294,7 +260,6 @@ export async function planAhead(
     log(`\n=== Milestone ${milestoneNumber}: planning ahead ===`);
     const threadId = await plan(base, ladderPath, ladder, milestoneNumber);
     await preservePlannerSession(base, milestoneNumber, threadId, log);
-    await fileSafely(file, ladderPath, milestoneNumber, log);
 
     const after = parseSubtickets(await readLadder(ladderPath));
     for (const subticket of after.slice(before)) {

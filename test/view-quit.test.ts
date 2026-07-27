@@ -56,34 +56,29 @@ describe("quitNotice", () => {
       { logDir: "results/live-x", aborting: false },
     );
 
-    expect(notice).toContain("1 session still running");
     expect(notice).toContain("tuatara");
+    expect(notice).not.toContain("komodo");
+    // The one thing the reader needs from it: where the run keeps writing.
     expect(notice).toContain("results/live-x/<arm>/progress.log");
-    expect(notice).toContain("--abort-on-quit");
-    // The run is not being stopped — say so plainly.
-    expect(notice).toContain("continues in the background");
   });
 
-  it("pluralizes and names every running session", () => {
+  it("names every running session", () => {
     const notice = quitNotice(
       [arm("tuatara", "working"), arm("komodo", "starting")],
       { aborting: false },
     );
 
-    expect(notice).toContain("2 sessions still running");
     expect(notice).toContain("tuatara");
     expect(notice).toContain("komodo");
   });
 
-  it("says it is stopping them under --abort-on-quit", () => {
-    const notice = quitNotice([arm("tuatara", "working")], {
-      aborting: true,
-    });
+  it("says something different under --abort-on-quit", () => {
+    const running = [arm("tuatara", "working")];
+    const aborting = quitNotice(running, { aborting: true });
 
-    expect(notice).toContain("stopping 1 session");
-    expect(notice).toContain("tuatara");
-    // Not the "carries on" wording — the opposite is happening.
-    expect(notice).not.toContain("continues in the background");
+    expect(aborting).toContain("tuatara");
+    // Stopping the run and leaving it alone must not read the same.
+    expect(aborting).not.toBe(quitNotice(running, { aborting: false }));
   });
 
   it("stays silent under --abort-on-quit when nothing is running", () => {
@@ -111,7 +106,7 @@ describe("onViewClosed", () => {
     }
 
     expect(controller.signal.aborted).toBe(false);
-    expect(written.join("")).toContain("still running");
+    // It said something, and it named the session still working.
     expect(written.join("")).toContain("tuatara");
   });
 

@@ -40,8 +40,9 @@ export interface ParsedSubticket {
 
 const SUBTICKET_HEADING = /^###\s+\[( |x|X)\]\s+(\d+(?:\.\d+)?)\s+(.+?)\s*$/;
 const MILESTONE_HEADING = /^##\s+Milestone\s+(\d+)\s*:/;
-// A trailing " — TICKET-123" on a heading is the Linear id, not part of the
-// title. Anything that does not look like a ticket id is left in the title.
+// A trailing " — TICKET-123" on a heading is a ticket id, not part of the
+// title (older ladders carry ids from the retired Linear pipeline). Anything
+// that does not look like a ticket id is left in the title.
 const TRAILING_TICKET = /\s+—\s+([A-Za-z][A-Za-z0-9]*-\d+)\s*$/;
 
 // Seed the ladder with its North Star header if it does not exist yet.
@@ -99,6 +100,18 @@ export function highestMilestone(ladder: string): number {
   return highest;
 }
 
+// The prose under a heading: everything from the next line up to the following
+// heading (subticket or milestone) or end of file, trimmed.
+function bodyAfter(lines: string[], index: number): string {
+  const body: string[] = [];
+  for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+    const next = lines[cursor];
+    if (SUBTICKET_HEADING.test(next) || MILESTONE_HEADING.test(next)) break;
+    body.push(next);
+  }
+  return body.join("\n").trim();
+}
+
 // Every subticket in the ladder, in file order, each tagged with the milestone
 // it sits under. This is the loop's read of Greg's plan — it replaces the old
 // JSON parse: the file itself is the contract now.
@@ -129,22 +142,13 @@ export function parseSubtickets(ladder: string): ParsedSubticket[] {
       title = title.slice(0, ticketMatch.index).trim();
     }
 
-    // The description is everything from the next line up to the following
-    // heading (subticket or milestone) or end of file.
-    const body: string[] = [];
-    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      const next = lines[cursor];
-      if (SUBTICKET_HEADING.test(next) || MILESTONE_HEADING.test(next)) break;
-      body.push(next);
-    }
-
     subtickets.push({
       number,
       title,
       ticket,
       done,
       milestone,
-      description: body.join("\n").trim(),
+      description: bodyAfter(lines, index),
     });
   }
 
@@ -154,72 +158,6 @@ export function parseSubtickets(ladder: string): ParsedSubticket[] {
 // The next subticket the loop should build: the first one still unchecked.
 export function nextPendingSubticket(ladder: string): ParsedSubticket | null {
   return parseSubtickets(ladder).find((subticket) => !subticket.done) ?? null;
-}
-
-// One parsed milestone heading plus its summary (the prose between the heading
-// and its first subticket). Used by the mechanical Linear filer to build the
-// parent issue.
-export interface ParsedMilestone {
-  number: number;
-  title: string;
-  ticket?: string;
-  summary: string;
-}
-
-const MILESTONE_HEADING_FULL = /^##\s+Milestone\s+(\d+)\s*:\s*(.+?)\s*$/;
-
-export function parseMilestone(
-  ladder: string,
-  milestoneNumber: number,
-): ParsedMilestone | null {
-  const lines = ladder.split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(MILESTONE_HEADING_FULL);
-    if (!match || Number(match[1]) !== milestoneNumber) continue;
-
-    let title = match[2];
-    let ticket: string | undefined;
-    const ticketMatch = title.match(TRAILING_TICKET);
-    if (ticketMatch) {
-      ticket = ticketMatch[1];
-      title = title.slice(0, ticketMatch.index).trim();
-    }
-
-    const body: string[] = [];
-    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      const next = lines[cursor];
-      if (SUBTICKET_HEADING.test(next) || MILESTONE_HEADING.test(next)) break;
-      body.push(next);
-    }
-
-    return { number: milestoneNumber, title, ticket, summary: body.join("\n").trim() };
-  }
-  return null;
-}
-
-// Append a filed Linear id (` — GRE-12`) to a milestone or subticket heading
-// that does not already carry one. Idempotent so a re-run of the filer never
-// double-stamps; headings with an existing id are left untouched.
-export async function recordTicketId(
-  ladderPath: string,
-  target: { milestone: number } | { subticket: string },
-  ticketId: string,
-): Promise<void> {
-  const ladder = await readLadder(ladderPath);
-  const lines = ladder.split("\n");
-
-  const index = lines.findIndex((line) => {
-    if ("milestone" in target) {
-      const match = line.match(MILESTONE_HEADING_FULL);
-      return match !== null && Number(match[1]) === target.milestone;
-    }
-    const match = line.match(SUBTICKET_HEADING);
-    return match?.[2] === target.subticket;
-  });
-  if (index === -1 || TRAILING_TICKET.test(lines[index])) return;
-
-  lines[index] = `${lines[index].trimEnd()} — ${ticketId}`;
-  await writeFile(ladderPath, lines.join("\n"), "utf8");
 }
 
 // Mark a subticket built: flip its checkbox to `[x]` and append the harness run
