@@ -84,8 +84,9 @@ async function preserveContainerSessions(
 //
 // Only *session* failures (the runner throwing — e.g. a watchdog abort — or
 // Codex reporting an error) are retried, each time with a fresh session and a
-// re-read of the ladder so anything a failed attempt half-appended is visible.
-// A session that succeeds but writes the wrong thing is not transient and
+// re-read of the real ladder. A failed attempt's scratch edits are discarded,
+// never written back, so every retry plans against the ladder as it actually
+// is. A session that succeeds but writes the wrong thing is not transient and
 // fails immediately.
 //
 // Returns the session's `threadId`. Greg's planning turn runs *outside*
@@ -152,10 +153,18 @@ export async function planNextMilestone(
       // renamed, so the arms' read-only bind mount keeps showing current text
       // instead of pinning the inode it started on. Only when he actually
       // changed something: an untouched scratch file must not clobber a ladder
-      // that moved underneath us.
-      const planned = await readFile(scratchLadder, "utf8");
-      if (planned !== currentLadder) {
-        await writeFile(ladderPath, planned, "utf8");
+      // that moved underneath us. And only from a session that did not error:
+      // a failed attempt's half-append must not reach the real ladder — the
+      // retry would plan milestone N on top of it and can leave a duplicate,
+      // and the ladder is bind-mounted into both arms, so the garbage would be
+      // briefly visible to them too. An errored session's scratch is discarded
+      // exactly like a thrown one's, and the retry starts from the ladder as
+      // it really is.
+      if (!result.isError) {
+        const planned = await readFile(scratchLadder, "utf8");
+        if (planned !== currentLadder) {
+          await writeFile(ladderPath, planned, "utf8");
+        }
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);

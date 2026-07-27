@@ -97,8 +97,7 @@ scripts/resume-clean.sh --apply  # reset both arms to origin/main
 ```
 
 it never touches `main`, and already-merged work is reported rather than thrown
-away, so it's safe to run every time. add `--reconcile-linear` to put the board
-back in step with the ladder too.
+away, so it's safe to run every time.
 
 ## what you get
 

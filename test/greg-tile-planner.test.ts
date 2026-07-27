@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { findTranscript } from "../src/harness/artifacts.js";
@@ -62,6 +62,40 @@ describe("planNextMilestone", () => {
     // Greg gets write access so he can edit the ladder.
     expect(specs[0].sandbox).toBe("workspace-write");
     expect(await readLadder(ladderPath)).toContain("## Milestone 1: Repo hosting");
+  });
+
+  // A failed attempt's scratch edits must never reach the real ladder: the
+  // retry would plan milestone N on top of the half-append and can leave a
+  // duplicate heading — in the one file both arms can read.
+  it("discards an errored attempt's scratch edits instead of persisting them", async () => {
+    const ladderPath = await scratchLadder();
+    const seen: string[] = [];
+    let attempt = 0;
+
+    const runner: AttemptRunner = async (spec) => {
+      attempt += 1;
+      const scratch = spec.cwd + "/" + basename(ladderPath);
+      seen.push(await readFile(scratch, "utf8"));
+      if (attempt === 1) {
+        await appendFile(scratch, "\n## Milestone 1: Half-append", "utf8");
+        return { output: "watchdog aborted", isError: true, timedOut: false };
+      }
+      await appendFile(
+        scratch,
+        "\n## Milestone 1: Real\n\n### [ ] 1.1 A\n\ndo A\n",
+        "utf8",
+      );
+      return { output: "done", isError: false, timedOut: false };
+    };
+
+    await planNextMilestone(base, ladderPath, await readLadder(ladderPath), 1, runner);
+
+    // The retry started from the ladder as it really is, not from the partial.
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).not.toContain("Half-append");
+    const ladder = await readLadder(ladderPath);
+    expect(ladder).not.toContain("Half-append");
+    expect(ladder).toContain("## Milestone 1: Real");
   });
 
   // The confound this isolation exists to kill. Greg used to run with cwd = the
