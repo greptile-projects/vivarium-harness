@@ -60,9 +60,13 @@ describe("arm-run.sh", () => {
         "KOMODO_CONTAINER=vivarium-komodo",
         "KOMODO_REPO=https://github.com/org/komodo.git",
         "KOMODO_GH_TOKEN=fake-token",
-        "KOMODO_NOVNC_PORT=6080",
-        "VIVARIUM_DOCKER=1",
+        // Former deployment knobs must be ignored: these are fixed experiment
+        // constants now.
+        "KOMODO_NOVNC_PORT=9999",
+        "VIVARIUM_DOCKER=0",
         "VIVARIUM_GUI=0",
+        "VIVARIUM_SCREEN=1x1x1",
+        "VIVARIUM_IMAGE=wrong-image",
       ].join("\n"),
     );
     await writeFile(
@@ -118,6 +122,12 @@ exit 0
     );
     expect(dockerRun).toContain("vivarium.ephemeral=true");
     expect(dockerRun).toContain("vivarium.run=run-123");
+    expect(dockerRun).toContain("--privileged");
+    expect(dockerRun).toContain("-p 127.0.0.1:6080:6080");
+    expect(dockerRun).toMatch(/ vivarium-arm$/);
+    expect(dockerRun).not.toContain("9999");
+    expect(dockerRun).not.toContain("wrong-image");
+    expect(dockerRun).not.toContain("1x1x1");
     expect(dockerRun).toContain(
       `${home}/.codex/auth.json:/codex/auth.json:ro`,
     );

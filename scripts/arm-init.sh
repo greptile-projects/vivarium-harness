@@ -11,11 +11,13 @@
 #   the GUI  an X display, a window manager, and a VNC/noVNC pair onto it, so
 #            `chromium` has somewhere to draw and a human can watch it.
 #
-# Either can be switched off with VIVARIUM_DOCKER=0 / VIVARIUM_GUI=0, which is
-# for smoke tests; a real run has both. Failing to start one is NOT fatal — the
-# container stays up without writing its readiness file, so `arm-run.sh` reports
-# the failure and the logs under /var/log/vivarium survive to be read. Dying
-# here would take `--rm` with it and delete the evidence.
+# The image fixes both services on and fixes the screen geometry. Greg's
+# planner is the one internal caller that overrides the service flags to zero,
+# because its scratch ladder needs neither Docker nor a browser. Failing to
+# start a requested service is NOT fatal — the container stays up without
+# writing its readiness file, so `arm-run.sh` reports the failure and the logs
+# under /var/log/vivarium survive to be read. Dying here would take `--rm` with
+# it and delete the evidence.
 set -uo pipefail
 
 log_dir=/var/log/vivarium
@@ -30,9 +32,9 @@ warn() { printf '[vivarium-init] warning: %s\n' "$*" >&2; }
 want_docker="${VIVARIUM_DOCKER:-1}"
 want_gui="${VIVARIUM_GUI:-1}"
 display="${DISPLAY:-:99}"
-screen="${VIVARIUM_SCREEN:-1440x900x24}"
-novnc_port="${VIVARIUM_NOVNC_PORT:-6080}"
-vnc_port="${VIVARIUM_VNC_PORT:-5900}"
+screen="1440x900x24"
+novnc_port=6080
+vnc_port=5900
 docker_timeout="${VIVARIUM_DOCKER_TIMEOUT:-60}"
 
 ok=1

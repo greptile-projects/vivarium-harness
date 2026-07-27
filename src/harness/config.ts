@@ -44,8 +44,9 @@ export const REVIEW_DEBOUNCE_MS = 30_000;
 // The wall-clock exposure is bounded the same way — only the final, unanswered
 // round pays the full REVIEW_TIMEOUT_MS.
 export const REVIEW_ROUNDS = 5;
-// The login the reviewed arm has to answer to. Confirmed live on the mirror
-// pipeline; overridable with GREPTILE_BOT_LOGIN.
+// The login the reviewed arm has to answer to. This is part of the experiment,
+// not deployment configuration; change it deliberately in code if the
+// installed reviewer identity ever changes.
 export const REVIEWER_LOGIN = "greptile-apps[bot]";
 
 export type ArmName = "komodo" | "tuatara";
@@ -83,8 +84,6 @@ export interface HarnessConfig {
   sandbox: SandboxMode;
   resultsDir: string;
   codexHome: string;
-  // Image used by the arm launchers and Greg's ephemeral planning container.
-  containerImage: string;
   maxAttempts: number;
   idleTimeoutMs: number;
   reviewTimeoutMs: number;
@@ -182,17 +181,12 @@ export function parseArgs(
         sandbox: armSandbox(sandbox, env.TUATARA_CONTAINER),
         // The one asymmetry between the arms: this one has a reviewer whose
         // comments it has to answer on the record before its work lands.
-        // Blank falls back too, not just unset: "" is falsy where the landing
-        // phase checks `arm.reviewer`, so an empty GREPTILE_BOT_LOGIN= line in
-        // .env would silently switch off every review round — the experiment's
-        // whole variable — while the run reported itself normal.
-        reviewer: env.GREPTILE_BOT_LOGIN?.trim() || REVIEWER_LOGIN,
+        reviewer: REVIEWER_LOGIN,
       },
     ],
     sandbox: sandbox ?? "workspace-write",
     resultsDir: RESULTS_DIR,
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
-    containerImage: env.VIVARIUM_IMAGE ?? CONTAINER_IMAGE,
     maxAttempts: MAX_ATTEMPTS,
     idleTimeoutMs: positiveFromEnv(
       "IDLE_TIMEOUT_MS",
@@ -397,13 +391,8 @@ Optional environment:
                           and a host arm runs workspace-write.
   CODEX_HOME=<path>       Defaults to ~/.codex; used by Greg and host smoke
                           sessions. Arm transcripts are copied from containers.
-  VIVARIUM_IMAGE=<image>  Container image used by arm-run.sh and Greg's
-                          isolated planner. Defaults to ${CONTAINER_IMAGE}.
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
                           Defaults to 240000 (4m); 0 disables the watchdog.
-  GREPTILE_BOT_LOGIN=<login>  The reviewer Tuatara must answer before its
-                          pull request is merged. Defaults to
-                          ${REVIEWER_LOGIN}.
   REVIEW_TIMEOUT_MS=<ms>  How long to wait for that review before merging
                           without it. Defaults to ${REVIEW_TIMEOUT_MS} (1h).
   REVIEW_ROUNDS=<n>       Review → answer → re-review rounds per pull request.

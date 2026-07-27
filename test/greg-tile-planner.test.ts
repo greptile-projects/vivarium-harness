@@ -35,7 +35,6 @@ async function scratchLadder(): Promise<string> {
 
 const base = {
   codexHome: "/tmp/codex",
-  containerImage: "vivarium-arm",
   idleTimeoutMs: 600_000,
   reviewTimeoutMs: 1_000,
   reviewPollMs: 10,
@@ -158,7 +157,6 @@ describe("planNextMilestone", () => {
         },
       ],
       codexHome,
-      containerImage: "vivarium-arm:test",
     } as HarnessConfig;
     let launch: string[] = [];
 
@@ -223,7 +221,7 @@ describe("planNextMilestone", () => {
     expect(launch).not.toContain(
       `type=bind,source=${join(codexHome, "sessions")},target=/codex/sessions`,
     );
-    expect(launch.at(-1)).toBe("vivarium-arm:test");
+    expect(launch.at(-1)).toBe("vivarium-arm");
     expect(launch.join(" ")).not.toContain(ladderPath);
     expect(
       await findTranscript(join(codexHome, "sessions"), "isolated-thread"),

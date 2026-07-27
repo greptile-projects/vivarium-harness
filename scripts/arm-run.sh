@@ -9,16 +9,8 @@
 #   <ARM>_CONTAINER    base name for the per-subticket container      (required)
 #   <ARM>_REPO         HTTPS GitHub URL cloned into /workspace        (required)
 #   <ARM>_GH_TOKEN     GitHub token used to clone/push/open PRs          (required)
-#   <ARM>_NOVNC_PORT   host port for this arm's screen, published on 127.0.0.1
-#                      only. Defaults: komodo 6080, tuatara 6081 — the arms must
-#                      differ here or the second container fails to start.
-#
-# Run-wide, and identical for both arms (they are the experiment's controlled
-# environment, not per-arm configuration):
-#   VIVARIUM_DOCKER    1 (default) gives the arm its own nested Docker engine,
-#                      which needs --privileged. 0 skips it.
-#   VIVARIUM_GUI       1 (default) starts X + a window manager + VNC/noVNC.
-#   VIVARIUM_SCREEN    Xvfb geometry. Default 1440x900x24.
+# The image, services, screen geometry, and loopback noVNC ports are fixed
+# experiment constants below, not deployment configuration.
 #
 # The arm's private clone (at /workspace) is the only repo it can see; Codex
 # auth is mounted read-only. Each invocation gets its own /var/lib/docker
@@ -59,12 +51,10 @@ prefix="$(printf '%s' "$arm" | tr '[:lower:]' '[:upper:]')"
 container_var="${prefix}_CONTAINER"
 repo_var="${prefix}_REPO"
 token_var="${prefix}_GH_TOKEN"
-novnc_var="${prefix}_NOVNC_PORT"
 
 container="${VIVARIUM_CONTAINER_NAME:-${!container_var:-}}"
 repo="${!repo_var:-}"
 token="${!token_var:-}"
-novnc_port="${!novnc_var:-}"
 
 : "${container:?$container_var must be set in $env_file}"
 : "${repo:?$repo_var must be set in $env_file}"
@@ -83,20 +73,18 @@ case "$repo" in
     ;;
 esac
 
-image="${VIVARIUM_IMAGE:-vivarium-arm}"
-want_docker="${VIVARIUM_DOCKER:-1}"
-want_gui="${VIVARIUM_GUI:-1}"
+image="vivarium-arm"
+want_docker=1
+want_gui=1
 docker_volume="${VIVARIUM_DOCKER_VOLUME:-$container-docker}"
 
-# One published port per arm, because two containers cannot share one. The
-# default differs by arm for that reason alone — inside the container both
+# One fixed published port per arm, because two containers cannot share one.
+# The value differs by arm for that reason alone — inside the container both
 # screens are :99 on port 6080, so nothing the arm can observe differs.
-if [[ -z "$novnc_port" ]]; then
-  case "$arm" in
-    komodo) novnc_port=6080 ;;
-    tuatara) novnc_port=6081 ;;
-  esac
-fi
+case "$arm" in
+  komodo) novnc_port=6080 ;;
+  tuatara) novnc_port=6081 ;;
+esac
 
 # Mounting a nonexistent file makes Docker create a *directory* at both ends,
 # which breaks Codex auth confusingly later — fail here with a clear message.
@@ -151,8 +139,6 @@ run_args=(
   -e "GIT_AUTHOR_EMAIL=$git_email"
   -e "GIT_COMMITTER_NAME=$git_name"
   -e "GIT_COMMITTER_EMAIL=$git_email"
-  -e "VIVARIUM_DOCKER=$want_docker"
-  -e "VIVARIUM_GUI=$want_gui"
   # Chromium's default 64MB /dev/shm is where it dies part-way through a page
   # rather than at startup, which reads as a flaky test rather than a missing
   # resource. The flags file in the image also passes --disable-dev-shm-usage;
@@ -161,9 +147,6 @@ run_args=(
 )
 if [[ -n "${VIVARIUM_RUN_ID:-}" ]]; then
   run_args+=(--label "vivarium.run=$VIVARIUM_RUN_ID")
-fi
-if [[ -n "${VIVARIUM_SCREEN:-}" ]]; then
-  run_args+=(-e "VIVARIUM_SCREEN=$VIVARIUM_SCREEN")
 fi
 if [[ -n "$token" ]]; then
   run_args+=(-e "GH_TOKEN=$token" -e "GITHUB_TOKEN=$token")

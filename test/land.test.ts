@@ -33,7 +33,6 @@ const config: HarnessConfig = {
   sandbox: "workspace-write",
   resultsDir: "/tmp/results",
   codexHome: "/tmp/codex",
-  containerImage: "vivarium-arm",
   maxAttempts: 3,
   idleTimeoutMs: 600_000,
   reviewTimeoutMs: 300,

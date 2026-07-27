@@ -133,14 +133,16 @@ auto-loads `.env`, which is how arm config reaches every command above.
 ## Container setup (standard path for real runs)
 
 All arm configuration lives in `.env` (`<ARM>_REPO`, `<ARM>_CONTAINER`,
-`<ARM>_GH_TOKEN`, optionally `<ARM>_NOVNC_PORT`). Both the
+`<ARM>_GH_TOKEN`). Both the
 harness and `scripts/arm-run.sh` read it — nothing is passed on the command line.
 Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives a containerized
 arm `danger-full-access` — it has to push, open a PR and answer a review, and
 the container is the boundary — and a host arm `workspace-write`),
-`GREPTILE_BOT_LOGIN` / `REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review
-phase, `CODEX_HOME`, `VIVARIUM_IMAGE`, and `IDLE_TIMEOUT_MS` (watchdog, default
-`240000`, `0` disables). See `.env.example` for the annotated list.
+`REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review phase, `CODEX_HOME`, and
+`IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0` disables). The image,
+nested Docker, GUI, screen geometry, noVNC ports, and reviewer identity are
+fixed experiment constants rather than deployment knobs. See `.env.example`
+for the annotated list.
 
 ```bash
 docker build -t vivarium-arm .
@@ -163,8 +165,8 @@ Codex thread, as `retryPrompt` promises. Leaving both container prefixes unset
 runs both arms directly on the host with **no isolation** — only acceptable for
 a throwaway smoke test.
 
-When both arms are containerized, Greg also uses `VIVARIUM_IMAGE` (default
-`vivarium-arm`) but gets a new `docker run --rm` container per planning
+When both arms are containerized, Greg also uses the fixed `vivarium-arm`
+image but gets a new `docker run --rm` container per planning
 attempt—not either arm's subticket container. It mounts only the temporary
 ladder workspace, Codex auth read-only, and a fresh empty session sink; the
 harness copies that attempt's transcript into the host Codex home only after
@@ -173,9 +175,9 @@ containers unset, Greg retains the host `workspace-write` smoke-test path.
 
 It also starts the two services the arm's *own* work needs, both of which live
 in `scripts/arm-init.sh`, the image's entrypoint payload. Neither is per-arm
-configuration — they are the controlled environment, identical in both arms,
-switchable only run-wide with `VIVARIUM_DOCKER=0` / `VIVARIUM_GUI=0` for a
-smoke test:
+configuration — they are fixed parts of the controlled environment, identical
+in both arms. Only Greg's internal planner launch disables them, because its
+scratch ladder needs neither:
 
 - **A Docker engine of the arm's own** (`dockerd`, nested), so `docker build`,
   `docker run` and container-based tests work inside the arm. It is emphatically
@@ -195,7 +197,8 @@ smoke test:
   fluxbox to place and focus windows, chromium, and x11vnc + noVNC putting that
   screen on a port. The arms build a web application, and until now anything
   that had to be *looked at* could only be reasoned about and handed to CI.
-  `arm-run.sh` publishes noVNC on `127.0.0.1:<ARM>_NOVNC_PORT` (6080/6081) —
+  `arm-run.sh` publishes noVNC on the fixed host ports
+  `127.0.0.1:6080/6081` (Komodo/Tuatara) —
   loopback only, because x11vnc runs with no password and the port is a live
   view of a root browser session. The host ports differ per arm because two
   containers cannot share one; inside the container both are `:99` on 6080, so
