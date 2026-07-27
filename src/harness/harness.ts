@@ -255,7 +255,6 @@ export async function runHarness(
   const note = (arm: ArmName, text: string): void =>
     sinks.onArmNote?.(arm, text);
   let environment: Awaited<ReturnType<EnvironmentFactory>> | undefined;
-  let failure: unknown;
 
   try {
     environment = await environmentFactory(config, artifacts.runId, note);
@@ -411,7 +410,6 @@ export async function runHarness(
       landings,
     };
   } catch (error) {
-    failure = error;
     await artifacts.fail(error);
     throw error;
   } finally {
@@ -419,14 +417,21 @@ export async function runHarness(
       try {
         await environment.cleanup();
       } catch (cleanupError) {
-        const error = failure
-          ? new AggregateError(
-              [failure, cleanupError],
-              "run failed and ephemeral arm cleanup also failed",
-            )
-          : cleanupError;
-        await artifacts.fail(error);
-        throw error;
+        const message =
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+        for (const arm of environment.config.arms) {
+          note(
+            arm.name,
+            `ephemeral cleanup failed after the run settled: ${message}`,
+          );
+        }
+        // Cleanup follows completed landing and is therefore diagnostic only:
+        // rejecting here would make Greg repeat a subticket whose pull
+        // requests may already be merged. Do not let recording that diagnostic
+        // mask the run's original outcome either.
+        await artifacts.recordCleanupError(cleanupError).catch(() => {});
       }
     }
   }

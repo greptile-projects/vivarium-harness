@@ -181,6 +181,137 @@ describe("run artifacts", () => {
     );
   });
 
+  it("records transcript export failure without failing successful work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "ENG-10",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      containerImage: "vivarium-arm",
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+    };
+    const artifacts = await RunArtifacts.create(config, "exact prompt");
+    const artifactDir = await artifacts.startAttempt(
+      config.arms[0],
+      { prompt: "exact prompt", cwd: "/workspace" },
+      "2026-07-27T00:00:00.000Z",
+      1,
+    );
+
+    const persisted = await artifacts.finishArm(
+      {
+        arm: "komodo",
+        repo: "/tmp/komodo",
+        attempt: 1,
+        maxAttempts: 1,
+        status: "succeeded",
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:01:00.000Z",
+        durationMs: 60_000,
+        threadId: "thread",
+        output: "done",
+        artifactDir,
+      },
+      undefined,
+      async () => {
+        throw new Error("docker cp lost the container");
+      },
+    );
+
+    expect(persisted.status).toBe("succeeded");
+    expect(persisted.transcriptStatus).toBe("copy-failed");
+    expect(persisted.transcriptError).toBe("docker cp lost the container");
+    const status = JSON.parse(
+      await readFile(join(artifactDir, "status.json"), "utf8"),
+    );
+    expect(status.status).toBe("succeeded");
+    expect(status.transcriptStatus).toBe("copy-failed");
+  });
+
+  it("marks a failed landing-time refresh as a partial transcript", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "ENG-11",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      containerImage: "vivarium-arm",
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+    };
+    const artifacts = await RunArtifacts.create(config, "exact prompt");
+    const artifactDir = await artifacts.startAttempt(
+      config.arms[0],
+      { prompt: "exact prompt", cwd: "/workspace" },
+      "2026-07-27T00:00:00.000Z",
+      1,
+    );
+    const finished = await artifacts.finishArm(
+      {
+        arm: "komodo",
+        repo: "/tmp/komodo",
+        attempt: 1,
+        maxAttempts: 1,
+        status: "succeeded",
+        startedAt: "2026-07-27T00:00:00.000Z",
+        completedAt: "2026-07-27T00:01:00.000Z",
+        durationMs: 60_000,
+        threadId: "thread",
+        output: "done",
+        artifactDir,
+      },
+      undefined,
+      async (_arm, _thread, destination) => {
+        await writeFile(destination, '{"turn":"build"}\n');
+        return "container:/codex/sessions/thread.jsonl";
+      },
+    );
+    const landed = await artifacts.recordLanding(
+      {
+        arm: "komodo",
+        status: "merged",
+        startedAt: "2026-07-27T00:01:00.000Z",
+        completedAt: "2026-07-27T00:02:00.000Z",
+        reviewRounds: [],
+        conversation: [],
+        notes: [],
+      },
+      finished,
+      async () => {
+        throw new Error("container disappeared before refresh");
+      },
+    );
+
+    expect(landed.status).toBe("succeeded");
+    expect(landed.transcriptStatus).toBe("partial");
+    expect(landed.transcriptError).toBe(
+      "container disappeared before refresh",
+    );
+    expect(await readFile(join(artifactDir, "transcript.jsonl"), "utf8")).toBe(
+      '{"turn":"build"}\n',
+    );
+  });
+
   // Codex can flush a session file after the session settles, so the copy at
   // finishArm can miss it — and the landing record is written long after,
   // when the file exists. Leaving the arm `not-found` forever would lose the

@@ -21,7 +21,13 @@ export interface PersistedArmResult {
   artifactDir: string;
   transcript?: string;
   transcriptSource?: string;
-  transcriptStatus?: "copied" | "not-found" | "unavailable-no-thread-id";
+  transcriptStatus?:
+    | "copied"
+    | "partial"
+    | "not-found"
+    | "copy-failed"
+    | "unavailable-no-thread-id";
+  transcriptError?: string;
 }
 
 interface RunManifest {
@@ -33,6 +39,7 @@ interface RunManifest {
   startedAt: string;
   completedAt?: string;
   error?: string;
+  cleanupError?: string;
   // Where each arm's checkout stood before the run — the two should match, and
   // when they do not that is the finding, not a detail.
   baselines?: Partial<Record<ArmName, Baseline>>;
@@ -204,26 +211,7 @@ export class RunArtifacts {
       await atomicWrite(join(directory, "error.txt"), `${result.error}\n`);
     }
 
-    if (result.threadId) {
-      const destination = join(directory, "transcript.jsonl");
-      const source = captureTranscript
-        ? await captureTranscript(
-            result.arm,
-            result.threadId,
-            destination,
-          )
-        : await findTranscript(join(this.codexHome, "sessions"), result.threadId);
-      if (source) {
-        if (!captureTranscript) await copyFile(source, destination);
-        persisted.transcript = destination;
-        persisted.transcriptSource = source;
-        persisted.transcriptStatus = "copied";
-      } else {
-        persisted.transcriptStatus = "not-found";
-      }
-    } else {
-      persisted.transcriptStatus = "unavailable-no-thread-id";
-    }
+    await this.captureTranscript(persisted, captureTranscript);
 
     await atomicWrite(join(directory, "status.json"), json(persisted));
     const previous = this.manifest.arms[result.arm];
@@ -272,24 +260,7 @@ export class RunArtifacts {
     // run long after that — a transcript recorded `not-found` at finishArm is
     // usually on disk by now, and leaving it `not-found` forever loses the
     // whole session record over a timing accident.
-    if (persisted.threadId) {
-      const destination =
-        persisted.transcript ??
-        join(persisted.artifactDir, "transcript.jsonl");
-      const source = captureTranscript
-        ? await captureTranscript(
-            persisted.arm,
-            persisted.threadId,
-            destination,
-          )
-        : await findTranscript(join(this.codexHome, "sessions"), persisted.threadId);
-      if (source) {
-        if (!captureTranscript) await copyFile(source, destination);
-        persisted.transcript = destination;
-        persisted.transcriptSource = source;
-        persisted.transcriptStatus = "copied";
-      }
-    }
+    await this.captureTranscript(persisted, captureTranscript);
 
     if (persisted.error !== undefined) {
       await atomicWrite(
@@ -326,6 +297,64 @@ export class RunArtifacts {
     this.manifest.error = error instanceof Error ? error.message : String(error);
     await atomicWrite(join(this.directory, "error.txt"), `${this.manifest.error}\n`);
     await this.writeManifest();
+  }
+
+  // Ephemeral teardown happens after the run's irreversible work. A failure
+  // here must remain visible without rewriting a completed run as failed (or
+  // replacing the primary error from an already-failed run).
+  async recordCleanupError(error: unknown): Promise<void> {
+    this.manifest.cleanupError =
+      error instanceof Error ? error.message : String(error);
+    await atomicWrite(
+      join(this.directory, "cleanup-error.txt"),
+      `${this.manifest.cleanupError}\n`,
+    );
+    await this.writeManifest();
+  }
+
+  // Transcript export is evidence collection, not arm execution. Keep a
+  // failed copy as an explicit diagnostic, but never make successful work
+  // retry or prevent a ready pull request from merging because Docker or the
+  // host session directory was temporarily unavailable.
+  private async captureTranscript(
+    persisted: PersistedArmResult,
+    captureTranscript?: TranscriptCapture,
+  ): Promise<void> {
+    if (!persisted.threadId) {
+      persisted.transcriptStatus = "unavailable-no-thread-id";
+      return;
+    }
+
+    const destination =
+      persisted.transcript ??
+      join(persisted.artifactDir, "transcript.jsonl");
+    try {
+      const source = captureTranscript
+        ? await captureTranscript(
+            persisted.arm,
+            persisted.threadId,
+            destination,
+          )
+        : await findTranscript(
+            join(this.codexHome, "sessions"),
+            persisted.threadId,
+          );
+      if (!source) {
+        if (!persisted.transcript) persisted.transcriptStatus = "not-found";
+        return;
+      }
+      if (!captureTranscript) await copyFile(source, destination);
+      persisted.transcript = destination;
+      persisted.transcriptSource = source;
+      persisted.transcriptStatus = "copied";
+      delete persisted.transcriptError;
+    } catch (error) {
+      persisted.transcriptStatus = persisted.transcript
+        ? "partial"
+        : "copy-failed";
+      persisted.transcriptError =
+        error instanceof Error ? error.message : String(error);
+    }
   }
 
   private attemptDirectory(arm: ArmName, attempt: number): string {

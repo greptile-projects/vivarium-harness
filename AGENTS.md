@@ -237,8 +237,11 @@ The container's `CODEX_HOME` is `/codex`, so Codex writes transcripts to
 `/codex/sessions` in the ephemeral writable layer. Nothing mounts that
 directory. `environment.ts` finds the current thread by id and uses `docker cp`
 to export it into the attempt artifact after the build and again after review;
-only then does teardown remove the container. Thus transcripts are outputs, not
-historical input visible to a later arm.
+only then does teardown remove the container. Export is evidence collection,
+not arm execution: a failed find/copy is recorded as `copy-failed` (or
+`partial` when the earlier build-time copy survives) and never retries
+successful work or prevents a ready pull request from landing. Thus
+transcripts are outputs, not historical input visible to a later arm.
 
 ## Architecture
 
@@ -471,8 +474,11 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   per arm. It returns a runtime config carrying the generated container names,
   exports only the requested thread transcript with `docker cp`, and destroys
   all runtime resources after landing or failure. Tests inject the entire
-  interface, so lifecycle and teardown are covered without Docker. Host smoke
-  mode is the explicit no-op implementation.
+  interface, so lifecycle and teardown are covered without Docker. Teardown
+  happens after the run has settled and is diagnostic-only: a failure writes
+  `cleanup-error.txt` and `manifest.cleanupError`, but cannot turn merged work
+  into a failed run or replace an earlier run error. Host smoke mode is the
+  explicit no-op implementation.
 
 - **`src/harness/session.ts`** — `runArmStreaming` runs one Codex session over its
   own stdio MCP client. It is the `AttemptRunner` the harness spawns, so it sits
@@ -515,7 +521,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   can't poison later ones. In container mode the environment exporter copies
   the matching `threadId` out of the ephemeral `/codex/sessions`; host smoke
   mode still searches `config.codexHome`. `transcriptStatus` records copied /
-  not-found / no-thread-id.
+  partial / not-found / copy-failed / no-thread-id; `transcriptError` preserves
+  the exporter failure without changing the arm's result.
   `recordBaselines` writes the commit each arm started from (they should match;
   when they do not, that *is* the finding). `recordLanding` writes
   `<arm>/land.json` — pull request, every review round with what the reviewer

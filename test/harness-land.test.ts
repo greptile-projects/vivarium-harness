@@ -276,6 +276,127 @@ describe("runHarness environment lifecycle", () => {
     ).rejects.toThrow(/fetch failed/);
     expect(cleaned).toBe(1);
   });
+
+  it("keeps a completed landing successful when cleanup fails", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const notes: string[] = [];
+
+    const run = await runHarness(
+      config,
+      { onArmNote: (_arm, note) => notes.push(note) },
+      undefined,
+      {
+        environment: async () => ({
+          config,
+          async cleanup() {
+            throw new Error("docker network is still busy");
+          },
+        }),
+        github: fakeGitHub(state),
+        runner: async (params) => ({
+          isError: false,
+          output: `done\n\nPR: ${urlFor(params.arm)}`,
+          threadId: `thread-${params.arm}`,
+          timedOut: false,
+        }),
+        now: advancingClock(),
+        wait: async () => {},
+      },
+    );
+
+    expect(run.status).toBe("completed");
+    expect(state.merged.sort()).toEqual(["komodo", "tuatara"]);
+    expect(notes).toContain(
+      "ephemeral cleanup failed after the run settled: docker network is still busy",
+    );
+    expect(
+      await readFile(join(run.artifactDir, "cleanup-error.txt"), "utf8"),
+    ).toBe("docker network is still busy\n");
+    const manifest = JSON.parse(
+      await readFile(join(run.artifactDir, "manifest.json"), "utf8"),
+    );
+    expect(manifest.status).toBe("completed");
+    expect(manifest.cleanupError).toBe("docker network is still busy");
+  });
+
+  it("does not retry successful work when transcript export fails", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    let attempts = 0;
+
+    const run = await runHarness(config, {}, undefined, {
+      environment: async () => ({
+        config,
+        async captureTranscript() {
+          throw new Error("docker exec find failed");
+        },
+        async cleanup() {},
+      }),
+      github: fakeGitHub(state),
+      runner: async (params) => {
+        attempts += 1;
+        return {
+          isError: false,
+          output: `done\n\nPR: ${urlFor(params.arm)}`,
+          threadId: `thread-${params.arm}`,
+          timedOut: false,
+        };
+      },
+      now: advancingClock(),
+      wait: async () => {},
+    });
+
+    expect(run.status).toBe("completed");
+    expect(attempts).toBe(2);
+    expect(state.merged.sort()).toEqual(["komodo", "tuatara"]);
+    expect(
+      run.results.every(
+        (result) =>
+          result.status === "succeeded" &&
+          result.transcriptStatus === "copy-failed" &&
+          result.transcriptError === "docker exec find failed",
+      ),
+    ).toBe(true);
+  });
+
+  it("preserves the primary run error when cleanup also fails", async () => {
+    const config = await makeConfig();
+
+    await expect(
+      runHarness(config, {}, undefined, {
+        environment: async () => ({
+          config,
+          async cleanup() {
+            throw new Error("cleanup failed too");
+          },
+        }),
+        github: () => ({
+          async isGitHubCheckout() {
+            return true;
+          },
+          async syncToBaseline() {
+            throw new Error("fetch failed first");
+          },
+          async currentBranch() {
+            return undefined;
+          },
+          async findPullRequest() {
+            return undefined;
+          },
+          async conversation() {
+            return [];
+          },
+          async headSha() {
+            return undefined;
+          },
+          async merge() {
+            return { merged: false };
+          },
+        }),
+      }),
+    ).rejects.toThrow("fetch failed first");
+  });
 });
 
 // The confound this barrier exists to kill. Landing is the only irreversible
