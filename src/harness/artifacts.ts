@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
+import type { TranscriptCapture } from "./environment.js";
 import type { Baseline } from "./github.js";
 import type { LandingRecord } from "./land.js";
 
@@ -98,10 +99,6 @@ export class RunArtifacts {
   readonly runId: string;
   readonly directory: string;
   private readonly codexHome: string;
-  // Per-arm host CODEX_HOME, used to locate that arm's transcript. Containerized
-  // arms write sessions inside the container, so their home differs from the
-  // run-wide one; arms absent here fall back to `codexHome`.
-  private readonly armCodexHomes: Record<string, string>;
   private manifest: RunManifest;
   private manifestWrite: Promise<void> = Promise.resolve();
 
@@ -110,12 +107,10 @@ export class RunArtifacts {
     directory: string,
     codexHome: string,
     startedAt: string,
-    armCodexHomes: Record<string, string>,
   ) {
     this.runId = runId;
     this.directory = directory;
     this.codexHome = codexHome;
-    this.armCodexHomes = armCodexHomes;
     this.manifest = {
       schemaVersion: 3,
       runId,
@@ -133,18 +128,11 @@ export class RunArtifacts {
     const runId = `${startedAt.replaceAll(":", "-")}-${randomUUID()}`;
     const directory = resolve(config.resultsDir, runId);
     const globalCodexHome = resolve(config.codexHome);
-    const armCodexHomes: Record<string, string> = {};
-    for (const arm of config.arms) {
-      armCodexHomes[arm.name] = arm.codexHome
-        ? resolve(arm.codexHome)
-        : globalCodexHome;
-    }
     const artifacts = new RunArtifacts(
       runId,
       directory,
       globalCodexHome,
       startedAt,
-      armCodexHomes,
     );
 
     await mkdir(directory, { recursive: true });
@@ -201,6 +189,7 @@ export class RunArtifacts {
   async finishArm(
     result: PersistedArmResult,
     rawResponse?: unknown,
+    captureTranscript?: TranscriptCapture,
   ): Promise<PersistedArmResult> {
     const directory = result.artifactDir;
     const persisted = { ...result };
@@ -216,14 +205,16 @@ export class RunArtifacts {
     }
 
     if (result.threadId) {
-      const codexHome = this.armCodexHomes[result.arm] ?? this.codexHome;
-      const source = await findTranscript(
-        join(codexHome, "sessions"),
-        result.threadId,
-      );
+      const destination = join(directory, "transcript.jsonl");
+      const source = captureTranscript
+        ? await captureTranscript(
+            result.arm,
+            result.threadId,
+            destination,
+          )
+        : await findTranscript(join(this.codexHome, "sessions"), result.threadId);
       if (source) {
-        const destination = join(directory, "transcript.jsonl");
-        await copyFile(source, destination);
+        if (!captureTranscript) await copyFile(source, destination);
         persisted.transcript = destination;
         persisted.transcriptSource = source;
         persisted.transcriptStatus = "copied";
@@ -267,6 +258,7 @@ export class RunArtifacts {
   async recordLanding(
     record: LandingRecord,
     result: PersistedArmResult,
+    captureTranscript?: TranscriptCapture,
   ): Promise<PersistedArmResult> {
     const persisted = { ...result };
     await mkdir(join(this.directory, record.arm), { recursive: true });
@@ -281,16 +273,18 @@ export class RunArtifacts {
     // usually on disk by now, and leaving it `not-found` forever loses the
     // whole session record over a timing accident.
     if (persisted.threadId) {
-      const codexHome = this.armCodexHomes[persisted.arm] ?? this.codexHome;
-      const source = await findTranscript(
-        join(codexHome, "sessions"),
-        persisted.threadId,
-      );
+      const destination =
+        persisted.transcript ??
+        join(persisted.artifactDir, "transcript.jsonl");
+      const source = captureTranscript
+        ? await captureTranscript(
+            persisted.arm,
+            persisted.threadId,
+            destination,
+          )
+        : await findTranscript(join(this.codexHome, "sessions"), persisted.threadId);
       if (source) {
-        const destination =
-          persisted.transcript ??
-          join(persisted.artifactDir, "transcript.jsonl");
-        await copyFile(source, destination);
+        if (!captureTranscript) await copyFile(source, destination);
         persisted.transcript = destination;
         persisted.transcriptSource = source;
         persisted.transcriptStatus = "copied";

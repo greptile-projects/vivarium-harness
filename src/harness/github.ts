@@ -222,15 +222,35 @@ interface GhReaction {
 }
 
 export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
-  const env = arm.ghToken
+  // Containerized checkouts live only inside their arm. Run the harness's
+  // deterministic git/GitHub operations through docker exec as well as Codex,
+  // so moving the clone off the host does not move landing responsibility into
+  // the model. The container already owns GH_TOKEN; do not repeat it in
+  // docker-exec argv via `-e`.
+  const hostEnv = arm.ghToken
     ? {
         GH_TOKEN: arm.ghToken,
         GITHUB_TOKEN: arm.ghToken,
         [GIT_TOKEN_ENV]: arm.ghToken,
       }
     : undefined;
-  const git = (args: string[]) => exec("git", args, { cwd: arm.repo, env });
-  const gh = (args: string[]) => exec("gh", args, { cwd: arm.repo, env });
+  const run = (command: string, args: string[]) =>
+    arm.container
+      ? exec("docker", [
+          "exec",
+          "-i",
+          "-w",
+          "/workspace",
+          arm.container,
+          command,
+          ...args,
+        ])
+      : exec(command, args, { cwd: arm.repo, env: hostEnv });
+  const git = (args: string[]) => run("git", args);
+  const gh = (args: string[]) => run("gh", args);
+  const checkoutLocation = arm.container
+    ? `${arm.container}:/workspace`
+    : arm.repo;
 
   const remote = async (): Promise<string | undefined> => {
     const result = await git(["remote", "get-url", "origin"]);
@@ -287,7 +307,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       ]);
       if (fetched.code !== 0) {
         throw new Error(
-          `git fetch failed in ${arm.repo}: ${fetched.stderr.trim() || fetched.stdout.trim()}`,
+          `git fetch failed in ${checkoutLocation}: ${fetched.stderr.trim() || fetched.stdout.trim()}`,
         );
       }
 
@@ -300,7 +320,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       ]);
       if (checkout.code !== 0) {
         throw new Error(
-          `git checkout ${branch} failed in ${arm.repo}: ${checkout.stderr.trim() || checkout.stdout.trim()}`,
+          `git checkout ${branch} failed in ${checkoutLocation}: ${checkout.stderr.trim() || checkout.stdout.trim()}`,
         );
       }
 
@@ -323,7 +343,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       ]);
       if (cleaned.code !== 0) {
         throw new Error(
-          `git clean failed in ${arm.repo}: ${cleaned.stderr.trim() || cleaned.stdout.trim()}`,
+          `git clean failed in ${checkoutLocation}: ${cleaned.stderr.trim() || cleaned.stdout.trim()}`,
         );
       }
 
@@ -477,7 +497,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         // would be the same silent partial capture the checks above exist to
         // prevent.
         throw new Error(
-          `could not resolve the origin remote in ${arm.repo} — comments unread`,
+          `could not resolve the origin remote in ${checkoutLocation} — comments unread`,
         );
       }
       {

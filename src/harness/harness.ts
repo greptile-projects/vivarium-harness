@@ -6,6 +6,11 @@ import type { ArmConfig, ArmName, HarnessConfig, SandboxMode } from "./config.js
 import type { Baseline, GitHubFactory } from "./github.js";
 import { gitHubForArm } from "./github.js";
 import {
+  provisionArmEnvironment,
+  type EnvironmentFactory,
+  type TranscriptCapture,
+} from "./environment.js";
+import {
   blockArm,
   landingError,
   landingSummary,
@@ -55,6 +60,7 @@ export type AttemptRunner = (
 export interface HarnessDeps {
   runner?: AttemptRunner;
   github?: GitHubFactory;
+  environment?: EnvironmentFactory;
   wait?: (ms: number) => Promise<void>;
   now?: () => number;
 }
@@ -75,8 +81,8 @@ export function armExecution(
   config: HarnessConfig,
 ): { workspace: string; exec?: string[]; sandbox: SandboxMode } {
   const containerized = arm.container !== undefined;
-  // Not configurable: arm-run.sh always bind-mounts the checkout at /workspace,
-  // so a different cwd here would just point Codex at a path that isn't there.
+  // Not configurable: arm-run.sh always clones the arm's remote into
+  // /workspace, so a different cwd here would point outside the checkout.
   const workspace = containerized ? "/workspace" : arm.repo;
   return {
     workspace,
@@ -98,6 +104,7 @@ export async function runArm(
   // an abort would only kill the attempt in flight and the retry loop would
   // immediately start another one — the opposite of stopping.
   signal?: AbortSignal,
+  captureTranscript?: TranscriptCapture,
 ): Promise<ArmResult> {
   let threadId: string | undefined;
   let previousError = "The previous attempt did not complete.";
@@ -183,6 +190,7 @@ export async function runArm(
             error: previousError,
           },
           result.raw,
+          captureTranscript,
         );
         continue;
       }
@@ -197,17 +205,22 @@ export async function runArm(
           output: result.output,
         },
         result.raw,
+        captureTranscript,
       );
     } catch (error) {
       previousError = error instanceof Error ? error.message : String(error);
-      finalResult = await artifacts.finishArm({
-        ...base,
-        status: "failed",
-        completedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt.getTime(),
-        threadId,
-        error: previousError,
-      });
+      finalResult = await artifacts.finishArm(
+        {
+          ...base,
+          status: "failed",
+          completedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt.getTime(),
+          threadId,
+          error: previousError,
+        },
+        undefined,
+        captureTranscript,
+      );
     }
   }
 
@@ -235,18 +248,24 @@ export async function runHarness(
   const artifacts = await RunArtifacts.create(config, prompt);
   const runner = deps.runner ?? runArmStreaming;
   const github = deps.github ?? gitHubForArm;
+  const environmentFactory = deps.environment ?? provisionArmEnvironment;
   const wait = deps.wait ?? sleep;
   const now = deps.now ?? Date.now;
   const onEvent: ArmEventSink = sinks.onEvent ?? (() => {});
   const note = (arm: ArmName, text: string): void =>
     sinks.onArmNote?.(arm, text);
+  let environment: Awaited<ReturnType<EnvironmentFactory>> | undefined;
+  let failure: unknown;
 
   try {
+    environment = await environmentFactory(config, artifacts.runId, note);
+    const runtimeConfig = environment.config;
+
     // Both checkouts go back to origin's default branch *before* either session
     // starts: a subticket has to begin where the last one landed, and doing it
     // up front means a sync failure costs nothing already in flight.
     const baselines: Partial<Record<ArmName, Baseline>> = {};
-    for (const arm of config.arms) {
+    for (const arm of runtimeConfig.arms) {
       const baseline = await prepareArm({
         github: github(arm),
         note: (text) => note(arm.name, text),
@@ -256,7 +275,7 @@ export async function runHarness(
     await artifacts.recordBaselines(baselines);
 
     const landDeps = (arm: ArmConfig, result: { threadId?: string }) => {
-      const { workspace, exec, sandbox } = armExecution(arm, config);
+      const { workspace, exec, sandbox } = armExecution(arm, runtimeConfig);
       return {
         github: github(arm),
         note: (text: string) => note(arm.name, text),
@@ -269,8 +288,8 @@ export async function runHarness(
               prompt: reviewPrompt,
               cwd: workspace,
               sandbox,
-              codexHome: config.codexHome,
-              idleTimeoutMs: config.idleTimeoutMs,
+              codexHome: runtimeConfig.codexHome,
+              idleTimeoutMs: runtimeConfig.idleTimeoutMs,
               threadId: result.threadId,
               exec,
               signal,
@@ -282,8 +301,17 @@ export async function runHarness(
 
     // BUILD — both arms concurrently.
     const built = await Promise.all(
-      config.arms.map((arm) =>
-        runArm(arm, prompt, config, artifacts, runner, onEvent, signal),
+      runtimeConfig.arms.map((arm) =>
+        runArm(
+          arm,
+          prompt,
+          runtimeConfig,
+          artifacts,
+          runner,
+          onEvent,
+          signal,
+          environment?.captureTranscript,
+        ),
       ),
     );
 
@@ -297,7 +325,7 @@ export async function runHarness(
     // if any session failed, nobody reviews and nobody merges.
     const buildFailed = built.some((result) => result.status === "failed");
     if (buildFailed) {
-      for (const arm of config.arms) {
+      for (const arm of runtimeConfig.arms) {
         note(
           arm.name,
           "an arm's session failed — holding both back so neither lands alone",
@@ -312,19 +340,24 @@ export async function runHarness(
       ? built.map(
           (result, index) =>
             ({
-              arm: config.arms[index]!.name,
+              arm: runtimeConfig.arms[index]!.name,
               status: result.status === "failed" ? "not-attempted" : "blocked",
               startedAt: new Date().toISOString(),
               completedAt: new Date().toISOString(),
-              reviewer: config.arms[index]!.reviewer,
+              reviewer: runtimeConfig.arms[index]!.reviewer,
               reviewRounds: [],
               conversation: [],
               notes: [],
             }) satisfies LandingRecord,
         )
       : await Promise.all(
-          config.arms.map((arm, index) =>
-            reviewArm(arm, config, built[index]!, landDeps(arm, built[index]!)),
+          runtimeConfig.arms.map((arm, index) =>
+            reviewArm(
+              arm,
+              runtimeConfig,
+              built[index]!,
+              landDeps(arm, built[index]!),
+            ),
           ),
         );
 
@@ -336,7 +369,7 @@ export async function runHarness(
     );
     const landings = await Promise.all(
       reviewed.map((record, index) => {
-        const arm = config.arms[index]!;
+        const arm = runtimeConfig.arms[index]!;
         const deps = landDeps(arm, built[index]!);
         return blockers.length > 0
           ? blockArm(
@@ -357,6 +390,7 @@ export async function runHarness(
         const landed = await artifacts.recordLanding(
           record,
           failure ? { ...result, status: "failed", error: failure } : result,
+          environment?.captureTranscript,
         );
         note(record.arm, landingSummary(record));
         sinks.onLanding?.(record);
@@ -377,7 +411,23 @@ export async function runHarness(
       landings,
     };
   } catch (error) {
+    failure = error;
     await artifacts.fail(error);
     throw error;
+  } finally {
+    if (environment) {
+      try {
+        await environment.cleanup();
+      } catch (cleanupError) {
+        const error = failure
+          ? new AggregateError(
+              [failure, cleanupError],
+              "run failed and ephemeral arm cleanup also failed",
+            )
+          : cleanupError;
+        await artifacts.fail(error);
+        throw error;
+      }
+    }
   }
 }

@@ -96,6 +96,43 @@ describe("credential handling", () => {
     );
     expect(fetch?.env?.[GIT_TOKEN_ENV]).toBeUndefined();
   });
+
+  test("containerized harness operations run inside the arm without forwarding the token", async () => {
+    const { calls, exec } = recorder({
+      "docker exec /workspace vivarium-tuatara git rev-parse": ok(
+        "feature-branch\n",
+      ),
+    });
+
+    const branch = await armGitHub(
+      arm({
+        repo: "https://github.com/org/repo.git",
+        container: "vivarium-tuatara",
+        ghToken: TOKEN,
+      }),
+      exec,
+    ).currentBranch();
+
+    expect(branch).toBe("feature-branch");
+    expect(calls).toEqual([
+      {
+        command: "docker",
+        args: [
+          "exec",
+          "-i",
+          "-w",
+          "/workspace",
+          "vivarium-tuatara",
+          "git",
+          "rev-parse",
+          "--abbrev-ref",
+          "HEAD",
+        ],
+        env: undefined,
+      },
+    ]);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+  });
 });
 
 describe("syncToBaseline", () => {

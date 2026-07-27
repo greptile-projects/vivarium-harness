@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Toolchain image for one vivarium arm. Both arms share this image; they differ
-# only in the checkout bind-mounted at /workspace, the GitHub token passed at run
+# only in the remote cloned into /workspace, the GitHub token passed at run
 # time, and whether the harness feeds Greptile reviews back. Neither arm has
 # Greptile installed — the review runs in the harness, outside the container.
 # Node matches the host (24.x). Codex, bun, pnpm/yarn and Go ride on top, and a
@@ -92,10 +92,10 @@ ENV GIT_TERMINAL_PROMPT=0 \
 # Git, ready to commit and push from inside the container. Each line here is a
 # failure the arm would otherwise hit halfway through a subticket, after the
 # work was already done:
-#   - safe.directory: /workspace is a bind mount owned by the host user while
-#     the container runs as root, so git refuses it as "dubious ownership".
-#   - the credential helper resolves GH_TOKEN at push time, so the arm's token
-#     never lands in a remote URL, in argv, or in the reflog.
+#   - safe.directory: keeps the workspace usable if deployment storage changes
+#     from the container layer to a mounted volume later.
+#   - the credential helper resolves GH_TOKEN at clone/fetch/push time, so the
+#     arm's token never lands in a remote URL, in argv, or in the reflog.
 #   - an identity, because `git commit` will not guess one. This is only the
 #     fallback; arm-run.sh overrides it per arm so a commit says which arm
 #     wrote it.
@@ -143,9 +143,9 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
 
 # The nested daemon's storage cannot live on the container's own filesystem:
 # that is overlayfs, and overlay2 refuses to stack on itself. This covers a bare
-# `docker run` with an anonymous volume; `arm-run.sh` names one per arm instead,
-# so a warm image cache survives a container restart — and is never shared
-# between the arms, which would be a channel between them.
+# `docker run` with an anonymous volume; the harness names a fresh one per arm
+# and subticket, then removes it at teardown. Reusing it would carry a warm
+# cache—and potentially task-created images—into an otherwise amnesic worker.
 VOLUME /var/lib/docker
 
 # A desktop and a browser. The arms build a web application, and until now
@@ -227,12 +227,12 @@ RUN chmod 0755 /usr/local/bin/vivarium-init /usr/local/bin/browser
 # Codex reads auth + config from CODEX_HOME. Mount the host's auth read-only at
 # run time:  -v $HOME/.codex/auth.json:/codex/auth.json:ro
 ENV CODEX_HOME=/codex
-RUN mkdir -p /codex
+RUN mkdir -p /codex /workspace /vivarium
 
 WORKDIR /workspace
 
 # tini as PID 1 reaps orphans from weeks of exec'd codex runs; vivarium-init
 # starts dockerd and the GUI and then execs CMD, which just idles so the harness
-# can `docker exec` a fresh `codex mcp-server` per rung.
+# can `docker exec` a fresh `codex mcp-server` per subticket.
 ENTRYPOINT ["tini", "--", "vivarium-init"]
 CMD ["sleep", "infinity"]

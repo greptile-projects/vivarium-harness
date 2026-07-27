@@ -183,6 +183,101 @@ describe("runHarness landing", () => {
   });
 });
 
+describe("runHarness environment lifecycle", () => {
+  it("uses runtime container names and destroys the environment after landing", async () => {
+    const config = await makeConfig();
+    const runtime: HarnessConfig = {
+      ...config,
+      arms: config.arms.map((arm) => ({
+        ...arm,
+        container: `runtime-${arm.name}`,
+      })) as [ArmConfig, ArmConfig],
+    };
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const execPrefixes: Array<string[] | undefined> = [];
+    let cleaned = 0;
+
+    await runHarness(config, {}, undefined, {
+      environment: async () => ({
+        config: runtime,
+        async cleanup() {
+          cleaned += 1;
+        },
+      }),
+      github: fakeGitHub(state),
+      runner: async (params) => {
+        execPrefixes.push(params.exec);
+        return {
+          isError: false,
+          output: `done\n\nPR: ${urlFor(params.arm)}`,
+          threadId: `thread-${params.arm}`,
+          timedOut: false,
+        };
+      },
+      now: advancingClock(),
+      wait: async () => {},
+    });
+
+    expect(execPrefixes).toContainEqual([
+      "docker",
+      "exec",
+      "-i",
+      "-w",
+      "/workspace",
+      "runtime-komodo",
+    ]);
+    expect(execPrefixes).toContainEqual([
+      "docker",
+      "exec",
+      "-i",
+      "-w",
+      "/workspace",
+      "runtime-tuatara",
+    ]);
+    expect(cleaned).toBe(1);
+  });
+
+  it("destroys the environment when preparation throws", async () => {
+    const config = await makeConfig();
+    let cleaned = 0;
+
+    await expect(
+      runHarness(config, {}, undefined, {
+        environment: async () => ({
+          config,
+          async cleanup() {
+            cleaned += 1;
+          },
+        }),
+        github: () => ({
+          async isGitHubCheckout() {
+            return true;
+          },
+          async syncToBaseline() {
+            throw new Error("fetch failed");
+          },
+          async currentBranch() {
+            return undefined;
+          },
+          async findPullRequest() {
+            return undefined;
+          },
+          async conversation() {
+            return [];
+          },
+          async headSha() {
+            return undefined;
+          },
+          async merge() {
+            return { merged: false };
+          },
+        }),
+      }),
+    ).rejects.toThrow(/fetch failed/);
+    expect(cleaned).toBe(1);
+  });
+});
+
 // The confound this barrier exists to kill. Landing is the only irreversible
 // thing the harness does and it is per-arm, so without a gate one arm can
 // permanently merge a rung the other never built — after which the two mains
