@@ -240,7 +240,9 @@ to export it into the attempt artifact after the build and again after review;
 only then does teardown remove the container. Export is evidence collection,
 not arm execution: a failed find/copy is recorded as `copy-failed` (or
 `partial` when the earlier build-time copy survives) and never retries
-successful work or prevents a ready pull request from landing. Thus
+successful work or prevents a ready pull request from landing. Refreshes copy
+to a sibling staging file and atomically rename it into place only on success,
+so a partial `docker cp` cannot corrupt the earlier durable copy. Thus
 transcripts are outputs, not historical input visible to a later arm.
 
 ## Architecture

@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readdir, rename, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
 import type { TranscriptCapture } from "./environment.js";
@@ -328,27 +335,34 @@ export class RunArtifacts {
     const destination =
       persisted.transcript ??
       join(persisted.artifactDir, "transcript.jsonl");
+    const staging = `${destination}.${randomUUID()}.capture`;
     try {
       const source = captureTranscript
         ? await captureTranscript(
             persisted.arm,
             persisted.threadId,
-            destination,
+            staging,
           )
         : await findTranscript(
             join(this.codexHome, "sessions"),
             persisted.threadId,
           );
       if (!source) {
+        await rm(staging, { force: true }).catch(() => {});
         if (!persisted.transcript) persisted.transcriptStatus = "not-found";
         return;
       }
-      if (!captureTranscript) await copyFile(source, destination);
+      if (!captureTranscript) await copyFile(source, staging);
+      // A landing-time refresh must not write over the only durable copy until
+      // the replacement is complete. `rename` is atomic within this artifact
+      // directory, so a failed docker cp leaves the earlier transcript intact.
+      await rename(staging, destination);
       persisted.transcript = destination;
       persisted.transcriptSource = source;
       persisted.transcriptStatus = "copied";
       delete persisted.transcriptError;
     } catch (error) {
+      await rm(staging, { force: true }).catch(() => {});
       persisted.transcriptStatus = persisted.transcript
         ? "partial"
         : "copy-failed";

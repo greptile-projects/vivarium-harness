@@ -297,7 +297,8 @@ describe("run artifacts", () => {
         notes: [],
       },
       finished,
-      async () => {
+      async (_arm, _thread, destination) => {
+        await writeFile(destination, '{"turn":"review","truncated":');
         throw new Error("container disappeared before refresh");
       },
     );
