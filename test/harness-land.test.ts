@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ArmConfig, HarnessConfig } from "../src/config.js";
-import type { ArmGitHub, PullRequestRef, ReviewNote } from "../src/github.js";
-import { runHarness, type AttemptRunner } from "../src/harness.js";
-import type { StreamParams } from "../src/live/stream.js";
+import type { ArmConfig, HarnessConfig } from "../src/harness/config.js";
+import type { ArmGitHub, PullRequestRef, ReviewNote } from "../src/harness/github.js";
+import { runHarness, type AttemptRunner } from "../src/harness/harness.js";
+import type { StreamParams } from "../src/harness/session.js";
 
 // The whole run, end to end, with Codex and GitHub faked: sync both checkouts,
 // build, answer the review on the reviewed arm, merge, record. Everything the
@@ -43,17 +43,18 @@ async function makeConfig(): Promise<HarnessConfig> {
   return {
     ticket: "1.1 Do the thing",
     arms: [
-      { name: "control", repo: join(root, "control") },
-      { name: "greptile", repo: join(root, "greptile"), reviewer: REVIEWER },
+      { name: "komodo", repo: join(root, "komodo") },
+      { name: "tuatara", repo: join(root, "tuatara"), reviewer: REVIEWER },
     ],
     sandbox: "workspace-write",
     resultsDir: join(root, "results"),
     codexHome: join(root, "codex"),
+    containerImage: "vivarium-arm",
     maxAttempts: 1,
     idleTimeoutMs: 600_000,
-    land: true,
     reviewTimeoutMs: 100,
     reviewPollMs: 10,
+    reviewDebounceMs: 0,
     reviewRounds: 1,
   };
 }
@@ -98,6 +99,13 @@ function fakeGitHub(
   });
 }
 
+// A clock that moves. `reviewTimeoutMs` is 100 in these fixtures, so the first
+// tick already exceeds it and an unanswered review times out instead of looping.
+function advancingClock(): () => number {
+  let clock = 0;
+  return () => (clock += 1_000);
+}
+
 describe("runHarness landing", () => {
   it("syncs, builds, answers the review, merges and records it", async () => {
     const config = await makeConfig();
@@ -121,30 +129,31 @@ describe("runHarness landing", () => {
     });
 
     expect(run.status).toBe("completed");
-    expect(state.synced.sort()).toEqual(["control", "greptile"]);
-    expect(state.merged.sort()).toEqual(["control", "greptile"]);
+    expect(state.synced.sort()).toEqual(["komodo", "tuatara"]);
+    expect(state.merged.sort()).toEqual(["komodo", "tuatara"]);
 
-    // The reviewed arm gets a second turn on the same thread; the control arm
+    // The reviewed arm gets a second turn on the same thread; the komodo arm
     // gets exactly one.
-    const greptile = prompts.filter((p) => p.arm === "greptile");
-    const control = prompts.filter((p) => p.arm === "control");
-    expect(control).toHaveLength(1);
-    expect(greptile).toHaveLength(2);
-    expect(greptile[1]?.threadId).toBe("thread-greptile");
-    expect(greptile[1]?.prompt).toContain("has been reviewed");
+    const tuatara = prompts.filter((p) => p.arm === "tuatara");
+    const komodo = prompts.filter((p) => p.arm === "komodo");
+    expect(komodo).toHaveLength(1);
+    expect(tuatara).toHaveLength(2);
+    expect(tuatara[1]?.threadId).toBe("thread-tuatara");
+    // …and that second turn is the review round for its own pull request.
+    expect(tuatara[1]?.prompt).toContain(urlFor("tuatara"));
 
     const manifest = JSON.parse(
       await readFile(join(run.artifactDir, "manifest.json"), "utf8"),
     );
     expect(manifest.schemaVersion).toBe(3);
-    expect(manifest.baselines.greptile.sha).toBe("sha-greptile");
-    expect(manifest.arms.greptile.landing.status).toBe("merged");
-    expect(manifest.arms.greptile.landing.reviewRounds).toHaveLength(1);
+    expect(manifest.baselines.tuatara.sha).toBe("sha-tuatara");
+    expect(manifest.arms.tuatara.landing.status).toBe("merged");
+    expect(manifest.arms.tuatara.landing.reviewRounds).toHaveLength(1);
 
     const land = JSON.parse(
-      await readFile(join(run.artifactDir, "greptile", "land.json"), "utf8"),
+      await readFile(join(run.artifactDir, "tuatara", "land.json"), "utf8"),
     );
-    expect(land.pullRequest.url).toBe(urlFor("greptile"));
+    expect(land.pullRequest.url).toBe(urlFor("tuatara"));
     expect(land.conversation).toHaveLength(1);
   });
 
@@ -171,5 +180,107 @@ describe("runHarness landing", () => {
     expect(state.merged).toEqual([]);
     expect(run.results.every((result) => result.status === "failed")).toBe(true);
     expect(run.results[0]?.error).toMatch(/no pull request/);
+  });
+});
+
+// The confound this barrier exists to kill. Landing is the only irreversible
+// thing the harness does and it is per-arm, so without a gate one arm can
+// permanently merge a rung the other never built — after which the two mains
+// differ by a subticket and neither recovery works (re-run and the merged arm
+// re-solves a solved ticket in seconds and "wins"; check the box by hand and
+// the failed arm never builds that feature at all).
+describe("landing barrier", () => {
+  it("merges nothing when one arm's session fails", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+
+    // komodo fails outright; tuatara succeeds and reports a pull request.
+    const runner: AttemptRunner = async (params: StreamParams) =>
+      params.arm === "komodo"
+        ? { output: "could not finish", isError: true, timedOut: false }
+        : {
+            output: `PR: ${urlFor("tuatara")}`,
+            isError: false,
+            timedOut: false,
+            threadId: "t-1",
+          };
+
+    const run = await runHarness(config, {}, undefined, {
+      runner,
+      github: fakeGitHub(state),
+      wait: async () => {},
+      // Must advance: a reviewer arm polls until now() - start >= timeout.
+      now: advancingClock(),
+    });
+
+    // The whole point: the healthy arm did NOT merge.
+    expect(state.merged).toEqual([]);
+    expect(run.status).toBe("completed_with_failures");
+
+    const tuatara = run.landings.find((record) => record.arm === "tuatara");
+    const komodo = run.landings.find((record) => record.arm === "komodo");
+    expect(tuatara?.status).toBe("blocked");
+    expect(komodo?.status).toBe("not-attempted");
+
+    // A blocked arm is a failed arm, so Greg halts and the box stays unchecked.
+    expect(run.results.every((result) => result.status === "failed")).toBe(true);
+  });
+
+  it("merges nothing when one arm opens no pull request", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+
+    const runner: AttemptRunner = async (params: StreamParams) => ({
+      // Both sessions report success, but komodo's checkout has no PR.
+      output:
+        params.arm === "komodo" ? "all done!" : `PR: ${urlFor("tuatara")}`,
+      isError: false,
+      timedOut: false,
+      threadId: `t-${params.arm}`,
+    });
+
+    const run = await runHarness(config, {}, undefined, {
+      runner,
+      github: (arm: ArmConfig) =>
+        fakeGitHub(state, { pullRequest: arm.name !== "komodo" })(arm),
+      wait: async () => {},
+      // Must advance: a reviewer arm polls until now() - start >= timeout.
+      now: advancingClock(),
+    });
+
+    expect(state.merged).toEqual([]);
+    expect(
+      run.landings.find((record) => record.arm === "komodo")?.status,
+    ).toBe("no-pull-request");
+    expect(
+      run.landings.find((record) => record.arm === "tuatara")?.status,
+    ).toBe("blocked");
+    expect(run.status).toBe("completed_with_failures");
+  });
+
+  it("merges both arms when both are ready", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+
+    const runner: AttemptRunner = async (params: StreamParams) => ({
+      output: `PR: ${urlFor(params.arm)}`,
+      isError: false,
+      timedOut: false,
+      threadId: `t-${params.arm}`,
+    });
+
+    const run = await runHarness(config, {}, undefined, {
+      runner,
+      github: fakeGitHub(state),
+      wait: async () => {},
+      // Must advance: a reviewer arm polls until now() - start >= timeout.
+      now: advancingClock(),
+    });
+
+    expect(state.merged.sort()).toEqual(["komodo", "tuatara"]);
+    expect(run.status).toBe("completed");
+    expect(
+      run.landings.every((record) => record.status === "merged"),
+    ).toBe(true);
   });
 });

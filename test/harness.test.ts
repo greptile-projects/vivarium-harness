@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RunArtifacts } from "../src/artifacts.js";
-import type { HarnessConfig } from "../src/config.js";
-import { runArm, type AttemptRunner } from "../src/harness.js";
-import type { StreamParams, StreamResult } from "../src/live/stream.js";
+import { RunArtifacts } from "../src/harness/artifacts.js";
+import type { HarnessConfig } from "../src/harness/config.js";
+import { runArm, type AttemptRunner } from "../src/harness/harness.js";
+import type { StreamParams, StreamResult } from "../src/harness/session.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -34,17 +34,18 @@ async function makeConfig(): Promise<{
   const config: HarnessConfig = {
     ticket: "ENG-123",
     arms: [
-      { name: "control", repo: "/tmp/control" },
-      { name: "greptile", repo: "/tmp/greptile" },
+      { name: "komodo", repo: "/tmp/komodo" },
+      { name: "tuatara", repo: "/tmp/tuatara" },
     ],
     sandbox: "workspace-write",
     resultsDir: join(root, "results"),
     codexHome,
+    containerImage: "vivarium-arm",
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
-    land: false,
     reviewTimeoutMs: 1_000,
     reviewPollMs: 10,
+    reviewDebounceMs: 0,
     reviewRounds: 2,
   };
   const artifacts = await RunArtifacts.create(config, "original prompt");
@@ -90,13 +91,13 @@ describe("autonomous arm retries", () => {
     expect(calls[1].prompt).toContain("first attempt failed");
     expect(
       await readFile(
-        join(artifacts.directory, "control", "attempt-01", "error.txt"),
+        join(artifacts.directory, "komodo", "attempt-01", "error.txt"),
         "utf8",
       ),
     ).toContain("first attempt failed");
     expect(
       await readFile(
-        join(artifacts.directory, "control", "attempt-02", "output.txt"),
+        join(artifacts.directory, "komodo", "attempt-02", "output.txt"),
         "utf8",
       ),
     ).toBe("recovered\n");
@@ -110,7 +111,7 @@ describe("autonomous arm retries", () => {
       calls.push(params);
       call += 1;
       if (call === 1) {
-        throw new Error("watchdog aborted control: no activity for 600000ms");
+        throw new Error("watchdog aborted komodo: no activity for 600000ms");
       }
       return {
         isError: false,
@@ -136,7 +137,7 @@ describe("autonomous arm retries", () => {
     expect(calls[1].threadId).toBeUndefined();
     expect(
       await readFile(
-        join(artifacts.directory, "control", "attempt-01", "error.txt"),
+        join(artifacts.directory, "komodo", "attempt-01", "error.txt"),
         "utf8",
       ),
     ).toContain("watchdog aborted");
@@ -155,7 +156,7 @@ describe("aborting an arm", () => {
       calls.push(params);
       // What the human quitting the view does mid-attempt.
       controller.abort(new Error("the live view was quit"));
-      throw new Error("control aborted: the live view was quit");
+      throw new Error("komodo aborted: the live view was quit");
     };
 
     const result = await runArm(

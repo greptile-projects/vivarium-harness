@@ -64,6 +64,4 @@ jobs:
           HARNESS_REPO: ${{ github.repository }}
           GREPTILE_BOT_LOGIN: ${{ vars.GREPTILE_BOT_LOGIN }}
           # BOT_COMMITTER_NAME / BOT_COMMITTER_EMAIL come from $GITHUB_ENV above.
-        run: |
-          chmod +x scripts/mirror_sync.sh
-          ./scripts/mirror_sync.sh
+        run: ./scripts/mirror_sync.sh

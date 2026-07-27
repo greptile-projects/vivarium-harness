@@ -1,58 +1,24 @@
 #!/usr/bin/env bun
-import { mkdir, mkdtemp } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { armDisplayName, armsForDisplay } from "./arms.js";
+import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
+import { armsForDisplay } from "./harness/arms.js";
 import {
-  IDLE_TIMEOUT_MS,
   MAX_MILESTONES,
   RESULTS_DIR,
-  REVIEW_POLL_MS,
-  REVIEW_ROUNDS,
-  REVIEW_TIMEOUT_MS,
   parseArgs,
   parseRunMode,
   usage,
   validateConfig,
-  type HarnessConfig,
-} from "./config.js";
-import { runGregLive } from "./greg/main.js";
-import { landingSummary } from "./land.js";
-import { runTicketLive } from "./live/run.js";
+} from "./harness/config.js";
+import { runGregLive } from "./climb.js";
+import { landingSummary } from "./harness/land.js";
+import { runTicketLive } from "./ticket.js";
 
 // The single entrypoint. Default behaviour is the experiment itself: Greg
 // plans the next rung onto the ladder and the two arms build its subtickets,
 // on and on. Everything else here is an option on that one loop — building a
-// single ad-hoc ticket, planning without building, or a throwaway smoke run —
-// not a separate command with its own contract.
-
-// Two throwaway checkouts so the harness and the live feed can be exercised
-// without touching the experiment's repos. Read-only and single-attempt: this
-// is a smoke test of the plumbing, never a real run.
-async function demoConfig(ticket: string | undefined): Promise<HarnessConfig> {
-  const control = await mkdtemp(join(tmpdir(), "vivarium-control-"));
-  const greptile = await mkdtemp(join(tmpdir(), "vivarium-greptile-"));
-  return {
-    ticket:
-      ticket ??
-      "Smoke: reply with the single word DONE, make no changes, do not open a PR.",
-    arms: [
-      { name: "control", repo: control },
-      { name: "greptile", repo: greptile },
-    ],
-    sandbox: "read-only",
-    resultsDir: RESULTS_DIR,
-    codexHome: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
-    maxAttempts: 1,
-    idleTimeoutMs: IDLE_TIMEOUT_MS,
-    // Temp dirs are not checkouts of anything: nothing to sync to, nothing to
-    // merge. The demo exercises the plumbing, not the landing path.
-    land: false,
-    reviewTimeoutMs: REVIEW_TIMEOUT_MS,
-    reviewPollMs: REVIEW_POLL_MS,
-    reviewRounds: REVIEW_ROUNDS,
-  };
-}
+// single ad-hoc ticket, or planning without building — not a separate command
+// with its own contract.
 
 async function main(): Promise<void> {
   try {
@@ -76,25 +42,18 @@ async function main(): Promise<void> {
     const logs = `${logDir}/<arm>/progress.log`;
 
     if (mode.kind !== "ladder") {
-      const config =
-        mode.kind === "demo"
-          ? await demoConfig(mode.ticket)
-          : await validateConfig(parseArgs(argv, process.env));
+      const config = await validateConfig(parseArgs(argv, process.env));
       await mkdir(logDir, { recursive: true });
 
       if (!useTui) {
         process.stdout.write(
-          `vivarium${mode.kind === "demo" ? " (demo)" : ""} · one ticket · ${config.arms.length} arms · logs: ${logs}\n`,
+          `vivarium · one ticket · ${config.arms.length} arms · logs: ${logs}\n`,
         );
       }
 
-      // The demo is a look at the live view, so it does not close itself when
-      // the arms settle — the final frame stays until the human quits it. A
-      // real ticket run still unmounts straight into the summary.
       const { run, store } = await runTicketLive(config, {
         useTui,
         logDir,
-        hold: mode.kind === "demo",
       });
 
       // The summary prints in every non-JSON mode, including the TUI: the
@@ -105,7 +64,7 @@ async function main(): Promise<void> {
       } else {
         process.stdout.write(`\n=== ${run.status} ===\n`);
         for (const state of armsForDisplay(store.snapshot())) {
-          const label = armDisplayName(state.arm);
+          const label = state.arm;
           process.stdout.write(
             `${label.padEnd(8)} ${state.status.padEnd(7)} ${state.events} events · ${(state.tokens ?? 0).toLocaleString()} tok · thread ${state.threadId ?? "—"}\n`,
           );

@@ -9,12 +9,16 @@
 #
 # All waiting happens here (harness side); Komodo never blocks on the mirror.
 #
-# Credentials (two fine-grained PATs — see SETUP.md):
-#   MIRROR_PUSH_TOKEN  resource owner = MIRROR_OWNER (personal acct), mirror repo
-#                      only: Contents:write, Pull requests:write.
-#   HARNESS_ORG_TOKEN  resource owner = org: read vivarium-komodo (Contents/Metadata/
-#                      Pull requests: read) + read/write the harness repo variable
-#                      (Variables: read/write).
+# Credentials (see docs/mirror-sync.md):
+#   MIRROR_PUSH_TOKEN  an installation token for the `vivarium-mirror` GitHub App,
+#                      minted per run by the workflow — NOT a PAT. It is what makes
+#                      every mirror push/PR/merge `vivarium-mirror[bot]` rather than
+#                      a human. Needs Contents:write, Pull requests:write and
+#                      Workflows:write (Komodo's tree carries .github/workflows/*,
+#                      and tree identity forces them into every state we push).
+#   HARNESS_ORG_TOKEN  fine-grained PAT, resource owner = org: read vivarium-komodo
+#                      (Contents/Metadata/Pull requests: read) + read/write the
+#                      harness repo variable (Variables: read/write).
 #
 set -euo pipefail
 
@@ -26,7 +30,7 @@ MIRROR_REPO="${MIRROR_REPO:-makors/vivarium-komodo-mirror}"
 HARNESS_REPO="${HARNESS_REPO:-greptile-projects/vivarium-harness}"
 STATE_VAR="${STATE_VAR:-LAST_SYNCED_SHA}"
 
-# Greptile app login — CONFIRM against a real Tuatara PR (see SETUP.md); the app's
+# Greptile app login — CONFIRM against a real Tuatara PR (see docs/mirror-sync.md); the app's
 # bot login is what authors its reviews/comments.
 GREPTILE_BOT_LOGIN="${GREPTILE_BOT_LOGIN:-greptile-apps[bot]}"
 
@@ -36,7 +40,7 @@ CODEX_TITLE_PREFIX="${CODEX_TITLE_PREFIX:-[codex] }"
 
 API_RETRY_SLEEP="${API_RETRY_SLEEP:-2}"  # backoff between source-PR read attempts
 POLL_INTERVAL="${POLL_INTERVAL:-60}"     # seconds between review checks
-POLL_TIMEOUT="${POLL_TIMEOUT:-600}"      # 10 min; runner stays alive => bounds Actions minutes
+POLL_TIMEOUT="${POLL_TIMEOUT:-3600}"     # 1 hour; matches REVIEW_TIMEOUT_MS so both arms wait equally
 TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
 
 # Committer identity for mirror commits. In CI the workflow overrides these with
@@ -46,6 +50,11 @@ BOT_COMMITTER_NAME="${BOT_COMMITTER_NAME:-github-actions[bot]}"
 BOT_COMMITTER_EMAIL="${BOT_COMMITTER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
 
 # Remote URLs — overridable so tests can point at local bare repos.
+#
+# The tokens ride in the URLs (and land in the workdir's .git/config), unlike
+# the harness's one-shot credential helpers. Acceptable only because this runs
+# on an ephemeral CI runner with a mktemp workdir — do not copy this pattern to
+# anything that runs on a persistent machine.
 SOURCE_GIT_URL="${SOURCE_GIT_URL:-https://x-access-token:${HARNESS_ORG_TOKEN:-}@github.com/${SOURCE_REPO}.git}"
 MIRROR_GIT_URL="${MIRROR_GIT_URL:-https://x-access-token:${MIRROR_PUSH_TOKEN:-}@github.com/${MIRROR_REPO}.git}"
 
@@ -151,8 +160,12 @@ wait_then_merge() { # <pr-number> <source-sha>
   # --merge (never squash): the authored commit must land as-is.
   gh_mirror pr merge "$n" -R "$MIRROR_REPO" --merge >/dev/null
   log "PR #${n}: merged"
-  write_state "$sha"
+  # Verify BEFORE advancing state: if the merged tree diverged from the source,
+  # dying here leaves the state variable on the last good sha, so a rerun hits
+  # this state again and the failure stays visible instead of being recorded as
+  # synced (the rerun's empty-diff skip path never re-verifies).
   verify_tree_identity "$sha"
+  write_state "$sha"
 }
 
 # ---------------------------------------------------------------------------
@@ -254,11 +267,19 @@ sync_one() { # <source-sha> <title-prefix>
   # carry their own "## Objective"/"## Deliverable" headings, so any parser that
   # ends the section at the next "## " silently captures nothing.
   ticket="$src_body"
-  [[ -n "$prefix" ]] && title="${prefix}${title}"
   # Every mirror PR is titled "[codex] …": Greptile keys off that marker to
   # treat the PR as agent-authored. Non-negotiable, so it goes on last and
   # outermost — after any per-path prefix like [force-push].
-  [[ "$title" == "${CODEX_TITLE_PREFIX}"* ]] || title="${CODEX_TITLE_PREFIX}${title}"
+  #
+  # The source title usually carries the marker already: the worker prompt tells
+  # both arms to title their pull requests "[codex] …", so that Tuatara's real
+  # reviews and Komodo's mirror reviews are collected under the same marker.
+  # Strip it before adding a per-path prefix, or the prefix would sit between
+  # the marker and the title and the check below would add a second one
+  # ("[codex] [force-push] [codex] …").
+  title="${title#"$CODEX_TITLE_PREFIX"}"
+  [[ -n "$prefix" ]] && title="${prefix}${title}"
+  title="${CODEX_TITLE_PREFIX}${title}"
 
   author_login="$(source_author_login "$sha")"
   local author_ref
