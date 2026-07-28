@@ -3,12 +3,7 @@ import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
 import { armsForDisplay } from "../../harness/arms.js";
 import type { LiveModel } from "../model.js";
 import { confirmQuitPrompt, needsQuitConfirm } from "../quit.js";
-import {
-  elapsedSeconds,
-  formatDuration,
-  stripLogTimestamp,
-  truncate,
-} from "./format.js";
+import { stripLogTimestamp, truncate } from "./format.js";
 import {
   enterFullscreen,
   restoreOnExit,
@@ -203,7 +198,6 @@ export function LiveApp({
   const arms = armsForDisplay(model.live.snapshot());
   const done = arms.filter((a) => a.status === "done").length;
   const failed = arms.filter((a) => a.status === "failed").length;
-  const wall = arms.length ? Math.max(...arms.map(elapsedSeconds)) : 0;
   const settled = arms.length > 0 && done + failed === arms.length;
 
   const summary = arms.length
@@ -266,7 +260,6 @@ export function LiveApp({
         <Text bold>{model.title}</Text>
         <Box flexGrow={1} />
         <Text color={summaryColor}>{summary}</Text>
-        <Text dimColor>{"   "}{formatDuration(wall)}</Text>
       </Box>
       <Box marginBottom={1}>
         <Text dimColor>{truncate(model.subtitle, inner)}</Text>

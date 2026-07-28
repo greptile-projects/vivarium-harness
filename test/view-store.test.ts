@@ -23,3 +23,20 @@ describe("token counts", () => {
     expect(summarize(event)).toBe("context tokens 28208");
   });
 });
+
+describe("session configuration", () => {
+  test("tracks the reasoning effort reported by Codex", () => {
+    const store = new LiveStore();
+    store.register("komodo");
+    store.applyEvent("komodo", {
+      type: "session_configured",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "high",
+    });
+
+    expect(store.arms.get("komodo")).toMatchObject({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    });
+  });
+});

@@ -11,6 +11,7 @@ export interface ArmState {
   // harness at each transition, never guessed from the activity text.
   phase?: ArmPhase;
   model?: string;
+  reasoningEffort?: string;
   activity: string;
   // The last `ACTIVITY_HISTORY` activity lines, oldest first — what the arm's
   // own tab shows so a single `activity` string is not the whole story.
@@ -162,6 +163,8 @@ export class LiveStore {
     switch (msg.type) {
       case "session_configured":
         state.model = str(msg.model) ?? state.model;
+        state.reasoningEffort =
+          str(msg.reasoning_effort) ?? state.reasoningEffort;
         state.threadId = str(msg.thread_id) ?? state.threadId;
         break;
       case "task_started":

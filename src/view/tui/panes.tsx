@@ -266,7 +266,10 @@ export function ArmDetail({
         </Text>
       </Field>
       <Field label="model">
-        <Text>{state.model ?? "—"}</Text>
+        <Text>
+          {state.model ?? "—"}
+          {state.reasoningEffort ? `  ${state.reasoningEffort}` : ""}
+        </Text>
       </Field>
       <Field label="context">
         {ratio === undefined ? (
