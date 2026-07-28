@@ -607,6 +607,8 @@ describe("the rounds after the first", () => {
           note(REVIEWER, "c3", "👍 LGTM — all comments addressed"),
         ],
       ],
+      // The branch never moves, so no re-review pass is ever owed.
+      heads: ["sha-unchanged"],
     });
     const prompts: string[] = [];
     const record = await landArm(
@@ -732,7 +734,7 @@ describe("the rounds after the first", () => {
     expect(record.status).toBe("ready");
   });
 
-  it("treats a reviewer reaction to the arm's reply as a sign-off", async () => {
+  it("treats an ACK-only response to an unpushed answer as a sign-off", async () => {
     const reaction: ReviewNote = {
       id: "reaction:review-comment:90",
       kind: "reaction",
@@ -742,10 +744,13 @@ describe("the rounds after the first", () => {
       inReplyTo: "review-comment:c2",
     };
     const root = note(REVIEWER, "c1", "this leaks the connection");
-    const thread = [root, armReply("c2", "fixed in 3f21a"), reaction];
+    const thread = [root, armReply("c2", "intended — see the doc comment"), reaction];
     const github = fakeGitHub({
       // The repeated final snapshot is the confirmation poll.
       conversations: [[], [root], thread, thread],
+      // The arm argued without pushing: no re-review pass is owed, so the
+      // reviewer's bare ACK is the end of the exchange.
+      heads: ["sha-unchanged"],
     });
     const prompts: string[] = [];
     const record = await landArm(
@@ -762,6 +767,110 @@ describe("the rounds after the first", () => {
     expect(record.reviewRounds).toHaveLength(2);
     expect(record.reviewRounds[1]?.signedOff).toBe(true);
     expect(record.reviewRounds[1]?.found).toContainEqual(reaction);
+  });
+
+  // The reviewer ACKs each accepted reply while it is still replying in other
+  // threads — the batch that closed PR #7 held five prose comments and two
+  // thumbs-ups, and reading the thumbs-ups as a sign-off recorded it as
+  // "nothing to answer". Prose beside an ACK is work.
+  it("does not read ACKs beside prose as a sign-off", async () => {
+    const root = note(REVIEWER, "c1", "this leaks the connection");
+    const reaction: ReviewNote = {
+      id: "reaction:review-comment:92",
+      kind: "reaction",
+      author: REVIEWER,
+      body: "+1",
+      createdAt: "2026-07-24T00:02:00Z",
+      inReplyTo: "review-comment:c2",
+    };
+    const full = [
+      root,
+      armReply("c2", "intended — see the doc comment"),
+      { ...note(REVIEWER, "c3", "your reasoning holds, though the doc comment could say so"), inReplyTo: "c1" },
+      reaction,
+    ];
+    const github = fakeGitHub({
+      conversations: [[], [root], full, full, full],
+      heads: ["sha-unchanged"],
+    });
+    const prompts: string[] = [];
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    // The reply is handed to the arm like any other prose; only the arm's
+    // silence afterwards settles the exchange.
+    expect(prompts).toHaveLength(2);
+    expect(record.reviewRounds).toHaveLength(2);
+    expect(record.reviewRounds[1]?.signedOff).toBeUndefined();
+    expect(record.reviewRounds[1]?.found.map((entry) => entry.id)).toEqual([
+      "c3",
+      "reaction:review-comment:92",
+    ]);
+    expect(record.reviewRounds[1]?.settled).toBe(true);
+    expect(record.status).toBe("merged");
+  });
+
+  // The regression from PR #7: the arm's pushed fix started a fresh review
+  // pass, but the ACKs to its replies arrived minutes earlier and ended the
+  // exchange — the pass's new P1 root finding landed forty seconds before an
+  // unanswered merge. A push holds the exchange open: bare ACKs never surface
+  // as a round, and the pass's findings reach the arm.
+  it("holds the exchange open after a push until the re-review pass lands", async () => {
+    const root = note(REVIEWER, "c1", "unbounded decompressed object size");
+    const ack: ReviewNote = {
+      id: "reaction:review-comment:93",
+      kind: "reaction",
+      author: REVIEWER,
+      body: "+1",
+      createdAt: "2026-07-24T00:02:00Z",
+      inReplyTo: "review-comment:c2",
+    };
+    const acked = [root, armReply("c2", "fixed in 09beba5"), ack];
+    const passFinding = note(REVIEWER, "c4", "unbounded decompressed header read");
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [root],
+        // The fast responses to the answer: only the ACK is new here.
+        acked,
+        // The push-triggered pass arrives with a fresh root finding.
+        [...acked, passFinding],
+        [...acked, passFinding, armReply("c5", "capped the header read too")],
+      ],
+      // Round one pushes a fix; round two only replies.
+      heads: ["r1-reviewed", "r1-pushed", "r2-same", "r2-same"],
+    });
+    const prompts: string[] = [];
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    expect(prompts).toHaveLength(2);
+    expect(record.reviewRounds).toHaveLength(3);
+    expect(record.reviewRounds[0]?.found.map((entry) => entry.id)).toEqual([
+      "c1",
+    ]);
+    // The ACK-only batch never became a round of its own — the next thing the
+    // arm was sent back for is the pass's finding.
+    expect(record.reviewRounds[1]?.found.map((entry) => entry.id)).toEqual([
+      "c4",
+    ]);
+    expect(record.reviewRounds.some((round) => round.signedOff)).toBe(false);
+    expect(record.reviewRounds[2]?.timedOut).toBe(true);
+    expect(record.status).toBe("merged");
   });
 
   it("ignores every reviewer reaction except thumbs-up", async () => {
