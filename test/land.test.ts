@@ -8,7 +8,6 @@ import type {
 } from "../src/harness/github.js";
 import { pullRequestUrl, slugFromRemote } from "../src/harness/github.js";
 import {
-  asksSomething,
   blockArm,
   landingError,
   mergeArm,
@@ -590,9 +589,7 @@ describe("the rounds after the first", () => {
     expect(record.status).toBe("merged");
   });
 
-  // The thumbs-up end of it. Sending the arm back to reply to "LGTM" would
-  // spend a round producing an acknowledgement of an acknowledgement.
-  it("stops without another round when the reviewer signs off", async () => {
+  it("does not infer sign-off from approval prose", async () => {
     const github = fakeGitHub({
       conversations: [
         [],
@@ -615,15 +612,14 @@ describe("the rounds after the first", () => {
       }),
     );
 
-    // One round answered, and the sign-off recorded as its own round rather
-    // than looking like a round the arm ignored.
-    expect(prompts).toHaveLength(1);
-    expect(record.reviewRounds).toHaveLength(2);
-    expect(record.reviewRounds[1]?.signedOff).toBe(true);
-    expect(record.reviewRounds[1]?.timedOut).toBe(false);
+    expect(prompts).toHaveLength(2);
+    expect(record.reviewRounds).toHaveLength(3);
+    expect(record.reviewRounds[1]?.signedOff).toBeUndefined();
+    expect(record.reviewRounds[1]?.response).toBe("replied to every comment");
     expect(record.reviewRounds[1]?.found.map((entry) => entry.id)).toEqual([
       "c3",
     ]);
+    expect(record.reviewRounds[2]?.timedOut).toBe(true);
     expect(record.status).toBe("merged");
   });
 
@@ -659,10 +655,37 @@ describe("the rounds after the first", () => {
     expect(record.reviewRounds[1]?.found).toContainEqual(reaction);
   });
 
-  // An approving review body can become visible just before the substantive
-  // inline comments submitted with it. The quiet-period debounce must collect
-  // both before deciding whether the batch is a sign-off.
-  it("does not let an early sign-off hide comments still landing", async () => {
+  it("ignores every reviewer reaction except thumbs-up", async () => {
+    const reaction: ReviewNote = {
+      id: "reaction:review-comment:91",
+      kind: "reaction",
+      author: REVIEWER,
+      body: "heart",
+      createdAt: "2026-07-24T00:02:00Z",
+      inReplyTo: "review-comment:c2",
+    };
+    const github = fakeGitHub({ conversations: [[reaction]] });
+    const prompts: string[] = [];
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    expect(prompts).toEqual([]);
+    expect(record.reviewRounds).toHaveLength(1);
+    expect(record.reviewRounds[0]?.timedOut).toBe(true);
+    expect(record.reviewRounds[0]?.found).toEqual([]);
+    expect(record.reviewRounds[0]?.signedOff).toBeUndefined();
+  });
+
+  // An approval body can become visible just before substantive inline
+  // comments submitted with it. Both are prose, so both go to the arm.
+  it("debounces approval prose with comments still landing", async () => {
     const approval = note(REVIEWER, "c3", "LGTM");
     const finding = note(
       REVIEWER,
@@ -748,42 +771,6 @@ describe("the rounds after the first", () => {
     expect(record.reviewRounds.some((round) => round.timedOut)).toBe(false);
     expect(record.status).toBe("merged");
   });
-});
-
-describe("telling an acknowledgement from a comment", () => {
-  const body = (text: string): ReviewNote => note(REVIEWER, "c1", text);
-
-  it("dismisses only what asks the arm for nothing", () => {
-    expect(asksSomething(body(""))).toBe(false);
-    expect(asksSomething(body("👍"))).toBe(false);
-    expect(asksSomething(body("LGTM"))).toBe(false);
-    expect(asksSomething(body("No further comments — approving."))).toBe(false);
-    expect(asksSomething(body("All comments addressed, thanks!"))).toBe(false);
-    expect(
-      asksSomething({
-        ...body("+1"),
-        id: "reaction:review-comment:90",
-        kind: "reaction",
-        author: REVIEWER,
-        inReplyTo: "review-comment:10",
-      }),
-    ).toBe(false);
-  });
-
-  // The asymmetry that decides the classifier: a comment mistaken for an
-  // acknowledgement never reaches the arm at all, while an acknowledgement
-  // mistaken for a comment costs one bounded round. So anything in doubt is a
-  // comment.
-  it("keeps anything that might be asking for something", () => {
-    expect(asksSomething(body("rename this to fooBar"))).toBe(true);
-    expect(asksSomething(body("this comment is wrong"))).toBe(true);
-    expect(
-      asksSomething(body("```suggestion\nconst x = 1;\n```")),
-    ).toBe(true);
-    // Short, and every word ordinary — but not an acknowledgement.
-    expect(asksSomething(body("no test covers this"))).toBe(true);
-  });
-
 });
 
 describe("the reviewer's two login spellings", () => {

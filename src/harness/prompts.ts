@@ -62,7 +62,7 @@ const fetchInstructions = (
 
 - \`gh pr view ${pullRequestUrl} --comments\` provides Greptile review summaries and top-level comments.
 - \`gh api repos/{owner}/{repo}/pulls/{number}/comments\` provides inline comments, which the command above does NOT show. Replies under a top-level comment, by the agent or Greptile, will show up here; each reply contains an \`in_reply_to_id\` field.
-- Use \`gh api user --jq .login\` to identify your own GitHub login. Treat an inline root as unanswered when its thread contains no reply authored by that login. Before finishing the round, scan the complete conversation—not only the latest entries—and ensure every substantive Greptile root has one of your replies. Reactions are acknowledgements and need no reply.
+- Use \`gh api user --jq .login\` to identify your own GitHub login. Treat an inline root as unanswered when its thread contains no reply authored by that login. Before finishing the round, scan the complete conversation—not only the latest entries—and ensure every substantive Greptile root has one of your replies. Reactions need no reply; a thumbs-up reaction is the orchestrator's sole mechanical sign-off signal.
 - \`gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body=...\` lets your reply sit *under* an existing comment rather than adjacent to it. Before every comment in response to Greptile, mention \`@greptileai\`.
 - \`gh pr comment\` provides a method of creating PR-level comments. You may ask Greptile questions here regarding the PR - that aren't already in an inline comment - by mentioning \`@greptileai\` before your comment.
 

@@ -42,65 +42,21 @@ export interface ReviewRound {
   respondedAt?: string;
   response?: string;
   error?: string;
-  // The reviewer came back with nothing to answer — an approval, a thumbs-up,
-  // "no further comments". The arm was not sent back for this round, and the
-  // exchange ended here. Recorded rather than inferred from an empty `response`,
-  // which is also what an errored answer turn leaves behind.
+  // The reviewer reacted with a thumbs-up. The arm was not sent back for this
+  // round, and the exchange ended here. Recorded rather than inferred from an
+  // empty `response`, which is also what an errored answer turn leaves behind.
   signedOff?: boolean;
 }
 
-// Words an acknowledgement can be built entirely out of. Anything else in a
-// note means the reviewer is still saying something.
-const ACKNOWLEDGEMENT_WORDS = new Set([
-  "ack", "acknowledged", "add", "additional", "addressed", "agreed", "all",
-  "and", "approval", "approve", "approved", "approving", "are", "cheers",
-  "comment", "comments", "concern", "concerns", "feedback", "found", "further",
-  "good", "great", "here", "is", "issue", "issues", "left", "lgtm", "looks",
-  "makes", "me", "merge", "more", "my", "new", "nice", "no", "none", "nothing",
-  "perfect", "pr", "ready", "remaining", "requested", "resolved", "sense",
-  "ship", "sounds", "thank", "thanks", "the", "this", "to", "you",
-]);
-
-// A note reduced to its words: markdown decoration, hidden HTML bookkeeping,
-// emoji and punctuation removed. A fenced block becomes the word "code" rather
-// than vanishing — a suggestion block with no prose around it is still the
-// reviewer asking for a change.
-function plainWords(body: string): string[] {
-  const text = body
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/```[\s\S]*?```/g, " code ")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ");
-  return text.split(/\s+/).filter(Boolean);
+// GitHub's reaction API represents thumbs-up as "+1". That structured event is
+// the only mechanical sign-off: prose is never classified by vocabulary,
+// length, punctuation, or review state.
+function isThumbsUpReaction(note: ReviewNote): boolean {
+  return note.kind === "reaction" && note.body === "+1";
 }
 
-// Does this note ask the arm for anything? A round exists to hand the arm
-// something to answer, and an approval, a 👍 on a reply, or "no further
-// comments" asks for nothing: sending the arm back for it would spend a review
-// round producing acknowledgements of an acknowledgement.
-//
-// The classifier is deliberately biased toward "yes". A real comment mistaken
-// for an acknowledgement is never shown to the arm at all — a review comment
-// silently dropped from an experiment about answering review comments. An
-// acknowledgement mistaken for a comment costs one bounded round. So only a
-// short note built *entirely* out of acknowledgement words is dismissed;
-// everything else is something to answer.
-export function asksSomething(note: ReviewNote): boolean {
-  // A reaction is an acknowledgement of its parent comment, never a new
-  // request. Its author is still preserved so only the configured reviewer can
-  // settle the wait with it.
-  if (note.kind === "reaction") return false;
-  const words = plainWords(note.body);
-  if (words.length === 0) return false;
-  if (words.length > 10) return true;
-  return !words.every((word) => ACKNOWLEDGEMENT_WORDS.has(word));
-}
-
-// True when everything new from the reviewer this round is acknowledgement —
-// the thumbs-up end of "it either comments back or it thumbs up".
 export function reviewerSignedOff(found: ReviewNote[]): boolean {
-  return found.length > 0 && !found.some(asksSomething);
+  return found.some(isThumbsUpReaction);
 }
 
 export type LandingStatus =
@@ -229,7 +185,9 @@ async function waitForReview(
 }> {
   const start = deps.now();
   const fromReviewer = (note: ReviewNote): boolean =>
-    sameLogin(note.author, reviewer) && !seen.has(note.id);
+    sameLogin(note.author, reviewer) &&
+    !seen.has(note.id) &&
+    (note.kind !== "reaction" || isThumbsUpReaction(note));
   let lastError: string | undefined;
   for (;;) {
     let conversation: ReviewNote[];
@@ -419,9 +377,8 @@ export async function reviewArm(
       // this answer.
       for (const entry of conversation) seen.add(entry.id);
 
-      // The thumbs-up branch. The reviewer said something, but nothing that
-      // asks the arm for anything, so there is no round to run: the exchange
-      // is over and the pull request goes to merge.
+      // A reviewer thumbs-up is the sole mechanical close signal. Other
+      // reactions never enter `found`; prose is always handed to the arm.
       if (reviewerSignedOff(found)) {
         reviewRounds.push({
           round,

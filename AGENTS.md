@@ -386,15 +386,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   *disagreement* plays out — the arm pushing back, Greptile holding or
   conceding — which is the experiment's subject matter. The exchange ends on
   one of three bounded conditions:
-    - **The reviewer signs off.** `asksSomething` classifies each new note, and
-      a round whose notes ask for nothing (an approval, a 👍 on a reply, "no
-      further comments") is recorded `signedOff` and merged — sending the arm
-      back for it would spend a round acknowledging an acknowledgement. The
-      classifier is deliberately biased toward *comment*: a real comment
-      mistaken for an acknowledgement is silently dropped from an experiment
-      about answering review comments, while the reverse costs one round the
-      cap already bounds. So only a short note built **entirely** out of
-      acknowledgement words is dismissed.
+    - **The reviewer signs off with a thumbs-up reaction.** GitHub exposes that
+      structured reaction as `+1`; it is the only event recorded `signedOff`.
+      Review bodies and comments are always handed to the arm without trying to
+      infer their meaning from prose, and every other reaction is ignored.
     - **Nothing new arrives**, and the round times out.
     - **The maximum is reached.** At most `reviewRounds` reviewer comments are
       handed back to the arm, so a disagreement cannot create an unbounded
