@@ -30,9 +30,9 @@ MIRROR_REPO="${MIRROR_REPO:-makors/vivarium-komodo-mirror}"
 HARNESS_REPO="${HARNESS_REPO:-greptile-projects/vivarium-harness}"
 STATE_VAR="${STATE_VAR:-LAST_SYNCED_SHA}"
 
-# Greptile app login — CONFIRM against a real Tuatara PR (see docs/mirror-sync.md); the app's
-# bot login is what authors its reviews/comments.
-GREPTILE_BOT_LOGIN="${GREPTILE_BOT_LOGIN:-greptile-apps[bot]}"
+# Greptile app login. This is the same fixed reviewer identity as the harness,
+# not a deployment variable.
+GREPTILE_BOT_LOGIN="greptile-apps[bot]"
 
 # Marker every mirror PR title carries. Greptile reads it to recognize the PR
 # as agent-authored, so it is not decoration — keep the trailing space.

@@ -6,9 +6,9 @@ import {
   parseArgs,
   parseRunMode,
   validateConfig,
-  CONTAINER_IMAGE,
   IDLE_TIMEOUT_MS,
   MAX_ATTEMPTS,
+  REVIEWER_LOGIN,
   RESULTS_DIR,
   type HarnessConfig,
 } from "../src/harness/config.js";
@@ -42,41 +42,18 @@ describe("parseArgs", () => {
     // The one asymmetry between the arms, and it comes from configuration
     // rather than from a name check somewhere downstream.
     expect(config.arms[0].reviewer).toBeUndefined();
-    expect(config.arms[1].reviewer).toBe("greptile-apps[bot]");
-    expect(config.containerImage).toBe(CONTAINER_IMAGE);
+    expect(config.arms[1].reviewer).toBe(REVIEWER_LOGIN);
   });
 
-  // "" is falsy where the landing phase checks `arm.reviewer`, so an empty
-  // GREPTILE_BOT_LOGIN= line in .env would otherwise switch off every review
-  // round — the experiment's whole variable — while the run reported itself
-  // normal.
-  it("treats a blank reviewer login as unset, never as no reviewer", () => {
-    const blank = parseArgs(["--ticket", "ENG-123"], {
-      ...env,
-      GREPTILE_BOT_LOGIN: "",
-    });
-    expect(blank.arms[1].reviewer).toBe("greptile-apps[bot]");
-
-    const spaces = parseArgs(["--ticket", "ENG-123"], {
-      ...env,
-      GREPTILE_BOT_LOGIN: "   ",
-    });
-    expect(spaces.arms[1].reviewer).toBe("greptile-apps[bot]");
-
-    const custom = parseArgs(["--ticket", "ENG-123"], {
-      ...env,
-      GREPTILE_BOT_LOGIN: "other-reviewer[bot]",
-    });
-    expect(custom.arms[1].reviewer).toBe("other-reviewer[bot]");
-  });
-
-  it("shares the configured image with container launchers", () => {
+  it("keeps image and reviewer identity out of deployment configuration", () => {
     const config = parseArgs(["--ticket", "ENG-123"], {
       ...env,
-      VIVARIUM_IMAGE: "vivarium-arm:test",
+      GREPTILE_BOT_LOGIN: "other-reviewer[bot]",
+      VIVARIUM_IMAGE: "other-image",
     });
 
-    expect(config.containerImage).toBe("vivarium-arm:test");
+    expect(config.arms[1].reviewer).toBe(REVIEWER_LOGIN);
+    expect(config).not.toHaveProperty("containerImage");
   });
 
   it("gives a containerized arm full access and a host arm a sandbox", () => {

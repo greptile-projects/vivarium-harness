@@ -40,7 +40,6 @@ async function makeConfig(): Promise<{
     sandbox: "workspace-write",
     resultsDir: join(root, "results"),
     codexHome,
-    containerImage: "vivarium-arm",
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
     reviewTimeoutMs: 1_000,

@@ -52,7 +52,8 @@ docker build -t vivarium-arm .
 ```
 
 `.env` is the one place deployment config lives — repository URLs, container
-name prefixes, the shared image, and each arm's github token. for every
+name prefixes, and each arm's github token. the image, services, screen,
+noVNC ports, and reviewer identity are fixed experiment constants. for every
 subticket the harness creates two fresh containers from that image,
 `arm-run.sh` clones one remote into each private `/workspace`, and the token
 stays in `GH_TOKEN`, never in the remote URL. after build, retries, review, and

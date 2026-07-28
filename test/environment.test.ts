@@ -36,7 +36,6 @@ function config(containerized = true): HarnessConfig {
     sandbox: "workspace-write",
     resultsDir: "results",
     codexHome: "/tmp/codex",
-    containerImage: "vivarium-arm",
     maxAttempts: 1,
     idleTimeoutMs: 1,
     reviewTimeoutMs: 1,

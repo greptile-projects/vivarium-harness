@@ -176,7 +176,9 @@ RUN apt-get update \
 ENV DISPLAY=:99 \
     CHROME_BIN=/usr/bin/chromium \
     CHROME_PATH=/usr/bin/chromium \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    VIVARIUM_DOCKER=1 \
+    VIVARIUM_GUI=1
 
 # Debian's /usr/bin/chromium is a wrapper that sources /etc/chromium.d/*, so
 # these reach a plain `chromium` too — not just the `browser` helper. Root has

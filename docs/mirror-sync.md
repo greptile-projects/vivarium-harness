@@ -98,7 +98,6 @@ Already set by bootstrap; listed here for reference:
 | `MIRROR_REPO` | `makors/vivarium-komodo-mirror` | the mirror (`owner/name`). |
 | `MIRROR_OWNER` | `makors` | mirror owner account — scopes the app installation token. |
 | `MIRROR_REPO_NAME` | `vivarium-komodo-mirror` | mirror repo name — scopes the app installation token. |
-| `GREPTILE_BOT_LOGIN` | `greptile-apps[bot]` | login the sync loop polls for. Confirmed live: Greptile reviews mirror PRs under this login. |
 
 ```sh
 gh variable set LAST_SYNCED_SHA -R greptile-projects/vivarium-harness -b <sha>
@@ -106,11 +105,11 @@ gh variable set LAST_SYNCED_SHA -R greptile-projects/vivarium-harness -b <sha>
 
 ## Greptile bot login parameter
 
-The sync loop waits for a PR review **or** comment authored by
-`GREPTILE_BOT_LOGIN` before merging. `greptile-apps[bot]` is **confirmed live** —
-Greptile reviewed real mirror PRs under this login during bring-up. If it is ever
-wrong, every PR hits the 10-minute timeout and gets the `review-timeout` label
-instead of a review; re-confirm with
+The sync loop waits for a PR review **or** comment authored by the fixed
+`greptile-apps[bot]` identity before merging. Greptile reviewed real mirror PRs
+under this login during bring-up. If it ever changes, update the constant in
+`scripts/mirror_sync.sh`; otherwise every PR hits the timeout and gets the
+`review-timeout` label instead of a review. Re-confirm with
 `gh api "repos/makors/vivarium-komodo-mirror/pulls/<n>/reviews" -q '.[].user.login'`.
 
 ## One-time bootstrap (already done)

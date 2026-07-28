@@ -167,7 +167,6 @@ export class RunArtifacts {
           sandbox: config.sandbox,
           resultsDir: resolve(config.resultsDir),
           codexHome: resolve(config.codexHome),
-          containerImage: config.containerImage,
           maxAttempts: config.maxAttempts,
           idleTimeoutMs: config.idleTimeoutMs,
         }),

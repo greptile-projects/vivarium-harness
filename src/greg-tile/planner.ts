@@ -61,7 +61,7 @@ export function plannerExecution(
       `type=bind,source=${sessionDirectory},target=/codex/sessions`,
       "--workdir",
       "/workspace",
-      base.containerImage ?? CONTAINER_IMAGE,
+      CONTAINER_IMAGE,
     ],
   };
 }

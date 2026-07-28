@@ -62,6 +62,5 @@ jobs:
           SOURCE_REPO: ${{ vars.SOURCE_REPO }}
           MIRROR_REPO: ${{ vars.MIRROR_REPO }}
           HARNESS_REPO: ${{ github.repository }}
-          GREPTILE_BOT_LOGIN: ${{ vars.GREPTILE_BOT_LOGIN }}
           # BOT_COMMITTER_NAME / BOT_COMMITTER_EMAIL come from $GITHUB_ENV above.
         run: ./scripts/mirror_sync.sh

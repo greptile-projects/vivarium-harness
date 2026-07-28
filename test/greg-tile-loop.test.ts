@@ -36,7 +36,6 @@ async function makeSetup(): Promise<{
     sandbox: "workspace-write",
     resultsDir: join(root, "results"),
     codexHome: join(root, "codex"),
-    containerImage: "vivarium-arm",
     maxAttempts: 3,
     idleTimeoutMs: 600_000,
     reviewTimeoutMs: 1_000,
