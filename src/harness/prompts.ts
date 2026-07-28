@@ -156,7 +156,7 @@ Read \`${ladderFile}\` before making any changes, and then, with all context in 
 
 - Break the larger milestone into ${MIN_SUBTICKETS_PER_MILESTONE}-${MAX_SUBTICKETS_PER_MILESTONE} ordered subtickets.
 - Follow the \`LADDER.md\` format detailed below.
-- Subtickets MUST be PR-shaped, and PR-sized. However, ambition is *always* more important than keeping PRs tidy - agents should be challenged and given ambitious tasks when possible.
+- Subtickets must be PR-shaped, and PR-sized. While it may not always make sense to give multi-thousand LOC tickets, ambition is *always* more important than keeping PRs small and tidy. The workers should be challenged on large-scale subtickets when possible.
 - Keep the subtickets compact, such as the example. :)
 - Tasks should be independently actionable to an amnesic worker - the worker will receive only this ticket.
 - Do NOT file any tickets, call external ticketing tools, or invent ticket IDs.
