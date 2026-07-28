@@ -88,8 +88,8 @@ describe("climbRows", () => {
     expect(arms[0]!.text).toContain(
       "https://github.com/acme/vivarium-tuatara/pull/7",
     );
-    expect(arms[0]!.text).toContain("2/2 answered");
-    expect(arms[0]!.text).toContain("3 diff comments");
+    expect(arms[0]!.text).not.toContain("answered");
+    expect(arms[0]!.text).not.toContain("diff comment");
   });
 
   it("marks the rung being built now", () => {

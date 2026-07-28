@@ -20,6 +20,11 @@ export interface ArmState {
   events: number;
   startedAt: number;
   endedAt?: number;
+  // Time spent idle only because the other arm has not reached the merge
+  // barrier. The displayed arm duration excludes this so it remains useful as
+  // an A/B measurement instead of converging on the run's wall-clock time.
+  peerWaitStartedAt?: number;
+  peerWaitMs: number;
   answer?: string;
   error?: string;
   threadId?: string;
@@ -110,6 +115,7 @@ function initialArm(arm: string): ArmState {
     recent: [],
     events: 0,
     startedAt: Date.now(),
+    peerWaitMs: 0,
   };
 }
 
@@ -213,6 +219,13 @@ export class LiveStore {
   phase(arm: string, phase: ArmPhase): void {
     const state = this.arms.get(arm);
     if (!state) return;
+    const now = Date.now();
+    if (phase === "waiting on peer") {
+      state.peerWaitStartedAt ??= now;
+    } else if (state.peerWaitStartedAt !== undefined) {
+      state.peerWaitMs += now - state.peerWaitStartedAt;
+      state.peerWaitStartedAt = undefined;
+    }
     state.phase = phase;
     if (state.status === "starting") state.status = "working";
     this.emit();
@@ -222,6 +235,10 @@ export class LiveStore {
     const state = this.arms.get(arm);
     if (!state) return;
     state.endedAt = Date.now();
+    if (state.peerWaitStartedAt !== undefined) {
+      state.peerWaitMs += state.endedAt - state.peerWaitStartedAt;
+      state.peerWaitStartedAt = undefined;
+    }
     state.threadId = result.threadId ?? state.threadId;
     // The arm has settled: "merging" would outlive the merge it described.
     state.phase = undefined;

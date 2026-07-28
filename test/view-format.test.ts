@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { LiveStore } from "../src/view/store.js";
 import {
+  elapsedSeconds,
   formatDuration,
   formatTokens,
   statusLabel,
@@ -68,6 +69,26 @@ describe("formatting", () => {
     expect(formatDuration(6)).toBe("0:06");
     expect(formatDuration(64)).toBe("1:04");
     expect(formatDuration(3725)).toBe("1:02:05");
+  });
+
+  test("arm duration freezes while waiting only on its peer", () => {
+    const store = new LiveStore();
+    store.register("komodo");
+    const arm = store.arms.get("komodo")!;
+    arm.startedAt = 1_000;
+    arm.peerWaitStartedAt = 4_000;
+
+    expect(elapsedSeconds(arm, 9_000)).toBe(3);
+  });
+
+  test("arm duration resumes after leaving the peer barrier", () => {
+    const store = new LiveStore();
+    store.register("komodo");
+    const arm = store.arms.get("komodo")!;
+    arm.startedAt = 1_000;
+    arm.peerWaitMs = 5_000;
+
+    expect(elapsedSeconds(arm, 11_000)).toBe(5);
   });
 
   test("token counts abbreviate", () => {

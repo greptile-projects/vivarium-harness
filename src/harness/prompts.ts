@@ -37,14 +37,19 @@ Your checkout is on the repository's default branch, at the commit the last piec
 
 When you create a PR, its title MUST begin with the literal prefix \`[codex] \` — the bracketed marker exactly as written, followed by one space, before anything else. Example: \`[codex] nuked the codebase\`.
 
-In addition, the description of each PR MUST begin with the original ticket, verbatim, in the following format:
+In addition, the description of each PR MUST begin with the original ticket in the following format. Copy its content exactly, except demote every Markdown ATX heading by one level so it is structurally below the section heading (for example, \`## Objective\` becomes \`### Objective\`):
 
 <start_format>
 ## Original Ticket
-[the full ticket text from above, unedited]
+
+[the full ticket text from above, with each heading one level deeper]
+
+---
+
+[all other PR information]
 <end_format>
 
-All other information - e.g., what changed, rationale(s), testing instructions - goes below that section. Another agent or human should be able to look at the PR description and understand what changes were made and why.
+The horizontal rule clearly separates the ticket from all other information - e.g., what changed, rationale(s), testing instructions. Another agent or human should be able to look at the PR description and understand what changes were made and why.
 
 ## Agent Format and Expectations
 End your final message in this exchange with a line of exactly this shape, and nothing after it:
