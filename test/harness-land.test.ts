@@ -446,11 +446,7 @@ describe("landing barrier", () => {
     const state = { synced: [] as string[], merged: [] as string[] };
     const runner: AttemptRunner = async (params) =>
       params.arm === "tuatara" && params.threadId !== undefined
-        ? {
-            output: "Session not found for thread_id",
-            isError: true,
-            timedOut: false,
-          }
+        ? Promise.reject(new Error("persistent session transport failed"))
         : {
             output: `PR: ${urlFor(params.arm)}`,
             isError: false,
@@ -469,6 +465,11 @@ describe("landing barrier", () => {
     expect(
       run.landings.find((record) => record.arm === "tuatara")?.status,
     ).toBe("review-failed");
+    expect(
+      run.landings
+        .find((record) => record.arm === "tuatara")
+        ?.reviewRounds.at(-1)?.error,
+    ).toContain("transport failed");
     expect(
       run.landings.find((record) => record.arm === "komodo")?.status,
     ).toBe("blocked");

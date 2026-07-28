@@ -449,9 +449,21 @@ export async function reviewArm(
         pullRequest.headRefName,
       );
 
-      const answer = await deps.reply(
-        reviewPrompt(pullRequest.url, round, config.reviewRounds),
-      );
+      let answer: StreamResult;
+      try {
+        answer = await deps.reply(
+          reviewPrompt(pullRequest.url, round, config.reviewRounds),
+        );
+      } catch (error) {
+        // The real runner throws for transport failures, watchdog timeouts and
+        // external aborts. Those are still failed review answers, not reasons
+        // to escape the landing barrier without a durable outcome.
+        answer = {
+          output: error instanceof Error ? error.message : String(error),
+          isError: true,
+          timedOut: false,
+        };
+      }
       // And after: the pair is what says whether the arm pushed a fix or only
       // replied. Equal shas mean it argued and changed nothing.
       const respondedSha = await deps.github.headSha(
