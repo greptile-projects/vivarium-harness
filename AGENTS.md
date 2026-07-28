@@ -592,7 +592,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   and "working" for forty minutes did not say whether the arm was writing code
   or sitting on a review that had not arrived. So the harness *announces* what
   each arm has moved on to — `preparing`, `building`, `waiting for review`,
-  `answering review`, `merging`, `held back` (`ArmPhase` in `harness/arms.ts`,
+  `answering review`, `waiting on peer` (idle at the merge barrier — where the
+  unreviewed arm spends most of a subticket, and where "building" was a lie),
+  `merging`, `held back` (`ArmPhase` in `harness/arms.ts`,
   through the `onArmPhase` sink) — at the transition itself. Nothing infers a
   phase by reading the prose of a note: the notes are the experiment's
   human-facing text and get reworded, and a classifier over them would start

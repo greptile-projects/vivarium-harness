@@ -226,13 +226,15 @@ describe("runHarness landing", () => {
       "building",
       "waiting for review",
       "answering review",
+      "waiting on peer",
       "merging",
     ]);
-    // The unreviewed arm goes straight from its build to the merge — no round
-    // it never runs.
+    // The unreviewed arm runs no round it does not have. It reaches the merge
+    // barrier as soon as it has built, and waits there for its peer's review —
+    // which is most of the subticket, and used to read as "building".
     expect(
       phases.filter(([arm]) => arm === "komodo").map(([, phase]) => phase),
-    ).toEqual(["preparing", "building", "merging"]);
+    ).toEqual(["preparing", "building", "waiting on peer", "merging"]);
   });
 
   it("holds both arms back when one of them fails to build", async () => {

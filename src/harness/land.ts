@@ -479,6 +479,12 @@ export async function reviewArm(
     }
   }
 
+  // Reviewed (or never reviewed) and mergeable, but nothing merges until every
+  // arm is — so from here the arm is idle at the merge barrier. Saying so is
+  // the whole point of the phase: an unreviewed arm finishes its build in
+  // minutes and then sits here for as long as the *other* arm's review takes,
+  // and "building" was a lie for all of it.
+  deps.phase?.("waiting on peer");
   return done("ready", { branch, pullRequest, reviewRounds });
 }
 

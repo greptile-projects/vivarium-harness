@@ -12,6 +12,9 @@ export type ArmPhase =
   | "building"
   | "waiting for review"
   | "answering review"
+  // Done with its own work, idle at the merge barrier until the other arm is
+  // ready too. The unreviewed arm spends most of a subticket here.
+  | "waiting on peer"
   | "merging"
   | "held back"
   | "planning";
