@@ -86,9 +86,9 @@ export function summarize(msg: CodexMsg): string {
       return `answer: ${(str(msg.message) ?? "").slice(0, 60)}`;
     case "token_count": {
       const info = msg.info as
-        | { total_token_usage?: { total_tokens?: unknown } }
+        | { last_token_usage?: { total_tokens?: unknown } }
         | undefined;
-      return `tokens ${num(info?.total_token_usage?.total_tokens) ?? "?"}`;
+      return `context tokens ${num(info?.last_token_usage?.total_tokens) ?? "?"}`;
     }
     case "task_complete":
       return `done in ${num(msg.duration_ms) ?? "?"}ms`;
@@ -177,9 +177,13 @@ export class LiveStore {
         break;
       case "token_count": {
         const info = msg.info as
-          | { total_token_usage?: { total_tokens?: unknown } }
+          | { last_token_usage?: { total_tokens?: unknown } }
           | undefined;
-        state.tokens = num(info?.total_token_usage?.total_tokens) ?? state.tokens;
+        // `total_token_usage` accumulates every model call in the session, so
+        // dividing it by one context window eventually reports impossible
+        // values. The latest call is the context currently occupying that
+        // window; cached input is already a subset of its input token count.
+        state.tokens = num(info?.last_token_usage?.total_tokens) ?? state.tokens;
         break;
       }
       default:
