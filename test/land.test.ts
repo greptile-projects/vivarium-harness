@@ -474,6 +474,9 @@ describe("a review round that the arm failed to answer", () => {
     // But the arm said nothing, and the record must not imply otherwise.
     expect(round.response).toBeUndefined();
     expect(round.error).toContain("session died");
+    expect(record.status).toBe("review-failed");
+    expect(github.calls).not.toContain("merge");
+    expect(landingError(record)).toContain("could not answer required review");
   });
 
   it("still counts a round the arm did answer", async () => {

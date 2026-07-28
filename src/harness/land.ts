@@ -114,6 +114,8 @@ export type LandingStatus =
   // missing, and the arm is failed for it.
   | "no-pull-request"
   | "merge-failed"
+  // Actionable review arrived, but the arm could not complete its answer turn.
+  | "review-failed"
   // Reviewed and mergeable, but not merged yet — the transient state between
   // the review phase and the merge phase.
   | "ready"
@@ -167,6 +169,8 @@ export function landingSummary(record: LandingRecord): string {
         : `merged ${where}`;
     case "merge-failed":
       return `merge of ${where} failed: ${record.merge?.error ?? "unknown error"}`;
+    case "review-failed":
+      return `${where} was not merged because the arm failed to answer review`;
     case "no-pull-request":
       return "the session finished without opening a pull request";
     case "not-attempted":
@@ -489,8 +493,12 @@ export async function reviewArm(
       });
 
       if (answer.isError) {
-        note("the arm failed to answer the review — merging what it has");
-        break;
+        note("the arm failed to answer the review — refusing to merge");
+        return done("review-failed", {
+          branch,
+          pullRequest,
+          reviewRounds,
+        });
       }
     }
   }
@@ -598,6 +606,10 @@ export function landingError(record: LandingRecord): string | undefined {
     return `pull request ${record.pullRequest?.number ?? "?"} could not be merged: ${
       record.merge?.error ?? "unknown error"
     }`;
+  }
+  if (record.status === "review-failed") {
+    const error = record.reviewRounds.at(-1)?.error ?? "unknown error";
+    return `pull request ${record.pullRequest?.number ?? "?"} could not answer required review: ${error}`;
   }
   // Nothing is wrong with this arm's own work — the rung still did not land,
   // and it must not look built.
