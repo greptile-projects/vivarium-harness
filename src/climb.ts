@@ -86,6 +86,8 @@ export async function runGregLive(
   // Quitting the view stops every Codex session this loop owns — Greg's
   // planning session as much as the builders'.
   const controller = new AbortController();
+  let currentMilestone: number | undefined;
+  let stopAfterMilestone: number | undefined;
 
   // The planner's own Codex session, surfaced as a "greg" tab.
   const plannerRunner: AttemptRunner = (params) =>
@@ -95,6 +97,7 @@ export async function runGregLive(
 
   const deps: Partial<GregDeps> = {
     plan: async (config, ladderPath, ladder, milestoneNumber) => {
+      currentMilestone = milestoneNumber;
       model.setPhase(`milestone ${milestoneNumber} · planning`, ["greg"]);
       // Greg's session runs outside the harness, so nothing else would ever
       // give his panel a phase — and "working" for a five-minute planning turn
@@ -124,6 +127,7 @@ export async function runGregLive(
       const building = model
         .climb()
         .find((subticket) => subticket.state === "building");
+      currentMilestone = building?.milestone;
       const description = (building?.title ?? "current rung")
         .replace(/\s+/g, " ")
         .slice(0, 60);
@@ -143,12 +147,22 @@ export async function runGregLive(
       if (useTui) model.note(message);
       sinks.note(message);
     },
+    stopAfterMilestone: () => stopAfterMilestone,
   };
 
   const app = useTui
     ? mountLive(model, {
         ...options,
         onExit: () => onViewClosed(model, controller, options),
+        onStopAfterRung: () => {
+          if (stopAfterMilestone !== undefined || currentMilestone === undefined) {
+            return;
+          }
+          stopAfterMilestone = currentMilestone;
+          const message = `stop scheduled after milestone ${currentMilestone}`;
+          model.note(message);
+          sinks.note(message);
+        },
       })
     : undefined;
 

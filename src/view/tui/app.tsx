@@ -86,12 +86,14 @@ function TabStrip({
 export function LiveApp({
   model,
   logDir,
+  onStopAfterRung,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
 }: {
   model: LiveModel;
   logDir?: string;
+  onStopAfterRung?: () => void;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -101,6 +103,7 @@ export function LiveApp({
   // question instead of unmounting. Quitting stops the run, so the second key
   // is the whole safety.
   const [confirming, setConfirming] = useState(false);
+  const [stopScheduled, setStopScheduled] = useState(false);
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
@@ -146,9 +149,17 @@ export function LiveApp({
     (input, key) => {
       // The question owns every key while it is up: navigating away from it
       // would leave a run half-quit, and a stray keystroke must not be the
-      // thing that answers it. Only `y` proceeds; anything else is "no".
+      // thing that answers it. `S` is the climb-only graceful path: keep the
+      // view up, finish the current rung, and let the loop return at its next
+      // milestone boundary.
       if (confirming) {
         if (input === "y" || input === "Y") exit();
+        else if ((input === "s" || input === "S") && onStopAfterRung) {
+        else if ((input === "s" || input === "S") && onStopAfterRung) {
+          const scheduled = onStopAfterRung();
+          if (scheduled) setStopScheduled(true);
+          setConfirming(false);
+        }
         else setConfirming(false);
         return;
       }
@@ -278,12 +289,14 @@ export function LiveApp({
       <Box>
         {confirming ? (
           <Text color="yellow" bold wrap="truncate-end">
-            {confirmQuitPrompt(arms)}
+            {confirmQuitPrompt(arms, onStopAfterRung !== undefined)}
           </Text>
         ) : (
           <>
             <Text dimColor wrap="truncate-end">
-              {`↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
+              {stopScheduled
+                ? "stop scheduled after current rung · q quit now"
+                : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
             </Text>
             <Box flexGrow={1} />
             {logDir && columns >= 100 ? (
@@ -316,12 +329,21 @@ export function mountLive(
   // fires on *every* exit, including the ordinary end-of-run unmount — telling
   // "the human quit early" from "the run ended" is the caller's job, and it
   // reads that off the model rather than off the keypress.
-  options: { logDir?: string; onExit?: () => void },
+  options: {
+    logDir?: string;
+    onExit?: () => void;
+    onStopAfterRung?: () => void;
+  },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
-  const app = render(<LiveApp model={model} logDir={options.logDir} />, {
-    exitOnCtrlC: true,
-  });
+  const app = render(
+    <LiveApp
+      model={model}
+      logDir={options.logDir}
+      onStopAfterRung={options.onStopAfterRung}
+    />,
+    { exitOnCtrlC: true },
+  );
   return {
     waitUntilExit: restoreOnExit(app.waitUntilExit(), () => {
       restore();

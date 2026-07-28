@@ -26,8 +26,11 @@ export function statusLabel(state: ArmState): string {
   return state.phase ?? state.status;
 }
 
-export function elapsedSeconds(state: ArmState): number {
-  return ((state.endedAt ?? Date.now()) - state.startedAt) / 1000;
+export function elapsedSeconds(state: ArmState, now = Date.now()): number {
+  const end = state.endedAt ?? now;
+  const currentPeerWait =
+    state.peerWaitStartedAt === undefined ? 0 : end - state.peerWaitStartedAt;
+  return (end - state.startedAt - state.peerWaitMs - currentPeerWait) / 1000;
 }
 
 // Compact m:ss (or h:mm:ss past an hour) so long runs stay readable.

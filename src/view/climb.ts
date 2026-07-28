@@ -41,22 +41,15 @@ const TONE: Record<ClimbSubticket["state"], ClimbTone> = {
   pending: "dim",
 };
 
-// What one arm did with a rung: its pull request whole (these rows exist to be
-// opened, so the URL is never the part that gets cut) and then the numbers.
+// What one arm did with a rung: its pull request whole. Review statistics stay
+// in the model for artifacts and arm-specific views; repeating them here makes
+// the climb tree noisy without helping someone open the result.
 function armText(arm: ClimbArm): string {
   const merged = arm.status === "merged";
   const label = `${arm.arm.padEnd(8)} ${merged ? "✓" : "✗"}`;
   if (!arm.pullRequest) return `${label} ${arm.status}`;
 
-  const detail: string[] = [];
-  if (arm.rounds) detail.push(`${arm.answered}/${arm.rounds} answered`);
-  if (arm.diffComments !== undefined) {
-    detail.push(
-      `${arm.diffComments} diff comment${arm.diffComments === 1 ? "" : "s"}`,
-    );
-  }
-  const suffix = detail.length ? `   ${detail.join(" · ")}` : "";
-  return `${label} ${arm.pullRequest.url}${suffix}`;
+  return `${label} ${arm.pullRequest.url}`;
 }
 
 // The rungs worth drawing: everything already built, the one in flight, and a

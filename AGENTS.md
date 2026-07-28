@@ -73,10 +73,12 @@ bun start -- --help              # the full option + env reference
   tab **per arm** with its context meter, recent activity and answer, the
   **climb** (every rung built, with both arms' pull requests, the rung in
   flight, and the next few), and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
-  scroll the list tabs, `q` quits — and quitting **stops the run**. The safety
-  is an in-view confirmation, not a flag: while sessions are still working, `q`
-  names what would be torn down and waits for `y` (any other key goes back to
-  watching); once everything has settled the view is a report and closes
+  scroll the list tabs. Each arm's duration excludes time spent idle at the
+  merge barrier waiting only for its peer, so the two A/B timings do not
+  collapse into the shared run duration. `q` quits — and quitting **stops the
+  run**. The in-view confirmation offers `y` to stop immediately, `n` to keep
+  watching, and, during a climb, `S` to finish every subticket in the current
+  rung and stop before the next one; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
   everywhere else and does not acquire a second one here. Stopping live
   sessions exits 1. It runs on the alternate screen and gives the
@@ -309,9 +311,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   be collected in agent mode and Tuatara's in default mode — two review
   populations that cannot be compared. Both arms get the
   *identical* worker prompt; keep it that way — divergence there would confound
-  the experiment. The pull request body must **open with the ticket verbatim**
-  under an `## Original Ticket` heading: the reviewer opening it has no other
-  way to see what was asked for. `mirror_sync.sh` carries the source PR's
+  the experiment. The pull request body must **open with the ticket** under an
+  `## Original Ticket` heading, with every ticket heading demoted one level and
+  a horizontal rule before the PR's own material: the reviewer opening it has
+  no other way to see what was asked for. `mirror_sync.sh` carries the source PR's
   **whole description** into the mirror PR for the same reason — Greptile
   reviews the mirror, not Komodo, and Tuatara's reviewer is not handed an
   extract either. Whole body rather than the ticket section alone is also the

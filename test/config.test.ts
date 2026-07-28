@@ -185,6 +185,14 @@ describe("worker fan-out", () => {
     expect(prompt).not.toMatch(/komodo arm|tuatara arm/i);
   });
 
+  it("requires ticket headings to nest under a separated original-ticket section", () => {
+    const prompt = workerPrompt("## Objective\nShip it.");
+
+    expect(prompt).toContain("## Original Ticket");
+    expect(prompt).toContain("`## Objective` becomes `### Objective`");
+    expect(prompt).toContain("---");
+  });
+
   it("varies only cwd between Codex calls", () => {
     const prompt = workerPrompt("ENG-123");
     const komodo = codexToolArguments({

@@ -175,6 +175,39 @@ describe("runGreg", () => {
     expect(ladder).toContain("### [x] 1.2 B");
   });
 
+  it("honours a live stop request after every subticket in the current rung", async () => {
+    const { base, ladderPath } = await makeSetup();
+    let stopAfter: number | undefined;
+
+    await initLadder(ladderPath, "goal");
+    await appendMilestone(ladderPath, 1, "Current", [
+      { title: "A", description: "do A" },
+      { title: "B", description: "do B" },
+    ]);
+    await appendMilestone(ladderPath, 2, "Next", [
+      { title: "C", description: "do C" },
+    ]);
+
+    const built = await runGreg(
+      base,
+      Infinity,
+      {
+        harness: async (config) => {
+          if (config.ticket === "do A") stopAfter = 1;
+          return fakeRun(config.ticket);
+        },
+        stopAfterMilestone: () => stopAfter,
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.1", "1.2"]);
+    expect(nextPendingSubticket(await readFile(ladderPath, "utf8"))?.number).toBe(
+      "2.1",
+    );
+  });
+
   it("counts a resumed milestone toward the cap and pauses before a planned-ahead rung", async () => {
     const { base, ladderPath } = await makeSetup();
     await initLadder(ladderPath, "goal");
@@ -362,6 +395,30 @@ describe("planAhead", () => {
     expect(ladder).toContain("### [ ] 1.2 Storage");
     expect(ladder).toContain("### [ ] 2.1 Tree view");
     expect(nextPendingSubticket(ladder)?.number).toBe("1.1");
+  });
+
+  it("stops after the planning rung where the live request arrives", async () => {
+    const { base, ladderPath } = await makeSetup();
+    let stopAfter: number | undefined;
+
+    const planned = await planAhead(
+      base,
+      Infinity,
+      {
+        plan: async (_base, path, _ladder, milestoneNumber) => {
+          await appendMilestone(path, milestoneNumber, "One rung", [
+            { title: "A", description: "do A" },
+          ]);
+          stopAfter = milestoneNumber;
+        },
+        stopAfterMilestone: () => stopAfter,
+        log: () => {},
+      },
+      ladderPath,
+    );
+
+    expect(planned.map((subticket) => subticket.number)).toEqual(["1.1"]);
+    expect(await readFile(ladderPath, "utf8")).not.toContain("Milestone 2");
   });
 
   it("plans exactly the milestone cap, however many subtickets each rung holds", async () => {

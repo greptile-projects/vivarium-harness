@@ -57,6 +57,10 @@ export interface GregDeps {
   ) => Promise<string | undefined>;
   harness: (config: HarnessConfig) => Promise<HarnessRunResult>;
   log: (message: string) => void;
+  // A live-view request to finish one particular milestone and then return
+  // normally. Unlike the abort signal, this is observed only at rung
+  // boundaries, so no planner or harness session is torn down mid-turn.
+  stopAfterMilestone: () => number | undefined;
 }
 
 // The shared preamble of both loop entrypoints: seed the ladder file if this is
@@ -138,6 +142,7 @@ export async function runGreg(
   const plan = deps.plan ?? planNextMilestone;
   const harness = deps.harness ?? runHarness;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
+  const stopAfterMilestone = deps.stopAfterMilestone ?? (() => undefined);
 
   await setupLadder(base, ladderPath, log);
 
@@ -149,11 +154,18 @@ export async function runGreg(
   for (;;) {
     const ladder = await readLadder(ladderPath);
     const pending = nextPendingSubticket(ladder);
+    const stopAfter = stopAfterMilestone();
 
     // Nothing left to build — Greg plans the next rung by editing the ladder,
     // then we loop back and pick up the subtickets he appended. Unless this
     // run has already spent its rung budget: then it pauses instead.
     if (!pending) {
+      if (
+        stopAfter !== undefined &&
+        highestMilestone(ladder) >= stopAfter
+      ) {
+        break;
+      }
       if (milestonesTouched.size >= milestoneLimit) break;
       const milestoneNumber = highestMilestone(ladder) + 1;
       log(`\n=== Milestone ${milestoneNumber}: planning ===`);
@@ -172,7 +184,8 @@ export async function runGreg(
     // milestone was planned ahead of time) — pause here, between milestones.
     if (
       !milestonesTouched.has(pending.milestone) &&
-      milestonesTouched.size >= milestoneLimit
+      (milestonesTouched.size >= milestoneLimit ||
+        (stopAfter !== undefined && pending.milestone > stopAfter))
     ) {
       break;
     }
@@ -248,6 +261,7 @@ export async function planAhead(
 ): Promise<PlannedSubticket[]> {
   const plan = deps.plan ?? planNextMilestone;
   const log = deps.log ?? ((message) => process.stderr.write(`${message}\n`));
+  const stopAfterMilestone = deps.stopAfterMilestone ?? (() => undefined);
 
   await setupLadder(base, ladderPath, log);
 
@@ -278,6 +292,7 @@ export async function planAhead(
         title: subticket.title,
       });
     }
+    if ((stopAfterMilestone() ?? Infinity) <= milestoneNumber) break;
   }
 
   return planned;

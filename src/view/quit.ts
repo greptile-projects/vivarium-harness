@@ -39,10 +39,15 @@ function describe(running: ArmState[]): { count: string; names: string } {
 // The in-view question. Names the arms rather than counting them: "stop 2
 // sessions" and "stop tuatara, komodo" cost the same row, and only one of them
 // tells the human what they are about to lose.
-export function confirmQuitPrompt(arms: ArmState[]): string {
+export function confirmQuitPrompt(
+  arms: ArmState[],
+  canStopAfterRung = false,
+): string {
   const running = stillRunning(arms);
   const { count, names } = describe(running);
-  return `stop ${count} (${names}) and quit?  y / n`;
+  return `stop ${count} (${names}) and quit?  y / n${
+    canStopAfterRung ? " / S after rung" : ""
+  }`;
 }
 
 // The notice printed once the terminal is back, or null when nothing was left
