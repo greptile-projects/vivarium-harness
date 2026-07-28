@@ -155,8 +155,9 @@ export function LiveApp({
       if (confirming) {
         if (input === "y" || input === "Y") exit();
         else if ((input === "s" || input === "S") && onStopAfterRung) {
-          onStopAfterRung();
-          setStopScheduled(true);
+        else if ((input === "s" || input === "S") && onStopAfterRung) {
+          const scheduled = onStopAfterRung();
+          if (scheduled) setStopScheduled(true);
           setConfirming(false);
         }
         else setConfirming(false);
