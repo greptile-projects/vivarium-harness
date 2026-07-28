@@ -21,10 +21,13 @@ export const MAX_MILESTONES = 2;
 export const IDLE_TIMEOUT_MS = 240_000;
 // How long the landing phase waits for the reviewer to say something about an
 // arm's pull request before merging without it (REVIEW_TIMEOUT_MS), and how
-// often it looks. A review that never arrives must not hold the climb: the
-// same trade the review mirror makes — sync integrity beats review
+// often it looks. The window is rolling: it is measured from the reviewer's
+// last comment (as observed by the harness), or from the start of the wait
+// when there has been none — "the reviewer has been silent this long", not a
+// per-round allowance. A review that never arrives must not hold the climb:
+// the same trade the review mirror makes — sync integrity beats review
 // completeness — except here it is recorded as a timed-out round.
-export const REVIEW_TIMEOUT_MS = 3_600_000;
+export const REVIEW_TIMEOUT_MS = 1_200_000;
 export const REVIEW_POLL_MS = 30_000;
 // Once reviewer activity appears, wait for one quiet interval before starting
 // a Codex turn. GitHub exposes a single submitted review through multiple
@@ -394,7 +397,8 @@ Optional environment:
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
                           Defaults to 240000 (4m); 0 disables the watchdog.
   REVIEW_TIMEOUT_MS=<ms>  How long to wait for that review before merging
-                          without it. Defaults to ${REVIEW_TIMEOUT_MS} (1h).
+                          without it, rolling from the reviewer's last
+                          comment. Defaults to ${REVIEW_TIMEOUT_MS} (20m).
   REVIEW_ROUNDS=<n>       Review → answer → re-review rounds per pull request.
                           Defaults to ${REVIEW_ROUNDS}.
 
