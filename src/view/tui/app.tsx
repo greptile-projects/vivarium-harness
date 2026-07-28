@@ -16,7 +16,12 @@ import {
 } from "./fullscreen.js";
 import { climbFooter, climbLayout, climbRows } from "../climb.js";
 import { ArmDetail, ClimbTree, Feed, Overview } from "./panes.js";
-import { scrollAnchor, viewportRows, type Anchor } from "./scroll.js";
+import {
+  scrollAnchor,
+  viewportRows,
+  type Anchor,
+  type Row,
+} from "./scroll.js";
 import {
   armTabId,
   resolveSelected,
@@ -126,11 +131,12 @@ export function LiveApp({
   // a scroll against the buffer it is actually moving through — and, on the
   // climb tab, against the rows the tree actually got after the notes tail took
   // its share.
+  const logLines = selected === "log" ? model.log() : null;
   const climb = selected === "climb" ? model.climb() : null;
   const climbTree = climb ? climbRows(climb) : null;
-  const feedLines =
-    selected === "log" ? model.log() : selected === "climb" ? climbTree : null;
-  const scrollable = feedLines !== null;
+  // Both scroll by the same rules, so the key handler only needs their ids.
+  const scrollRows: Row[] | null = logLines ?? climbTree;
+  const scrollable = scrollRows !== null;
   const scrollHeight =
     selected === "climb"
       ? climbLayout(body, model.notes().length).treeHeight
@@ -164,10 +170,10 @@ export function LiveApp({
       }
       // Scrolling only means anything on the two list panes; elsewhere the
       // arrows would silently do nothing, so they stay tab navigation.
-      if (feedLines) {
+      if (scrollRows) {
         const view = viewportRows(scrollHeight);
         const scroll = (delta: number) =>
-          setAnchor((current) => scrollAnchor(feedLines, current, view, delta));
+          setAnchor((current) => scrollAnchor(scrollRows, current, view, delta));
         if (key.upArrow) scroll(1);
         else if (key.downArrow) scroll(-1);
         else if (key.pageUp) scroll(view);
@@ -209,7 +215,7 @@ export function LiveApp({
   if (selected === "log") {
     pane = (
       <Feed
-        lines={feedLines ?? []}
+        lines={logLines ?? []}
         height={body}
         anchor={anchor}
         empty="no events yet"

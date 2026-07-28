@@ -113,8 +113,34 @@ describe("climbRows", () => {
     expect(text.some((line) => line.startsWith("└─"))).toBe(true);
   });
 
-  it("numbers its rows so a reader scrolled back keeps their place", () => {
-    expect(rows.map((row) => row.id)).toEqual(rows.map((_, index) => index));
+  // The tree is rebuilt whole on every change, and rows appear *above* existing
+  // ones — a landing adds an arm row mid-list, a rung that left the ladder is
+  // prepended. The scroll anchor is a row id, so a positional id would silently
+  // re-point it at different content and drag the text out from under a reader
+  // who had scrolled back into the history.
+  it("keys each row to what it describes, not to where it sits", () => {
+    const before = climbRows([
+      rung("1.1", "built"),
+      rung("2.1", "building"),
+    ]);
+    const after = climbRows([
+      rung("0.9", "built", [merged("tuatara", 1)]),
+      rung("1.1", "built", [merged("tuatara", 7), merged("komodo", 4)]),
+      rung("2.1", "building"),
+    ]);
+    const id = (rowsIn: typeof before, number: string) =>
+      rowsIn.find((row) => row.kind === "subticket" && row.text.includes(number))
+        ?.id;
+
+    expect(id(before, "2.1")).toBe(id(after, "2.1")!);
+    // Four rows were inserted above it, so a positional id would have moved.
+    expect(before.indexOf(before.find((r) => r.id === id(before, "2.1"))!)).not.toBe(
+      after.indexOf(after.find((r) => r.id === id(after, "2.1"))!),
+    );
+  });
+
+  it("gives every row a distinct id", () => {
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
   });
 });
 

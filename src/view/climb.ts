@@ -1,4 +1,4 @@
-import type { ClimbArm, ClimbSubticket, Line } from "./model.js";
+import type { ClimbArm, ClimbSubticket } from "./model.js";
 
 // The climb tab's rows, built once from the model and rendered as-is. Pure, so
 // the shape of the tree is testable without Ink: what shows, in what order, and
@@ -6,9 +6,17 @@ import type { ClimbArm, ClimbSubticket, Line } from "./model.js";
 export type ClimbRowKind = "milestone" | "subticket" | "arm";
 export type ClimbTone = "good" | "bad" | "now" | "dim" | "plain";
 
-export interface ClimbRow extends Line {
+export interface ClimbRow {
+  // What this row *is*, never where it currently sits. The tree is rebuilt from
+  // scratch on every change and rows appear above existing ones — a landing
+  // adds an arm row to a rung in the middle, a rung that left the ladder is
+  // prepended — so a positional id would quietly re-point the scroll anchor at
+  // different content and slide the text out from under a reader who had
+  // scrolled back. Keyed this way the anchored rung stays the anchored rung.
+  id: string;
   kind: ClimbRowKind;
   tone: ClimbTone;
+  text: string;
 }
 
 // Rungs ahead of the one being built. The whole point of showing any is "what
@@ -71,24 +79,31 @@ export function climbRows(
 ): ClimbRow[] {
   const visible = visibleSubtickets(subtickets, upcoming);
   const rows: ClimbRow[] = [];
-  // Ids are positional. Rows are appended at the bottom as the climb advances,
-  // so a reader scrolled back into the history keeps their place; a landing
-  // arriving on the current rung shifts the last few rows by one, which is the
-  // only place ids move.
-  const push = (kind: ClimbRowKind, tone: ClimbTone, text: string): void => {
-    rows.push({ id: rows.length, kind, tone, text });
+  const push = (
+    id: string,
+    kind: ClimbRowKind,
+    tone: ClimbTone,
+    text: string,
+  ): void => {
+    rows.push({ id, kind, tone, text });
   };
 
   let milestone: number | undefined;
   visible.forEach((subticket, index) => {
     if (subticket.milestone !== milestone) {
       milestone = subticket.milestone;
-      push("milestone", "plain", `milestone ${milestone}`);
+      push(
+        `milestone:${milestone}`,
+        "milestone",
+        "plain",
+        `milestone ${milestone}`,
+      );
     }
     // The last rung of a milestone closes its branch; anything under it hangs
     // off no spine.
     const last = visible[index + 1]?.milestone !== subticket.milestone;
     push(
+      `rung:${subticket.number}`,
       "subticket",
       TONE[subticket.state],
       `${last ? "└─" : "├─"} ${MARKER[subticket.state]} ${subticket.number}  ${subticket.title}${
@@ -98,6 +113,7 @@ export function climbRows(
     const spine = last ? "  " : "│ ";
     for (const arm of subticket.arms) {
       push(
+        `arm:${subticket.number}:${arm.arm}`,
         "arm",
         arm.status === "merged" ? "good" : "bad",
         `${spine}     ${armText(arm)}`,

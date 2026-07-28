@@ -663,9 +663,15 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   and so does `scroll.ts`, the pure scrollback logic behind `Feed` and the climb
   tree: it hands out
   `height - 1` content rows because the status row at the bottom is permanent,
-  bounds a scroll to the buffer, and parks the view on a **line id** rather than
+  bounds a scroll to the buffer, and parks the view on a **row id** rather than
   a distance from the end, so arriving events cannot drag the text a human is
-  reading out from under them.
+  reading out from under them. Which is why a row id must identify the *row* and
+  never its position: the log feed numbers its lines as they arrive, but the
+  climb tree is rebuilt whole on every change and rows appear above existing
+  ones (a landing adds an arm row mid-list, a rung that left the ladder is
+  prepended), so its rows are keyed to the rung or arm they describe. A
+  positional id there re-points the anchor at different content, which is the
+  exact failure the anchor exists to prevent.
 
 - **`src/greg-tile/`** — the planner loop that sits *above* the harness.
   `ladder.ts` owns `LADDER.md`: parsing `### [ ] 1.2 Title — ENG-12` checkbox
