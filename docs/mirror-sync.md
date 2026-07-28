@@ -5,6 +5,13 @@ mirror (`makors/vivarium-komodo-mirror`) as its own Greptile-reviewed PR, one at
 time, in order. The mirror is a review record of Komodo's landed states; the
 Komodo agent has no access to it and cannot infer that reviews exist.
 
+The disposable validation pair is deliberately separate:
+`greptile-projects/vivarium-test-komodo` dispatches
+`test-komodo-main-push`, and `.github/workflows/mirror-sync-test.yml` replays it
+into `makors/vivarium-test-komodo-mirror`. It has its own workflow, concurrency
+group, repository variables, and `TEST_LAST_SYNCED_SHA`; testing the pipeline
+there cannot advance or write the production mirror.
+
 Pieces:
 
 | Where | File | Role |
@@ -98,6 +105,10 @@ Already set by bootstrap; listed here for reference:
 | `MIRROR_REPO` | `makors/vivarium-komodo-mirror` | the mirror (`owner/name`). |
 | `MIRROR_OWNER` | `makors` | mirror owner account — scopes the app installation token. |
 | `MIRROR_REPO_NAME` | `vivarium-komodo-mirror` | mirror repo name — scopes the app installation token. |
+
+The test workflow uses the corresponding `TEST_SOURCE_REPO`,
+`TEST_MIRROR_REPO`, `TEST_MIRROR_OWNER`, and `TEST_MIRROR_REPO_NAME`
+variables. Its state variable is `TEST_LAST_SYNCED_SHA`.
 
 ```sh
 gh variable set LAST_SYNCED_SHA -R greptile-projects/vivarium-harness -b <sha>
