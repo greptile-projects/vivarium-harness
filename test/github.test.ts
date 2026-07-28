@@ -273,6 +273,7 @@ describe("conversation", () => {
             user: { login: "makors" },
             body: "the issue comment",
             created_at: "2026-07-25T01:00:00Z",
+            updated_at: "2026-07-25T01:05:00Z",
           },
         ]),
       ),
@@ -295,6 +296,7 @@ describe("conversation", () => {
       "the review",
       "the inline comment",
     ]);
+    expect(notes[0]?.updatedAt).toBe("2026-07-25T01:05:00Z");
   });
 
   test("an inline reply keeps its parent link", async () => {

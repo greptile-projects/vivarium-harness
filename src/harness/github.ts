@@ -67,6 +67,10 @@ export interface ReviewNote {
   author: string;
   body: string;
   createdAt: string;
+  // GitHub edits comments in place, retaining their object id. Keep the
+  // revision timestamp separately so the landing loop can observe a changed
+  // reviewer message without breaking stable inline-thread parent ids.
+  updatedAt?: string;
   url?: string;
   path?: string;
   // The diff anchor of an inline comment. Preserved because the branch it
@@ -202,6 +206,7 @@ interface GhComment {
   user?: { login?: string };
   body?: string;
   created_at?: string;
+  updated_at?: string;
   html_url?: string;
   reactions?: { total_count?: number };
 }
@@ -533,9 +538,10 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             id: `issue-comment:${comment.id ?? notes.length}`,
             kind: "issue-comment",
             author: comment.user?.login ?? "unknown",
-            body: comment.body ?? "",
-            createdAt: comment.created_at ?? "",
-            url: comment.html_url,
+          body: comment.body ?? "",
+          createdAt: comment.created_at ?? "",
+          updatedAt: comment.updated_at,
+          url: comment.html_url,
           });
           await addReactions(
             comment,
@@ -557,6 +563,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             author: comment.user?.login ?? "unknown",
             body: comment.body ?? "",
             createdAt: comment.created_at ?? "",
+            updatedAt: comment.updated_at,
             url: comment.html_url,
             path: comment.path,
             line: comment.line ?? undefined,

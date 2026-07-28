@@ -62,6 +62,15 @@ function isThumbsUpReaction(note: ReviewNote): boolean {
   return note.kind === "reaction" && note.body === "+1";
 }
 
+// A GitHub comment's id identifies its place in a thread, not the version of
+// its text. Greptile updates its original PR-level summary after a re-review
+// instead of posting a new comment, so deduplicating by id alone turns that
+// completed pass into reviewer silence. Revisions are what the poll loop has
+// seen; stable ids remain available for inReplyTo relationships and artifacts.
+function reviewRevision(note: ReviewNote): string {
+  return `${note.id}@${note.updatedAt ?? note.createdAt}`;
+}
+
 // The reviewer thumbs-ups each arm reply it accepts — an ACK of that one
 // comment, not a verdict on the pull request. It hands them out while still
 // replying in other threads and while a push-triggered review pass is still
@@ -80,7 +89,11 @@ export function reviewerSignedOff(found: ReviewNote[]): boolean {
 function isReviewPassEvidence(note: ReviewNote): boolean {
   return (
     (note.kind === "review-comment" && note.inReplyTo === undefined) ||
-    (note.kind === "review" && note.body.trim().length > 0)
+    (note.kind === "review" && note.body.trim().length > 0) ||
+    (note.kind === "issue-comment" &&
+      note.body.trim().length > 0 &&
+      note.updatedAt !== undefined &&
+      note.updatedAt !== note.createdAt)
   );
 }
 
@@ -266,7 +279,7 @@ async function waitForReview(
   if (deps.signal?.aborted) return abortedResult();
   const fromReviewer = (note: ReviewNote): boolean =>
     sameLogin(note.author, reviewer) &&
-    !seen.has(note.id) &&
+    !seen.has(reviewRevision(note)) &&
     (note.kind !== "reaction" ||
       (acceptReactions && isThumbsUpReaction(note)));
   let lastError: string | undefined;
@@ -303,7 +316,7 @@ async function waitForReview(
       // then hand the complete batch to one Codex turn.
       let settledConversation = conversation;
       let settledFound = found;
-      let ids = new Set(found.map((entry) => entry.id));
+      let revisions = new Set(found.map(reviewRevision));
       for (;;) {
         // Aborting mid-debounce drops the batch in hand, which is fine: the
         // run is being torn down, not sent back to answer.
@@ -323,7 +336,9 @@ async function waitForReview(
         }
         settledConversation = next;
         settledFound = settledConversation.filter(fromReviewer);
-        const grew = settledFound.some((entry) => !ids.has(entry.id));
+        const grew = settledFound.some(
+          (entry) => !revisions.has(reviewRevision(entry)),
+        );
         if (!grew) {
           return {
             found: settledFound,
@@ -332,7 +347,7 @@ async function waitForReview(
             timedOut: false,
           };
         }
-        ids = new Set(settledFound.map((entry) => entry.id));
+        revisions = new Set(settledFound.map(reviewRevision));
       }
     }
     if (deps.now() >= deadline) {
@@ -368,7 +383,7 @@ async function answerLeftTrace(
   }
   return after.some(
     (entry) =>
-      !seen.has(entry.id) &&
+      !seen.has(reviewRevision(entry)) &&
       (entry.kind !== "reaction" ||
         (sameLogin(entry.author, reviewer) && isThumbsUpReaction(entry))),
   );
@@ -515,7 +530,7 @@ export async function reviewArm(
       // Everything visible now counts as seen, including the arm's own replies:
       // the next round is only interested in what the reviewer says *after*
       // this answer.
-      for (const entry of conversation) seen.add(entry.id);
+      for (const entry of conversation) seen.add(reviewRevision(entry));
 
       // The pass a pushed commit triggered has arrived; its findings are in
       // this batch and go to the arm like any other. The fast paths out of the

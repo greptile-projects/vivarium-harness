@@ -873,6 +873,60 @@ describe("the rounds after the first", () => {
     expect(record.status).toBe("merged");
   });
 
+  it("observes an in-place edit to the reviewer's original summary", async () => {
+    const root = note(REVIEWER, "c1", "deletion bypasses locking");
+    const summary = (updatedAt: string, body: string): ReviewNote => ({
+      id: "issue-comment:summary",
+      kind: "issue-comment",
+      author: REVIEWER,
+      body,
+      createdAt: "2026-07-24T00:00:01Z",
+      updatedAt,
+    });
+    const initialSummary = summary(
+      "2026-07-24T00:00:01Z",
+      "one blocking finding remains",
+    );
+    const revisedSummary = summary(
+      "2026-07-24T00:03:00Z",
+      "the pushed fix is safe; no blocking finding remains",
+    );
+    const answered = [
+      root,
+      initialSummary,
+      armReply("c2", "fixed the locking race"),
+    ];
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [root, initialSummary],
+        answered,
+        [root, revisedSummary, answered[2]!],
+        [root, revisedSummary, answered[2]!],
+      ],
+      heads: ["reviewed", "pushed", "pushed", "pushed"],
+    });
+    const prompts: string[] = [];
+
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    expect(prompts).toHaveLength(2);
+    expect(record.reviewRounds).toHaveLength(2);
+    expect(record.reviewRounds[1]?.found.map((entry) => entry.id)).toEqual([
+      "issue-comment:summary",
+    ]);
+    expect(record.reviewRounds[1]?.settled).toBe(true);
+    expect(record.status).toBe("merged");
+  });
+
   it("ignores every reviewer reaction except thumbs-up", async () => {
     const reaction: ReviewNote = {
       id: "reaction:review-comment:91",

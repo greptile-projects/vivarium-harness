@@ -432,7 +432,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   Every reviewer event first passes through a 30-second quiet-period debounce.
   New entries reset the window, so a review body and the inline comments that
   become visible a few seconds later produce one arm prompt rather than one
-  prompt each. A lone inline reply or reaction pays only that short window.
+  prompt each. Comment edits count as new revisions even though GitHub retains
+  the object's stable ID — Greptile edits its original summary after a
+  re-review, and treating that as already seen would pay the full timeout after
+  the pass had finished. A lone inline reply or reaction pays only that short window.
   Reactions are recorded but never sent to the arm as work.
   The prompt tells the arm to fetch the complete conversation, identify its
   own GitHub login, and treat a root as unanswered when its thread contains no
