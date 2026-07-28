@@ -114,7 +114,10 @@ export interface LandDeps {
   // because every test here injects this whole interface by hand and a phase is
   // a display detail, not part of what landing does.
   phase?: (phase: ArmPhase) => void;
-  wait: (ms: number) => Promise<void>;
+  // The signal is handed through so the production sleep can clear its timer
+  // on abort, rather than the wrapper resolving early over a setTimeout that
+  // keeps the process alive for the rest of the interval.
+  wait: (ms: number, signal?: AbortSignal) => Promise<void>;
   now: () => number;
   // Quitting the live view aborts the controller every session runs under —
   // but the landing phase waits on GitHub with no session in flight, so it has
@@ -180,22 +183,17 @@ export async function prepareArm(
 
 // `deps.wait`, cut short when the run is aborted. Returns whether the signal
 // fired, so a poll loop stops at the next tick instead of sitting out its
-// timeout after the user has already quit.
-function waitUnlessAborted(
+// timeout after the user has already quit. The signal goes to the wait itself
+// rather than being raced against it: the production sleep cancels its timer
+// on abort, where a race would resolve early and leave the pending setTimeout
+// holding the process open for the rest of the interval.
+async function waitUnlessAborted(
   deps: Pick<LandDeps, "wait" | "signal">,
   ms: number,
 ): Promise<boolean> {
-  const signal = deps.signal;
-  if (!signal) return deps.wait(ms).then(() => false);
-  if (signal.aborted) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const onAbort = (): void => resolve(true);
-    signal.addEventListener("abort", onAbort, { once: true });
-    void deps.wait(ms).then(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve(signal.aborted);
-    });
-  });
+  if (deps.signal?.aborted) return true;
+  await deps.wait(ms, deps.signal);
+  return deps.signal?.aborted ?? false;
 }
 
 // Wait for something new from the reviewer, or give up. Polls the whole

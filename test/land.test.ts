@@ -908,6 +908,7 @@ describe("aborting the run while waiting for review", () => {
     const controller = new AbortController();
     let clock = 0;
     let waits = 0;
+    const waitSignals: (AbortSignal | undefined)[] = [];
     const record = await reviewArm(
       reviewed,
       // A timeout far beyond the fake clock: only the abort can end the wait.
@@ -917,7 +918,8 @@ describe("aborting the run while waiting for review", () => {
         github,
         reply: answer,
         note: () => {},
-        wait: async (ms: number) => {
+        wait: async (ms: number, signal?: AbortSignal) => {
+          waitSignals.push(signal);
           clock += ms;
           waits += 1;
           if (waits === 2) controller.abort(new Error("the live view was quit"));
@@ -926,6 +928,11 @@ describe("aborting the run while waiting for review", () => {
         signal: controller.signal,
       },
     );
+
+    // The signal reaches the wait itself, so the production sleep can clear
+    // its timer instead of leaving a pending setTimeout holding the process
+    // open after teardown.
+    expect(waitSignals).toEqual([controller.signal, controller.signal]);
 
     // The poll loop stopped on the abort, not the timeout.
     expect(waits).toBe(2);

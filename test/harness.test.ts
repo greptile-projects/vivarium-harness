@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunArtifacts } from "../src/harness/artifacts.js";
 import type { HarnessConfig } from "../src/harness/config.js";
-import { runArm, type AttemptRunner } from "../src/harness/harness.js";
+import { runArm, sleep, type AttemptRunner } from "../src/harness/harness.js";
 import type { StreamParams, StreamResult } from "../src/harness/session.js";
 
 const temporaryDirectories: string[] = [];
@@ -226,5 +226,36 @@ describe("aborting an arm", () => {
 
     expect(result.status).toBe("succeeded");
     expect(result.attempt).toBe(2);
+  });
+});
+
+// The production wait behind every landing-phase poll. An abort has to clear
+// the pending setTimeout, not just resolve past it — a timer left running
+// keeps the Node process alive for the rest of a poll interval after landing
+// and teardown have already returned.
+describe("sleep", () => {
+  it("resolves on schedule without a signal", async () => {
+    const start = Date.now();
+    await sleep(20);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(15);
+  });
+
+  it("resolves immediately on an already-aborted signal", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("quit"));
+    const start = Date.now();
+    await sleep(60_000, controller.signal);
+    expect(Date.now() - start).toBeLessThan(1_000);
+  });
+
+  it("cuts a pending sleep short when the signal fires", async () => {
+    const controller = new AbortController();
+    const start = Date.now();
+    const sleeping = sleep(60_000, controller.signal);
+    setTimeout(() => controller.abort(new Error("quit")), 20);
+    await sleeping;
+    // Resolved on the abort, tens of seconds before the timer — which the
+    // abort handler also cleared, or this suite's process would linger.
+    expect(Date.now() - start).toBeLessThan(1_000);
   });
 });

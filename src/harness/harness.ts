@@ -69,7 +69,7 @@ export interface HarnessDeps {
   sessionFactory?: typeof createArmSession;
   github?: GitHubFactory;
   environment?: EnvironmentFactory;
-  wait?: (ms: number) => Promise<void>;
+  wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => number;
 }
 
@@ -242,8 +242,23 @@ export async function runArm(
   return finalResult;
 }
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+// Resolves early on abort — and clears the timer, so a quit does not leave a
+// pending setTimeout keeping the process alive for the rest of a poll interval
+// after landing and teardown have already returned. Exported for that test
+// alone: it is the production wait behind every landing-phase poll.
+export const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 export async function runHarness(
   config: HarnessConfig,
