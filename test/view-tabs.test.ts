@@ -11,6 +11,15 @@ function labels(model: LiveModel): string[] {
   return tabsFor(model).map((tab) => tab.label);
 }
 
+function plan(rungs: Array<[string, boolean]>) {
+  return rungs.map(([number, done]) => ({
+    number,
+    milestone: Number(number.split(".")[0]),
+    title: `rung ${number}`,
+    done,
+  }));
+}
+
 describe("tabsFor", () => {
   test("a ticket run gets overview, one tab per arm, and the log", () => {
     const model = new LiveModel("vivarium", "ticket");
@@ -25,16 +34,17 @@ describe("tabsFor", () => {
     ]);
   });
 
-  test("a mode with notes gets its notes tab before the log", () => {
-    const model = new LiveModel("greg tile", "planning", "ladder");
+  test("a climb gets its climb tab before the log", () => {
+    const model = new LiveModel("greg tile", "planning");
     model.live.register("greg");
-    expect(labels(model)).toEqual(["overview", "greg", "ladder", "log"]);
+    model.setPlan(plan([["1.1", false]]), "1.1");
+    expect(labels(model)).toEqual(["overview", "greg", "climb", "log"]);
   });
 });
 
 describe("selection", () => {
   test("survives the arms being swapped between phases", () => {
-    const model = new LiveModel("greg tile", "planning", "ladder");
+    const model = new LiveModel("greg tile", "planning");
     model.live.register("komodo");
     // Sitting on the log tab while the phase changes underneath.
     model.setPhase("planning", ["greg"]);
@@ -42,7 +52,7 @@ describe("selection", () => {
   });
 
   test("falls back to the overview when the selected arm disappears", () => {
-    const model = new LiveModel("greg tile", "planning", "ladder");
+    const model = new LiveModel("greg tile", "planning");
     model.live.register("komodo");
     model.setPhase("planning", ["greg"]);
     expect(resolveSelected(tabsFor(model), "arm:komodo")).toBe("overview");
@@ -75,7 +85,7 @@ describe("selection", () => {
 
 describe("LiveModel feeds", () => {
   test("notes drop blank lines and keep stable ids", () => {
-    const model = new LiveModel("greg tile", "planning", "ladder");
+    const model = new LiveModel("greg tile", "planning");
     model.note("first\n\n  \nsecond");
     expect(model.notes().map((line) => line.text)).toEqual(["first", "second"]);
     const firstId = model.notes()[0]!.id;
@@ -93,33 +103,27 @@ describe("LiveModel feeds", () => {
   });
 });
 
-describe("ladder tab", () => {
-  test("appears only once the ladder has been loaded", () => {
-    const model = new LiveModel("greg tile", "climbing", "climb");
-    expect(tabsFor(model).map((tab) => tab.id)).not.toContain("ladder");
+describe("climb tab", () => {
+  test("appears once there is a plan to show", () => {
+    const model = new LiveModel("greg tile", "climbing");
+    expect(tabsFor(model).map((tab) => tab.id)).not.toContain("climb");
 
-    model.setLadder("# Ladder\n\n### [ ] 1.1 Skeleton\n", "1.1");
-    expect(tabsFor(model).map((tab) => tab.id)).toContain("ladder");
+    model.setPlan(plan([["1.1", false]]), "1.1");
+    expect(tabsFor(model).map((tab) => tab.id)).toContain("climb");
   });
 
   // A one-ticket run has no plan to show, so the tab is absent rather than
   // present-and-empty.
-  test("stays absent for a run with no ladder", () => {
+  test("stays absent for a run with no plan", () => {
     const model = new LiveModel("vivarium", "a ticket");
-    expect(tabsFor(model).map((tab) => tab.id)).not.toContain("ladder");
+    expect(tabsFor(model).map((tab) => tab.id)).not.toContain("climb");
   });
 
-  test("keeps the ladder text as scrollback and tracks the current rung", () => {
-    const model = new LiveModel("greg tile", "climbing", "climb");
-    model.setLadder("# Ladder\n\n### [x] 1.1 Done\n\n### [ ] 1.2 Next\n", "1.2");
-
-    expect(model.ladder().map((line) => line.text)).toContain("### [ ] 1.2 Next");
-    expect(model.currentSubticket).toBe("1.2");
-
-    // Greg appends as he plans, so the pane is replaced wholesale rather than
-    // pinned to the text it first saw.
-    model.setLadder("# Ladder\n\n### [x] 1.2 Next\n\n### [ ] 2.1 New rung\n", "2.1");
-    expect(model.ladder().map((line) => line.text)).toContain("### [ ] 2.1 New rung");
-    expect(model.currentSubticket).toBe("2.1");
+  // The ladder file had a tab of its own: the same plan with none of the
+  // outcomes.
+  test("is the only plan tab — the ladder file no longer has one", () => {
+    const model = new LiveModel("greg tile", "climbing");
+    model.setPlan(plan([["1.1", true]]), undefined);
+    expect(tabsFor(model).map((tab) => tab.id)).not.toContain("ladder");
   });
 });

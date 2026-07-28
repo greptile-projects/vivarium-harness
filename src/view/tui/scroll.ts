@@ -24,7 +24,14 @@ function clampEnd(end: number, total: number, viewport: number): number {
 // Resolve an anchor to the index *after* the bottom-most visible line. An
 // anchor whose line has aged out of the ring buffer pins to the oldest lines
 // still held — the closest surviving spot to what the reader was looking at.
-function endFor(lines: Line[], anchor: Anchor, viewport: number): number {
+// Every function here is generic over the row type rather than fixed to `Line`:
+// the climb tree scrolls rows that carry a kind and a tone beside their text,
+// and it has to scroll by exactly these rules.
+function endFor<T extends Line>(
+  lines: T[],
+  anchor: Anchor,
+  viewport: number,
+): number {
   if (anchor === null) return lines.length;
   const index = lines.findIndex((line) => line.id === anchor);
   return clampEnd(index < 0 ? 0 : index + 1, lines.length, viewport);
@@ -33,8 +40,8 @@ function endFor(lines: Line[], anchor: Anchor, viewport: number): number {
 // Scroll `delta` lines back (positive) or forward (negative), returning the new
 // anchor. Returns `null` — follow live again — whenever the window lands back
 // at the newest line, so scrolling down to the bottom resumes tailing.
-export function scrollAnchor(
-  lines: Line[],
+export function scrollAnchor<T extends Line>(
+  lines: T[],
   anchor: Anchor,
   viewport: number,
   delta: number,
@@ -45,11 +52,11 @@ export function scrollAnchor(
 }
 
 // The slice to draw, plus how many newer lines sit below it.
-export function feedWindow(
-  lines: Line[],
+export function feedWindow<T extends Line>(
+  lines: T[],
   anchor: Anchor,
   viewport: number,
-): { visible: Line[]; behind: number } {
+): { visible: T[]; behind: number } {
   const end = endFor(lines, anchor, viewport);
   return {
     visible: lines.slice(Math.max(0, end - viewport), end),

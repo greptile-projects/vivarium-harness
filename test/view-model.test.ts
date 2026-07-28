@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { LandingRecord } from "../src/harness/land.js";
 import { LiveModel } from "../src/view/model.js";
 
 describe("LiveModel.finish", () => {
@@ -31,32 +32,48 @@ describe("LiveModel.finish", () => {
 });
 
 describe("LiveModel pull requests", () => {
-  const landing = (arm: string, number: number, rounds = 0) => ({
-    arm: arm as "komodo" | "tuatara",
-    status: "merged" as const,
-    startedAt: "2026-07-24T00:00:00Z",
-    completedAt: "2026-07-24T00:10:00Z",
-    pullRequest: {
-      number,
-      url: `https://github.com/org/repo/pull/${number}`,
-      title: `subticket ${number}`,
-      headRefName: `branch-${number}`,
-      state: "MERGED",
-    },
-    reviewRounds: Array.from({ length: rounds }, (_, index) => ({
-      round: index + 1,
-      reviewer: "greptile-apps[bot]",
-      waitedMs: 1_000,
-      timedOut: false,
-      found: [],
-      response: "answered",
-    })),
-    conversation: [],
-    notes: [],
+  const landing = (arm: string, number: number, rounds = 0): LandingRecord =>
+    ({
+      arm: arm as "komodo" | "tuatara",
+      status: "merged" as const,
+      startedAt: "2026-07-24T00:00:00Z",
+      completedAt: "2026-07-24T00:10:00Z",
+      pullRequest: {
+        number,
+        url: `https://github.com/org/repo/pull/${number}`,
+        title: `subticket ${number}`,
+        headRefName: `branch-${number}`,
+        state: "MERGED",
+      },
+      reviewRounds: Array.from({ length: rounds }, (_, index) => ({
+        round: index + 1,
+        reviewer: "greptile-apps[bot]",
+        waitedMs: 1_000,
+        timedOut: false,
+        found: [],
+        response: "answered",
+      })),
+      conversation: [
+        // What a real pull request carries: the review's summary body, an issue
+        // comment, and the inline comments that are the actual findings.
+        { kind: "review", body: "summary" },
+        { kind: "issue-comment", body: "chatter" },
+        { kind: "review-comment", body: "finding" },
+        { kind: "review-comment", body: "answer" },
+        { kind: "reaction", body: "👍" },
+      ],
+      notes: [],
+    }) as unknown as LandingRecord;
+
+  it("counts inline diff comments, not the whole conversation", () => {
+    const model = new LiveModel("vivarium", "a ticket");
+    model.recordLanding(landing("komodo", 1));
+    // Five entries on the pull request; two of them are on the diff.
+    expect(model.pullRequests("komodo")[0]?.diffComments).toBe(2);
   });
 
   it("accumulates merged pull requests per arm across phases", () => {
-    const model = new LiveModel("greg tile", "climbing", "ladder");
+    const model = new LiveModel("greg tile", "climbing");
     model.recordLanding(landing("tuatara", 1, 2));
     model.recordLanding(landing("komodo", 1));
 
@@ -132,7 +149,7 @@ describe("LiveModel.seedFromState", () => {
   // The climb runs for weeks across many `bun start` invocations. Without this
   // an arm's tab would open blank every time, showing only the rung in flight.
   it("restores every pull request the experiment has landed before", () => {
-    const model = new LiveModel("greg tile", "climbing", "climb");
+    const model = new LiveModel("greg tile", "climbing");
     model.seedFromState(
       state([
         { number: "1.1", arms: [{ arm: "komodo", number: 1 }, { arm: "tuatara", number: 1 }] },
@@ -146,7 +163,7 @@ describe("LiveModel.seedFromState", () => {
   });
 
   it("does not duplicate a pull request already seeded", () => {
-    const model = new LiveModel("greg tile", "climbing", "climb");
+    const model = new LiveModel("greg tile", "climbing");
     const seed = state([{ number: "1.1", arms: [{ arm: "komodo", number: 1 }] }]);
     model.seedFromState(seed);
     model.seedFromState(seed);
@@ -155,7 +172,7 @@ describe("LiveModel.seedFromState", () => {
   });
 
   it("skips an arm that landed no pull request", () => {
-    const model = new LiveModel("greg tile", "climbing", "climb");
+    const model = new LiveModel("greg tile", "climbing");
     model.seedFromState({
       schemaVersion: 1,
       updatedAt: new Date(0).toISOString(),

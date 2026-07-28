@@ -15,7 +15,11 @@ import {
   runGreg,
   type GregDeps,
 } from "./greg-tile/loop.js";
-import { nextPendingSubticket, readLadder } from "./greg-tile/ladder.js";
+import {
+  nextPendingSubticket,
+  parseSubtickets,
+  readLadder,
+} from "./greg-tile/ladder.js";
 import { planNextMilestone } from "./greg-tile/planner.js";
 import { readClimbState, statePath } from "./harness/state.js";
 
@@ -40,10 +44,7 @@ export async function runGregLive(
   options: { useTui: boolean; logDir?: string },
 ): Promise<GregSubticketSummary[]> {
   const { useTui } = options;
-  // The climb's log lines are its own tab ("climb"), separate from the raw
-  // codex feed — they are the part a human actually reads. The "ladder" tab is
-  // a different thing: the plan file itself.
-  const model = new LiveModel("greg tile", "starting…", "climb");
+  const model = new LiveModel("greg tile", "starting…");
 
   // Everything the experiment has landed before this process started. The
   // ladder deliberately carries none of it (it crosses into both containers),
@@ -55,11 +56,20 @@ export async function runGregLive(
   // Re-read the plan and mark the rung about to be built. The one being built
   // is by definition the first unchecked box, so this needs no extra bookkeeping
   // from the loop. Called again after each phase because Greg appends to the
-  // file as he plans and the loop checks boxes as it builds.
+  // file as he plans and the loop checks boxes as it builds. Only the four
+  // fields the view shows cross over — the ticket bodies stay in the file.
   const refreshLadder = async (): Promise<void> => {
     try {
       const ladder = await readLadder(LADDER_PATH);
-      model.setLadder(ladder, nextPendingSubticket(ladder)?.number);
+      model.setPlan(
+        parseSubtickets(ladder).map((subticket) => ({
+          number: subticket.number,
+          milestone: subticket.milestone,
+          title: subticket.title,
+          done: subticket.done,
+        })),
+        nextPendingSubticket(ladder)?.number,
+      );
     } catch {
       // A ladder we cannot read is not worth failing a climb over; the tab
       // simply keeps whatever it last showed.
@@ -116,9 +126,9 @@ export async function runGregLive(
       await refreshLadder();
       return run;
     },
-    // The climb's own lines: into the ladder tab when there is one, and always
-    // into ladder.log beside the per-arm feeds (attachLive echoes them to
-    // stdout itself when no view is mounted).
+    // The climb's own lines: under the tree on the climb tab, and always into
+    // ladder.log beside the per-arm feeds (attachLive echoes them to stdout
+    // itself when no view is mounted, and mirrors them into the log tab).
     log: (message) => {
       if (useTui) model.note(message);
       sinks.note(message);
