@@ -14,6 +14,7 @@ import {
   formatTokens,
   meter,
   oneLine,
+  statusLabel,
   truncate,
   wrapLines,
 } from "./format.js";
@@ -78,7 +79,7 @@ export function ArmCard({
         </Box>
         <Text bold>{state.arm}</Text>
         <Box flexGrow={1} />
-        <Text color={color}>{state.status}</Text>
+        <Text color={color}>{statusLabel(state)}</Text>
         <Text dimColor>{"   "}{formatDuration(elapsedSeconds(state))}</Text>
       </Box>
       {rows >= 3 ? (
@@ -256,7 +257,7 @@ export function ArmDetail({
   return (
     <Box flexDirection="column">
       <Field label="status">
-        <Text color={STATUS_COLOR[state.status]}>{state.status}</Text>
+        <Text color={STATUS_COLOR[state.status]}>{statusLabel(state)}</Text>
         <Text dimColor>
           {"   "}
           {formatDuration(elapsedSeconds(state))}

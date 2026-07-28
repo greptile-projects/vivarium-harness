@@ -2,6 +2,7 @@ import {
   RunArtifacts,
   type PersistedArmResult,
 } from "./artifacts.js";
+import type { ArmPhase } from "./arms.js";
 import type { ArmConfig, ArmName, HarnessConfig, SandboxMode } from "./config.js";
 import type { Baseline, GitHubFactory } from "./github.js";
 import { gitHubForArm } from "./github.js";
@@ -46,6 +47,10 @@ export interface HarnessSinks {
   // Human-readable progress from the landing phase — the only part of a run
   // that is not a codex/event.
   onArmNote?: (arm: string, note: string) => void;
+  // What the arm has moved on to. Announced at each transition rather than
+  // inferred from the notes: the notes are prose and get rewritten, and a view
+  // that guessed at them would start lying the next time one is reworded.
+  onArmPhase?: (arm: string, phase: ArmPhase) => void;
   onLanding?: (record: LandingRecord) => void;
 }
 
@@ -254,6 +259,8 @@ export async function runHarness(
   const onEvent: ArmEventSink = sinks.onEvent ?? (() => {});
   const note = (arm: ArmName, text: string): void =>
     sinks.onArmNote?.(arm, text);
+  const phase = (arm: ArmName, label: ArmPhase): void =>
+    sinks.onArmPhase?.(arm, label);
   let environment: Awaited<ReturnType<EnvironmentFactory>> | undefined;
 
   try {
@@ -265,6 +272,7 @@ export async function runHarness(
     // up front means a sync failure costs nothing already in flight.
     const baselines: Partial<Record<ArmName, Baseline>> = {};
     for (const arm of runtimeConfig.arms) {
+      phase(arm.name, "preparing");
       const baseline = await prepareArm({
         github: github(arm),
         note: (text) => note(arm.name, text),
@@ -278,6 +286,7 @@ export async function runHarness(
       return {
         github: github(arm),
         note: (text: string) => note(arm.name, text),
+        phase: (label: ArmPhase) => phase(arm.name, label),
         wait,
         now,
         reply: (reviewPrompt: string) =>
@@ -300,8 +309,9 @@ export async function runHarness(
 
     // BUILD — both arms concurrently.
     const built = await Promise.all(
-      runtimeConfig.arms.map((arm) =>
-        runArm(
+      runtimeConfig.arms.map((arm) => {
+        phase(arm.name, "building");
+        return runArm(
           arm,
           prompt,
           runtimeConfig,
@@ -310,8 +320,8 @@ export async function runHarness(
           onEvent,
           signal,
           environment?.captureTranscript,
-        ),
-      ),
+        );
+      }),
     );
 
     // BARRIER. Landing is the only irreversible thing the harness does, and it
@@ -325,6 +335,7 @@ export async function runHarness(
     const buildFailed = built.some((result) => result.status === "failed");
     if (buildFailed) {
       for (const arm of runtimeConfig.arms) {
+        phase(arm.name, "held back");
         note(
           arm.name,
           "an arm's session failed — holding both back so neither lands alone",
@@ -370,6 +381,7 @@ export async function runHarness(
       reviewed.map((record, index) => {
         const arm = runtimeConfig.arms[index]!;
         const deps = landDeps(arm, built[index]!);
+        phase(arm.name, blockers.length > 0 ? "held back" : "merging");
         return blockers.length > 0
           ? blockArm(
               record,

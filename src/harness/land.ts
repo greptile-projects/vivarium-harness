@@ -1,3 +1,4 @@
+import type { ArmPhase } from "./arms.js";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
 import type {
   ArmGitHub,
@@ -146,6 +147,10 @@ export interface LandDeps {
   // the same thread as the work it is defending.
   reply: (prompt: string) => Promise<StreamResult>;
   note: (text: string) => void;
+  // What the arm has moved on to, for the live view's status word. Optional
+  // because every test here injects this whole interface by hand and a phase is
+  // a display detail, not part of what landing does.
+  phase?: (phase: ArmPhase) => void;
   wait: (ms: number) => Promise<void>;
   now: () => number;
 }
@@ -377,6 +382,7 @@ export async function reviewArm(
 
   if (arm.reviewer) {
     for (let round = 1; round <= config.reviewRounds; round += 1) {
+      deps.phase?.("waiting for review");
       note(`waiting for ${arm.reviewer} on #${pullRequest.number}…`);
       const waited = await waitForReview(
         deps,
@@ -445,6 +451,7 @@ export async function reviewArm(
         pullRequest.headRefName,
       );
 
+      deps.phase?.("answering review");
       const answer = await deps.reply(
         reviewPrompt(pullRequest.url, round, config.reviewRounds),
       );

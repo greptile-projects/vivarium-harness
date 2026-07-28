@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { LiveStore } from "../src/view/store.js";
 import {
   formatDuration,
   formatTokens,
+  statusLabel,
   stripLogTimestamp,
   truncate,
   wrapLines,
@@ -78,5 +80,48 @@ describe("formatting", () => {
   test("truncate flattens whitespace and fits the budget", () => {
     expect(truncate("a\n  b   c", 20)).toBe("a b c");
     expect(truncate("abcdefghij", 5)).toBe("abcd…");
+  });
+});
+
+describe("statusLabel", () => {
+  const arm = (): LiveStore => {
+    const store = new LiveStore();
+    store.register("tuatara");
+    return store;
+  };
+  const state = (store: LiveStore) => store.arms.get("tuatara")!;
+
+  test("a live arm says what it is doing, not that it is working", () => {
+    const store = arm();
+    store.applyEvent("tuatara", { type: "task_started" });
+    store.note("tuatara", "waiting for greptile-apps[bot] on #3…");
+    // The note is the activity line; without a phase the status column is
+    // still the word this exists to replace.
+    expect(statusLabel(state(store))).toBe("working");
+
+    store.phase("tuatara", "waiting for review");
+    expect(statusLabel(state(store))).toBe("waiting for review");
+  });
+
+  // Preparing the checkout happens before any session exists, so the phase has
+  // to be able to move the arm off "starting" on its own.
+  test("a phase gets the arm off starting", () => {
+    const store = arm();
+    expect(state(store).status).toBe("starting");
+    store.phase("tuatara", "preparing");
+    expect(state(store).status).toBe("working");
+  });
+
+  test("a settled arm reports its outcome, not the phase it settled in", () => {
+    const store = arm();
+    store.phase("tuatara", "merging");
+    store.finish("tuatara", {});
+    expect(statusLabel(state(store))).toBe("done");
+    expect(state(store).phase).toBeUndefined();
+
+    const failed = arm();
+    failed.phase("tuatara", "answering review");
+    failed.finish("tuatara", { error: "boom" });
+    expect(statusLabel(state(failed))).toBe("failed");
   });
 });

@@ -96,6 +96,10 @@ export async function runGregLive(
   const deps: Partial<GregDeps> = {
     plan: async (config, ladderPath, ladder, milestoneNumber) => {
       model.setPhase(`milestone ${milestoneNumber} · planning`, ["greg"]);
+      // Greg's session runs outside the harness, so nothing else would ever
+      // give his panel a phase — and "working" for a five-minute planning turn
+      // is the same silence this replaces everywhere else.
+      model.live.phase("greg", "planning");
       try {
         const threadId = await planNextMilestone(
           config,

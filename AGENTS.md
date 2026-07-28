@@ -453,7 +453,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   unchecked. Losing a rung loudly beats desynchronising the experiment
   silently. A failed **build** short-circuits the review phase too, so a doomed
   rung does not spend a Greptile review. Watchers are grouped in
-  `HarnessSinks` (`onEvent`, `onArmComplete`, `onArmNote`, `onLanding`) and the
+  `HarnessSinks` (`onEvent`, `onArmComplete`, `onArmNote`, `onArmPhase`,
+  `onLanding`) and the
   outside world in `HarnessDeps` (`runner`, `github`, `environment`, `wait`,
   `now`) — the
   landing phase is testable without git, `gh`, or a clock. `armExecution` is the
@@ -585,7 +586,17 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   line first. The interleaved view survives where it belongs — in the log tab.
   `store.ts` reduces raw `codex/event` messages into per-arm `ArmState`, plus
   `note()` for landing progress (waiting on a review is the arm working with
-  its session idle, and it belongs on the same activity trail);
+  its session idle, and it belongs on the same activity trail) and `phase()`
+  for the **status word**. A run spends long stretches with the session idle,
+  and "working" for forty minutes did not say whether the arm was writing code
+  or sitting on a review that had not arrived. So the harness *announces* what
+  each arm has moved on to — `preparing`, `building`, `waiting for review`,
+  `answering review`, `merging`, `held back` (`ArmPhase` in `harness/arms.ts`,
+  through the `onArmPhase` sink) — at the transition itself. Nothing infers a
+  phase by reading the prose of a note: the notes are the experiment's
+  human-facing text and get reworded, and a classifier over them would start
+  lying at the next rewrite. `statusLabel` in `format.ts` is the whole display
+  rule — the phase while the arm is live, the outcome once it settles;
   `model.ts` is `LiveModel`, the one view model **both** run modes render from
   (arms, a subtitle, notes, the mirrored log, the plan, and the merged pull
   requests per arm — those live on the model, not the store, because the store

@@ -156,6 +156,83 @@ describe("runHarness landing", () => {
     expect(land.conversation).toHaveLength(1);
   });
 
+  // The status word in the live view. An arm sitting on a review it has not
+  // received yet is "working" for as long as the reviewer takes, and that word
+  // never distinguished it from an arm that was writing code.
+  it("announces what each arm has moved on to", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const phases: Array<[string, string]> = [];
+    const runner: AttemptRunner = async (params) => ({
+      isError: false,
+      output: `done\n\nPR: ${urlFor(params.arm)}`,
+      threadId: `thread-${params.arm}`,
+      timedOut: false,
+    });
+
+    await runHarness(
+      config,
+      { onArmPhase: (arm, phase) => phases.push([arm, phase]) },
+      undefined,
+      {
+        runner,
+        github: fakeGitHub(state, { withReview: true }),
+        wait: async () => {},
+        now: () => 0,
+      },
+    );
+
+    const tuatara = phases
+      .filter(([arm]) => arm === "tuatara")
+      .map(([, phase]) => phase);
+    expect(tuatara).toEqual([
+      "preparing",
+      "building",
+      "waiting for review",
+      "answering review",
+      "merging",
+    ]);
+    // The unreviewed arm goes straight from its build to the merge — no round
+    // it never runs.
+    expect(
+      phases.filter(([arm]) => arm === "komodo").map(([, phase]) => phase),
+    ).toEqual(["preparing", "building", "merging"]);
+  });
+
+  it("holds both arms back when one of them fails to build", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const phases: Array<[string, string]> = [];
+
+    await runHarness(
+      config,
+      { onArmPhase: (arm, phase) => phases.push([arm, phase]) },
+      undefined,
+      {
+        runner: async (params) =>
+          params.arm === "komodo"
+            ? { isError: true, output: "boom", timedOut: false }
+            : {
+                isError: false,
+                output: `done\n\nPR: ${urlFor(params.arm)}`,
+                threadId: "thread",
+                timedOut: false,
+              },
+        github: fakeGitHub(state, { withReview: true }),
+        wait: async () => {},
+        now: () => 0,
+      },
+    );
+
+    // Nothing merges, and the arm that was perfectly mergeable says so rather
+    // than sitting on "working".
+    expect(state.merged).toEqual([]);
+    const heldBack = new Set(
+      phases.filter(([, phase]) => phase === "held back").map(([arm]) => arm),
+    );
+    expect([...heldBack].sort()).toEqual(["komodo", "tuatara"]);
+  });
+
   it("fails an arm that finished without a pull request", async () => {
     const config = await makeConfig();
     const state = { synced: [] as string[], merged: [] as string[] };
