@@ -51,6 +51,11 @@ export interface StreamResult {
   raw?: unknown;
 }
 
+export interface ArmSession {
+  run(params: StreamParams, onEvent: EventSink): Promise<StreamResult>;
+  close(): Promise<void>;
+}
+
 // Whatever the host's Codex is set up with, a harness session gets neither
 // account connectors nor plugins:
 //
@@ -165,10 +170,9 @@ function extractOutput(result: {
  * notification handler is what lets the harness observe the live event
  * stream — and drive the activity watchdog — instead of discarding it.
  */
-export async function runArmStreaming(
-  params: StreamParams,
-  onEvent: EventSink,
-): Promise<StreamResult> {
+export async function createArmSession(
+  params: Pick<StreamParams, "arm" | "cwd" | "codexHome" | "exec">,
+): Promise<ArmSession> {
   const exec = params.exec ?? [];
   const [command, ...prefixArgs] = exec.length > 0 ? exec : ["codex"];
   const transport = new StdioClientTransport({
@@ -184,35 +188,9 @@ export async function runArmStreaming(
     version: "0.1.0",
   });
 
-  // Activity watchdog: each `codex/event` resets the idle timer; a stretch of
-  // silence longer than idleTimeoutMs aborts the call. This catches wedged
-  // runs quickly instead of waiting out the 24h hard ceiling.
-  const idleTimeoutMs = params.idleTimeoutMs ?? 240_000;
-  const controller = new AbortController();
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-
-  // An external abort (the human quitting the live view) funnels into
-  // the same controller the watchdog uses, so there is one teardown path
-  // rather than two. `aborted` is tracked separately from `timedOut` so the
-  // recorded error says which of the two stopped the session.
-  let aborted = false;
-  const onExternalAbort = (): void => {
-    aborted = true;
-    controller.abort(params.signal?.reason);
-  };
-  if (params.signal?.aborted) onExternalAbort();
-  else params.signal?.addEventListener("abort", onExternalAbort, { once: true });
-  const bumpWatchdog = (): void => {
-    if (idleTimeoutMs <= 0) return;
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      timedOut = true;
-      controller.abort(
-        new Error(`no codex/event for ${idleTimeoutMs}ms`),
-      );
-    }, idleTimeoutMs);
-  };
+  let eventSink: EventSink = () => {};
+  let bumpWatchdog = (): void => {};
+  let closed = false;
 
   client.fallbackNotificationHandler = async (notification) => {
     if (notification.method !== "codex/event") return;
@@ -220,56 +198,108 @@ export async function runArmStreaming(
     const raw = notification.params as
       | { msg?: CodexMsg; _meta?: CodexEventMeta }
       | undefined;
-    if (raw?.msg) onEvent(raw.msg, raw._meta ?? {});
+    if (raw?.msg) eventSink(raw.msg, raw._meta ?? {});
   };
 
   try {
-    // connect() spawns the codex mcp-server subprocess; keep it inside the
-    // try so a failed handshake still hits the finally cleanup below.
     await client.connect(transport);
-    bumpWatchdog();
-    const continuing = params.threadId !== undefined;
-    const result = (await client.callTool(
-      {
-        name: continuing ? "codex-reply" : "codex",
-        arguments: continuing
-          ? { threadId: params.threadId, prompt: params.prompt }
-          : codexToolArguments(params),
-        _meta: { progressToken: `${params.arm}-progress` },
-      },
-      undefined,
-      { timeout: params.timeoutMs ?? 86_400_000, signal: controller.signal },
-    )) as {
-      structuredContent?: { threadId?: string };
-      content?: unknown;
-      isError?: boolean;
-    };
-
-    return {
-      threadId: result.structuredContent?.threadId,
-      output: extractOutput(result),
-      isError: Boolean(result.isError),
-      timedOut: false,
-      raw: result,
-    };
   } catch (error) {
-    if (aborted) {
-      throw new Error(`${params.arm} aborted: the live view was quit`);
-    }
-    if (timedOut) {
-      throw new Error(
-        `watchdog aborted ${params.arm}: no activity for ${idleTimeoutMs}ms`,
-      );
-    }
+    await client.close().catch(() => {});
     throw error;
-  } finally {
-    if (idleTimer) clearTimeout(idleTimer);
-    params.signal?.removeEventListener("abort", onExternalAbort);
-    // Best-effort cleanup; never let a close error mask the original outcome.
-    try {
+  }
+
+  return {
+    async run(call, onEvent) {
+      if (closed) throw new Error(`${params.arm} Codex session is closed`);
+
+      // The subprocess and its thread registry live for the whole subticket.
+      // Watchdog and abort state remain per turn so the review wait itself is
+      // not mistaken for a silent Codex call.
+      const idleTimeoutMs = call.idleTimeoutMs ?? 240_000;
+      const controller = new AbortController();
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let timedOut = false;
+      let aborted = false;
+      const onExternalAbort = (): void => {
+        aborted = true;
+        controller.abort(call.signal?.reason);
+      };
+      if (call.signal?.aborted) onExternalAbort();
+      else call.signal?.addEventListener("abort", onExternalAbort, { once: true });
+
+      eventSink = onEvent;
+      bumpWatchdog = (): void => {
+        if (idleTimeoutMs <= 0) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          timedOut = true;
+          controller.abort(
+            new Error(`no codex/event for ${idleTimeoutMs}ms`),
+          );
+        }, idleTimeoutMs);
+      };
+
+      try {
+        bumpWatchdog();
+        const continuing = call.threadId !== undefined;
+        const result = (await client.callTool(
+          {
+            name: continuing ? "codex-reply" : "codex",
+            arguments: continuing
+              ? { threadId: call.threadId, prompt: call.prompt }
+              : codexToolArguments(call),
+            _meta: { progressToken: `${call.arm}-progress` },
+          },
+          undefined,
+          { timeout: call.timeoutMs ?? 86_400_000, signal: controller.signal },
+        )) as {
+          structuredContent?: { threadId?: string };
+          content?: unknown;
+          isError?: boolean;
+        };
+
+        return {
+          threadId: result.structuredContent?.threadId,
+          output: extractOutput(result),
+          isError: Boolean(result.isError),
+          timedOut: false,
+          raw: result,
+        };
+      } catch (error) {
+        if (aborted) {
+          throw new Error(`${call.arm} aborted: the live view was quit`);
+        }
+        if (timedOut) {
+          throw new Error(
+            `watchdog aborted ${call.arm}: no activity for ${idleTimeoutMs}ms`,
+          );
+        }
+        throw error;
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+        call.signal?.removeEventListener("abort", onExternalAbort);
+        eventSink = () => {};
+        bumpWatchdog = () => {};
+      }
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
       await client.close();
-    } catch {
-      // ignore
-    }
+    },
+  };
+}
+
+// One-shot convenience for Greg and other single-turn callers. The harness
+// owns an ArmSession directly so retries and review rounds share one server.
+export async function runArmStreaming(
+  params: StreamParams,
+  onEvent: EventSink,
+): Promise<StreamResult> {
+  const session = await createArmSession(params);
+  try {
+    return await session.run(params, onEvent);
+  } finally {
+    await session.close().catch(() => {});
   }
 }

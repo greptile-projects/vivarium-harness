@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ArmConfig, HarnessConfig } from "../src/harness/config.js";
 import type { ArmGitHub, PullRequestRef, ReviewNote } from "../src/harness/github.js";
 import { runHarness, type AttemptRunner } from "../src/harness/harness.js";
-import type { StreamParams } from "../src/harness/session.js";
+import type { ArmSession, StreamParams } from "../src/harness/session.js";
 
 // The whole run, end to end, with Codex and GitHub faked: sync both checkouts,
 // build, answer the review on the reviewed arm, merge, record. Everything the
@@ -106,6 +106,42 @@ function advancingClock(): () => number {
 }
 
 describe("runHarness landing", () => {
+  it("keeps one MCP session per arm through build and review, then closes it", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const calls = new Map<string, StreamParams[]>();
+    const closed: string[] = [];
+
+    const run = await runHarness(config, {}, undefined, {
+      sessionFactory: async ({ arm }) => {
+        calls.set(arm, []);
+        return {
+          async run(params) {
+            calls.get(arm)!.push(params);
+            return {
+              isError: false,
+              output: `done\n\nPR: ${urlFor(arm)}`,
+              threadId: `thread-${arm}`,
+              timedOut: false,
+            };
+          },
+          async close() {
+            closed.push(arm);
+          },
+        } satisfies ArmSession;
+      },
+      github: fakeGitHub(state, { withReview: true }),
+      wait: async () => {},
+      now: () => 0,
+    });
+
+    expect(run.status).toBe("completed");
+    expect(calls.get("komodo")).toHaveLength(1);
+    expect(calls.get("tuatara")).toHaveLength(2);
+    expect(calls.get("tuatara")?.[1]?.threadId).toBe("thread-tuatara");
+    expect(closed.sort()).toEqual(["komodo", "tuatara"]);
+  });
+
   it("syncs, builds, answers the review, merges and records it", async () => {
     const config = await makeConfig();
     const state = { synced: [] as string[], merged: [] as string[] };
@@ -405,6 +441,41 @@ describe("runHarness environment lifecycle", () => {
 // re-solves a solved ticket in seconds and "wins"; check the box by hand and
 // the failed arm never builds that feature at all).
 describe("landing barrier", () => {
+  it("merges nothing when the reviewed arm cannot answer actionable review", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const runner: AttemptRunner = async (params) =>
+      params.arm === "tuatara" && params.threadId !== undefined
+        ? Promise.reject(new Error("persistent session transport failed"))
+        : {
+            output: `PR: ${urlFor(params.arm)}`,
+            isError: false,
+            timedOut: false,
+            threadId: `thread-${params.arm}`,
+          };
+
+    const run = await runHarness(config, {}, undefined, {
+      runner,
+      github: fakeGitHub(state, { withReview: true }),
+      wait: async () => {},
+      now: () => 0,
+    });
+
+    expect(state.merged).toEqual([]);
+    expect(
+      run.landings.find((record) => record.arm === "tuatara")?.status,
+    ).toBe("review-failed");
+    expect(
+      run.landings
+        .find((record) => record.arm === "tuatara")
+        ?.reviewRounds.at(-1)?.error,
+    ).toContain("transport failed");
+    expect(
+      run.landings.find((record) => record.arm === "komodo")?.status,
+    ).toBe("blocked");
+    expect(run.status).toBe("completed_with_failures");
+  });
+
   it("merges nothing when one arm's session fails", async () => {
     const config = await makeConfig();
     const state = { synced: [] as string[], merged: [] as string[] };

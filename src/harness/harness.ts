@@ -22,7 +22,9 @@ import {
 import { retryPrompt, workerPrompt } from "./prompts.js";
 import {
   codexToolArguments,
+  createArmSession,
   runArmStreaming,
+  type ArmSession,
   type CodexMsg,
   type StreamParams,
   type StreamResult,
@@ -59,6 +61,7 @@ export type AttemptRunner = (
 // whole harness without git, gh, or a clock.
 export interface HarnessDeps {
   runner?: AttemptRunner;
+  sessionFactory?: typeof createArmSession;
   github?: GitHubFactory;
   environment?: EnvironmentFactory;
   wait?: (ms: number) => Promise<void>;
@@ -246,7 +249,7 @@ export async function runHarness(
 ): Promise<HarnessRunResult> {
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
-  const runner = deps.runner ?? runArmStreaming;
+  let runner = deps.runner;
   const github = deps.github ?? gitHubForArm;
   const environmentFactory = deps.environment ?? provisionArmEnvironment;
   const wait = deps.wait ?? sleep;
@@ -255,11 +258,11 @@ export async function runHarness(
   const note = (arm: ArmName, text: string): void =>
     sinks.onArmNote?.(arm, text);
   let environment: Awaited<ReturnType<EnvironmentFactory>> | undefined;
+  const sessions = new Map<ArmName, ArmSession>();
 
   try {
     environment = await environmentFactory(config, artifacts.runId, note);
     const runtimeConfig = environment.config;
-
     // Both checkouts go back to origin's default branch *before* either session
     // starts: a subticket has to begin where the last one landed, and doing it
     // up front means a sync failure costs nothing already in flight.
@@ -273,6 +276,30 @@ export async function runHarness(
     }
     await artifacts.recordBaselines(baselines);
 
+    // One MCP server per arm and subticket. `codex-reply` resolves thread IDs
+    // inside that server's registry, so retries and review rounds must not
+    // replace it with a fresh process. Preparation stays ahead of this: a sync
+    // failure should not start either expensive worker.
+    if (!runner) {
+      for (const arm of runtimeConfig.arms) {
+        const execution = armExecution(arm, runtimeConfig);
+        sessions.set(
+          arm.name,
+          await (deps.sessionFactory ?? createArmSession)({
+            arm: arm.name,
+            cwd: execution.workspace,
+            codexHome: runtimeConfig.codexHome,
+            exec: execution.exec,
+          }),
+        );
+      }
+      runner = (params, onEvent) => {
+        const session = sessions.get(params.arm as ArmName);
+        if (!session) throw new Error(`no Codex session for ${params.arm}`);
+        return session.run(params, onEvent);
+      };
+    }
+
     const landDeps = (arm: ArmConfig, result: { threadId?: string }) => {
       const { workspace, exec, sandbox } = armExecution(arm, runtimeConfig);
       return {
@@ -281,7 +308,7 @@ export async function runHarness(
         wait,
         now,
         reply: (reviewPrompt: string) =>
-          runner(
+          runner!(
             {
               arm: arm.name,
               prompt: reviewPrompt,
@@ -306,7 +333,7 @@ export async function runHarness(
           prompt,
           runtimeConfig,
           artifacts,
-          runner,
+          runner!,
           onEvent,
           signal,
           environment?.captureTranscript,
@@ -413,6 +440,9 @@ export async function runHarness(
     await artifacts.fail(error);
     throw error;
   } finally {
+    await Promise.allSettled(
+      [...sessions.values()].map((session) => session.close()),
+    );
     if (environment) {
       try {
         await environment.cleanup();
