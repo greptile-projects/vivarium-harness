@@ -43,9 +43,10 @@ export interface ReviewRound {
   respondedAt?: string;
   response?: string;
   error?: string;
-  // The reviewer reacted with a thumbs-up. The arm was not sent back for this
-  // round, and the exchange ended here. Recorded rather than inferred from an
-  // empty `response`, which is also what an errored answer turn leaves behind.
+  // The reviewer came back with nothing but thumbs-up reactions — pure ACKs,
+  // no prose. The arm was not sent back for this round, and the exchange
+  // ended here. Recorded rather than inferred from an empty `response`, which
+  // is also what an errored answer turn leaves behind.
   signedOff?: boolean;
   // The arm's answer pushed no commit and posted no comment, so there was
   // nothing for the reviewer to respond to and the exchange ended with this
@@ -61,8 +62,26 @@ function isThumbsUpReaction(note: ReviewNote): boolean {
   return note.kind === "reaction" && note.body === "+1";
 }
 
+// The reviewer thumbs-ups each arm reply it accepts — an ACK of that one
+// comment, not a verdict on the pull request. It hands them out while still
+// replying in other threads and while a push-triggered review pass is still
+// minutes from posting fresh root findings, so a batch counts as a sign-off
+// only when it is nothing *but* thumbs-up: the reviewer ACKed and had nothing
+// left to say. Any prose in the batch is work for the arm.
 export function reviewerSignedOff(found: ReviewNote[]): boolean {
-  return found.some(isThumbsUpReaction);
+  return found.length > 0 && found.every(isThumbsUpReaction);
+}
+
+// Evidence that a push-triggered review pass has arrived: a fresh root inline
+// comment, or a review submission that actually says something. GitHub wraps
+// every inline reply in an empty-bodied review, so those wrappers prove
+// nothing — the reviewer replying inside a settled thread is not it looking
+// at the new commits.
+function isReviewPassEvidence(note: ReviewNote): boolean {
+  return (
+    (note.kind === "review-comment" && note.inReplyTo === undefined) ||
+    (note.kind === "review" && note.body.trim().length > 0)
+  );
 }
 
 export type LandingStatus =
@@ -211,6 +230,11 @@ async function waitForReview(
   timeoutMs: number,
   pollMs: number,
   debounceMs: number,
+  // Whether a thumbs-up reaction alone is worth returning. While the arm's
+  // last answer pushed a commit, the reviewer's re-review of it is still in
+  // flight, and its ACKs to the previous answer must not surface as a batch —
+  // the wait holds out for prose or the timeout instead.
+  acceptReactions: boolean,
   // The rolling anchor: when the harness last saw something from the reviewer,
   // in `deps.now()` terms. The timeout window is "the reviewer has been silent
   // for `timeoutMs`", not a fresh allowance per wait — so a round that starts
@@ -243,7 +267,8 @@ async function waitForReview(
   const fromReviewer = (note: ReviewNote): boolean =>
     sameLogin(note.author, reviewer) &&
     !seen.has(note.id) &&
-    (note.kind !== "reaction" || isThumbsUpReaction(note));
+    (note.kind !== "reaction" ||
+      (acceptReactions && isThumbsUpReaction(note)));
   let lastError: string | undefined;
   for (;;) {
     let conversation: ReviewNote[];
@@ -424,6 +449,13 @@ export async function reviewArm(
   // the anchor that makes the review timeout a rolling window over reviewer
   // silence rather than a fresh allowance per round.
   let reviewerLastSeenAt: number | undefined;
+  // The reviewer re-reviews every pushed commit, and that pass lands minutes
+  // after the ACKs and thread replies do — long enough that "nothing left to
+  // answer" read off the fast responses merged PR #7 with a fresh P1 root
+  // finding forty seconds old. So a push holds the exchange open: no sign-off
+  // and no settling until the pass shows up (or the reviewer stays silent for
+  // the full rolling window, the backstop for a pass that posts nothing).
+  let reReviewPending = false;
 
   if (arm.reviewer) {
     for (let round = 1; round <= config.reviewRounds; round += 1) {
@@ -437,6 +469,7 @@ export async function reviewArm(
         config.reviewTimeoutMs,
         config.reviewPollMs,
         config.reviewDebounceMs,
+        !reReviewPending,
         reviewerLastSeenAt,
       );
 
@@ -484,8 +517,16 @@ export async function reviewArm(
       // this answer.
       for (const entry of conversation) seen.add(entry.id);
 
-      // A reviewer thumbs-up is the sole mechanical close signal. Other
-      // reactions never enter `found`; prose is always handed to the arm.
+      // The pass a pushed commit triggered has arrived; its findings are in
+      // this batch and go to the arm like any other. The fast paths out of the
+      // exchange come back with it.
+      if (reReviewPending && found.some(isReviewPassEvidence)) {
+        reReviewPending = false;
+      }
+
+      // A batch of nothing but reviewer thumbs-up is the sole mechanical close
+      // signal. Other reactions never enter `found`; prose is always handed to
+      // the arm.
       if (reviewerSignedOff(found)) {
         reviewRounds.push({
           round,
@@ -579,21 +620,35 @@ export async function reviewArm(
         });
       }
 
+      // Whether the answer moved the branch. Unknown — an unreadable sha on
+      // either side — counts as pushed: the early exits out of the exchange
+      // must not fire on a push that merely could not be read, the same rule
+      // that makes an unreadable trace check below fail open to waiting. A
+      // push starts the reviewer's next pass over the new commits, so from
+      // here its ACKs to *this* answer stop meaning "nothing left".
+      const pushed = !(
+        reviewedSha !== undefined &&
+        respondedSha !== undefined &&
+        reviewedSha === respondedSha
+      );
+      if (pushed) {
+        reReviewPending = true;
+        note(
+          `the answer pushed a commit — holding #${pullRequest.number} open for ${arm.reviewer}'s pass over it`,
+        );
+      }
+
       // The reviewer only responds to a ping — a pushed commit or a posted
-      // comment — and its thumbs-up sign-off is an ACK to one. An answer turn
-      // that left neither on the pull request (a clean review gives the arm
-      // nothing to fix and nothing to say) gave the reviewer nothing to react
-      // to, so waiting another round could only ever end in the full timeout.
-      // The exchange is settled the moment an answer leaves no trace on the
-      // record. On the last allowed round there is no next wait to spare, so
-      // the check is skipped rather than spent on a read nobody uses.
-      if (round < config.reviewRounds) {
-        const pushed =
-          reviewedSha !== undefined &&
-          respondedSha !== undefined &&
-          reviewedSha !== respondedSha;
+      // comment. An answer turn that left neither on the pull request (a clean
+      // review gives the arm nothing to fix and nothing to say) gave the
+      // reviewer nothing to react to, so waiting another round could only ever
+      // end in the full timeout. The exchange is settled the moment an answer
+      // leaves no trace on the record — unless a pushed commit's review pass
+      // is still owed, which is a response on its way regardless of what this
+      // answer looked like. On the last allowed round there is no next wait to
+      // spare, so the check is skipped rather than spent on a read nobody uses.
+      if (round < config.reviewRounds && !reReviewPending) {
         if (
-          !pushed &&
           !(await answerLeftTrace(deps, pullRequest.number, arm.reviewer, seen))
         ) {
           answered.settled = true;

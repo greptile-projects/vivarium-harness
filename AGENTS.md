@@ -337,7 +337,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   repos/{owner}/{repo}/pulls/{n}/comments`), because `gh pr view --comments`
   does not print inline comments and a thread reply is where the whole exchange
   lives after the first response — an arm told only about `--comments` watches its
-  reviewer apparently fall silent and concludes it won. The arm does not
+  reviewer apparently fall silent and concludes it won. The mention rules are
+  asymmetric and load-bearing: an in-diff thread reply must **not** mention
+  `@greptileai` (Greptile reads its own threads unpinged, and a mention there
+  makes it process the reply twice), while a PR-level comment — general
+  questions not tied to one inline finding — **must** mention it, or Greptile
+  never sees the comment at all. The arm does not
   declare the exchange closed in its answer: termination comes from the
   reviewer's next comment, a timeout with no new comment, or the configured
   round cap.
@@ -387,10 +392,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   *disagreement* plays out — the arm pushing back, Greptile holding or
   conceding — which is the experiment's subject matter. The exchange ends on
   one of four bounded conditions:
-    - **The reviewer signs off with a thumbs-up reaction.** GitHub exposes that
-      structured reaction as `+1`; it is the only event recorded `signedOff`.
-      Review bodies and comments are always handed to the arm without trying to
-      infer their meaning from prose, and every other reaction is ignored.
+    - **The reviewer's response is nothing but thumbs-up reactions.** GitHub
+      exposes that structured reaction as `+1`, and Greptile attaches one to
+      each arm reply it accepts — an ACK of that comment, **not** a verdict on
+      the pull request: it hands them out while still replying in other
+      threads. So only a batch that is *entirely* thumbs-up is recorded
+      `signedOff`; any prose beside an ACK is handed to the arm. Review bodies
+      and comments are never classified by their wording, and every other
+      reaction is ignored.
     - **The arm's answer leaves no trace on the pull request.** The reviewer
       only ever responds to a ping — a pushed commit or a posted comment — and
       its thumbs-up is an ACK to one. An answer that pushed nothing and posted
@@ -399,6 +408,17 @@ cross-layer import is always visible as a `../harness/` in the specifier.
       the full timeout. The round is recorded `settled` and the exchange ends
       immediately. An unreadable post-answer check fails open to waiting —
       unknown must not end the exchange early.
+    - …with one standing exception to both: **a pushed commit holds the
+      exchange open.** Greptile re-reviews every push, and that pass lands
+      minutes after its thread replies and ACKs do — reading the fast
+      responses as the end merged PR #7 with a fresh P1 root finding forty
+      seconds old and unanswered. After an answer that pushed (an unreadable
+      sha pair counts as pushed), neither sign-off nor settling can end the
+      exchange, and bare ACKs do not even surface as a round, until the pass
+      shows up — a new root inline comment or a body-bearing review; the
+      empty-bodied reviews GitHub wraps around inline replies prove nothing —
+      or the reviewer stays silent for the full rolling window, the backstop
+      for a pass that posts nothing.
     - **The reviewer has been silent for `reviewTimeoutMs`** (default 20
       minutes), and the round times out. The window is rolling — measured from
       the reviewer's last comment as the harness observed it, or from the start
