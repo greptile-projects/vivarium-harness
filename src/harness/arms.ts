@@ -1,3 +1,21 @@
+// What an arm is doing right now, when "a Codex session is producing events"
+// is not the whole truth. A run spends long stretches with the session idle —
+// sitting on a review that has not arrived yet, merging — and a status column
+// that said "working" for forty minutes told nobody which of those it was.
+//
+// A closed set, not free text: this is a status word, it is coloured and
+// budgeted as one, and the transitions are few enough to name. Each is set by
+// the code that enters that phase (`runHarness`, `reviewArm`, `mergeArm`) —
+// nothing infers a phase by reading the prose of a progress note.
+export type ArmPhase =
+  | "preparing"
+  | "building"
+  | "waiting for review"
+  | "answering review"
+  | "merging"
+  | "held back"
+  | "planning";
+
 const DISPLAY_ORDER: Record<string, number> = {
   tuatara: 0,
   komodo: 1,

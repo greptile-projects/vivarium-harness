@@ -14,8 +14,14 @@ import {
   restoreOnExit,
   useTerminalSize,
 } from "./fullscreen.js";
-import { ArmDetail, Feed, Overview } from "./panes.js";
-import { scrollAnchor, viewportRows, type Anchor } from "./scroll.js";
+import { climbFooter, climbLayout, climbRows } from "../climb.js";
+import { ArmDetail, ClimbTree, Feed, Overview } from "./panes.js";
+import {
+  scrollAnchor,
+  viewportRows,
+  type Anchor,
+  type Row,
+} from "./scroll.js";
 import {
   armTabId,
   resolveSelected,
@@ -120,18 +126,21 @@ export function LiveApp({
   const inner = Math.max(20, columns - 4);
   const body = Math.max(3, rows - CHROME_ROWS);
 
-  // The lines the selected pane scrolls, or null on a pane that does not
+  // The rows the selected pane scrolls, or null on a pane that does not
   // scroll. Read here rather than at render time so the key handler can bound
-  // a scroll against the buffer it is actually moving through.
-  const feedLines =
-    selected === "log"
-      ? model.log()
-      : selected === "notes"
-        ? model.notes()
-        : selected === "ladder"
-          ? model.ladder()
-          : null;
-  const scrollable = feedLines !== null;
+  // a scroll against the buffer it is actually moving through — and, on the
+  // climb tab, against the rows the tree actually got after the notes tail took
+  // its share.
+  const logLines = selected === "log" ? model.log() : null;
+  const climb = selected === "climb" ? model.climb() : null;
+  const climbTree = climb ? climbRows(climb) : null;
+  // Both scroll by the same rules, so the key handler only needs their ids.
+  const scrollRows: Row[] | null = logLines ?? climbTree;
+  const scrollable = scrollRows !== null;
+  const scrollHeight =
+    selected === "climb"
+      ? climbLayout(body, model.notes().length).treeHeight
+      : body;
 
   useInput(
     (input, key) => {
@@ -161,10 +170,10 @@ export function LiveApp({
       }
       // Scrolling only means anything on the two list panes; elsewhere the
       // arrows would silently do nothing, so they stay tab navigation.
-      if (feedLines) {
-        const view = viewportRows(body);
+      if (scrollRows) {
+        const view = viewportRows(scrollHeight);
         const scroll = (delta: number) =>
-          setAnchor((current) => scrollAnchor(feedLines, current, view, delta));
+          setAnchor((current) => scrollAnchor(scrollRows, current, view, delta));
         if (key.upArrow) scroll(1);
         else if (key.downArrow) scroll(-1);
         else if (key.pageUp) scroll(view);
@@ -206,7 +215,7 @@ export function LiveApp({
   if (selected === "log") {
     pane = (
       <Feed
-        lines={feedLines ?? []}
+        lines={logLines ?? []}
         height={body}
         anchor={anchor}
         empty="no events yet"
@@ -214,33 +223,16 @@ export function LiveApp({
         transform={stripLogTimestamp}
       />
     );
-  } else if (selected === "notes") {
+  } else if (selected === "climb") {
+    // Where the experiment is: the rungs built and what each arm landed on
+    // them, the rung in flight, and the few queued behind it.
     pane = (
-      <Feed
-        lines={feedLines ?? []}
+      <ClimbTree
+        rows={climbTree ?? []}
+        notes={model.notes()}
         height={body}
         anchor={anchor}
-        empty="nothing logged yet"
-      />
-    );
-  } else if (selected === "ladder") {
-    // The plan as written, with the rung being built now called out — the whole
-    // reason to open this tab mid-climb is "where are we".
-    const current = model.currentSubticket;
-    pane = (
-      <Feed
-        lines={feedLines ?? []}
-        height={body}
-        anchor={anchor}
-        empty="no ladder yet"
-        highlight={
-          current
-            ? (text) => new RegExp(`^###\\s+\\[.\\]\\s+${current}\\s`).test(text)
-            : undefined
-        }
-        footer={
-          current ? `LADDER.md · building ${current}` : "LADDER.md"
-        }
+        footer={climbFooter(climb ?? [])}
       />
     );
   } else if (selected.startsWith("arm:")) {

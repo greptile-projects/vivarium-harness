@@ -1,3 +1,4 @@
+import type { ArmPhase } from "../harness/arms.js";
 import type { CodexMsg } from "../harness/session.js";
 
 export type ArmStatus = "starting" | "working" | "done" | "failed";
@@ -5,6 +6,10 @@ export type ArmStatus = "starting" | "working" | "done" | "failed";
 export interface ArmState {
   arm: string;
   status: ArmStatus;
+  // What the run says this arm has moved on to, when it is more specific than
+  // its status: waiting on a review, merging, held back by its peer. Set by the
+  // harness at each transition, never guessed from the activity text.
+  phase?: ArmPhase;
   model?: string;
   activity: string;
   // The last `ACTIVITY_HISTORY` activity lines, oldest first — what the arm's
@@ -202,11 +207,24 @@ export class LiveStore {
     this.emit();
   }
 
+  // What the arm has moved on to. A phase arriving before the arm's first
+  // codex/event also gets it off "starting": preparing the checkout is real
+  // work, and it happens before any session exists.
+  phase(arm: string, phase: ArmPhase): void {
+    const state = this.arms.get(arm);
+    if (!state) return;
+    state.phase = phase;
+    if (state.status === "starting") state.status = "working";
+    this.emit();
+  }
+
   finish(arm: string, result: { error?: string; threadId?: string }): void {
     const state = this.arms.get(arm);
     if (!state) return;
     state.endedAt = Date.now();
     state.threadId = result.threadId ?? state.threadId;
+    // The arm has settled: "merging" would outlive the merge it described.
+    state.phase = undefined;
     // Leave `activity` on the last real thing the arm was doing — the status
     // word is already shown in the panel title/status, and the error/answer
     // lines carry the outcome.

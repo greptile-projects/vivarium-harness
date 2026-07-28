@@ -17,6 +17,15 @@ export const STATUS_DOT: Record<ArmStatus, string> = {
   failed: "✗",
 };
 
+// The status word for an arm. While it is live this is the phase the harness
+// last announced — an arm sitting on a review it has not received yet is very
+// much "working", and saying so for forty minutes answered nothing. Once it
+// settles the outcome is the only word worth the column.
+export function statusLabel(state: ArmState): string {
+  if (state.status === "done" || state.status === "failed") return state.status;
+  return state.phase ?? state.status;
+}
+
 export function elapsedSeconds(state: ArmState): number {
   return ((state.endedAt ?? Date.now()) - state.startedAt) / 1000;
 }

@@ -12,7 +12,7 @@ export interface Tab {
 }
 
 export const OVERVIEW: Tab = { id: "overview", label: "overview" };
-export const LADDER: Tab = { id: "ladder", label: "ladder" };
+export const CLIMB: Tab = { id: "climb", label: "climb" };
 export const LOG: Tab = { id: "log", label: "log" };
 
 export function armTabId(arm: string): string {
@@ -26,13 +26,13 @@ export function tabsFor(model: LiveModel): Tab[] {
     id: armTabId(state.arm),
     label: state.arm,
   }));
-  const notes = model.notesLabel
-    ? [{ id: "notes", label: model.notesLabel }]
-    : [];
-  // The ladder file itself, when there is one. A one-ticket run has no ladder,
-  // so the tab simply is not there rather than opening empty.
-  const ladder = model.hasLadder() ? [LADDER] : [];
-  return [OVERVIEW, ...arms, ...notes, ...ladder, LOG];
+  // The climb itself — the rungs, and what each arm landed on them — when there
+  // is a plan to show. A one-ticket run has none, so the tab simply is not
+  // there rather than opening empty. The ladder file used to have a second tab
+  // of its own; it was the same plan with none of the outcomes, and the rung
+  // being built was the only thing anyone opened it for.
+  const climb = model.hasPlan() ? [CLIMB] : [];
+  return [OVERVIEW, ...arms, ...climb, LOG];
 }
 
 // Resolve the selected id against the tabs that actually exist right now.

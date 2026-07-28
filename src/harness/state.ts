@@ -23,11 +23,18 @@ export interface StateArmRecord {
   arm: string;
   status: LandingStatus;
   pullRequest?: { number: number; url: string; title: string };
-  // The reviewed arm's story in three numbers: rounds it was given, rounds it
-  // answered, and how long the conversation ran.
+  // The reviewed arm's story in four numbers: rounds it was given, rounds it
+  // answered, how long the whole conversation ran, and how much of that was
+  // inline comments on the diff. The two counts are kept apart because
+  // `comments` also holds review summaries, issue comments and reactions — fine
+  // as a measure of how much traffic a pull request drew, misleading as a count
+  // of findings, which is what the live view shows.
   rounds: number;
   answered: number;
   comments: number;
+  // Optional: records written before this field existed have none, and the view
+  // shows nothing rather than a number it would have to guess.
+  diffComments?: number;
 }
 
 export interface StateSubticketRecord {
@@ -118,6 +125,9 @@ export function armRecord(record: LandingRecord): StateArmRecord {
       (round) => round.response !== undefined,
     ).length,
     comments: record.conversation.length,
+    diffComments: record.conversation.filter(
+      (note) => note.kind === "review-comment",
+    ).length,
   };
 }
 

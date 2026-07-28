@@ -123,6 +123,10 @@ export function attachLive(
       store.note(arm, text);
       emit(arm, stamp(arm, "landing", text));
     },
+    // A phase is a status word, not a line of progress: the notes around it
+    // already say what happened, and teeing it too would double every
+    // transition in the log.
+    onArmPhase: (arm, phase) => store.phase(arm, phase),
     onLanding: (record) => options.onLanding?.(record),
     // Retire each arm's panel the moment that arm settles, rather than waiting
     // for every arm — otherwise a fast arm shows "working" until the slowest

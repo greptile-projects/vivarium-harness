@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { climbLayout, type ClimbRow, type ClimbTone } from "../climb.js";
 import type { Line, PullRequestEntry } from "../model.js";
 import type { ArmState } from "../store.js";
 import {
@@ -13,6 +14,7 @@ import {
   formatTokens,
   meter,
   oneLine,
+  statusLabel,
   truncate,
   wrapLines,
 } from "./format.js";
@@ -77,7 +79,7 @@ export function ArmCard({
         </Box>
         <Text bold>{state.arm}</Text>
         <Box flexGrow={1} />
-        <Text color={color}>{state.status}</Text>
+        <Text color={color}>{statusLabel(state)}</Text>
         <Text dimColor>{"   "}{formatDuration(elapsedSeconds(state))}</Text>
       </Box>
       {rows >= 3 ? (
@@ -168,11 +170,17 @@ export function PullRequests({
     <Box flexDirection="column" paddingLeft={2}>
       {visible.map((pr) => {
         const merged = pr.status === "merged";
-        const detail = pr.rounds
-          ? `${pr.answered}/${pr.rounds} answered · ${pr.comments} comments`
-          : pr.comments
-            ? `${pr.comments} comments`
-            : "";
+        // Comments here means comments *on the diff*. The full conversation
+        // also carries the description, each review's summary body and
+        // reactions, which made a two-finding review read as "6 comments".
+        const parts: string[] = [];
+        if (pr.rounds) parts.push(`${pr.answered}/${pr.rounds} answered`);
+        if (pr.diffComments !== undefined) {
+          parts.push(
+            `${pr.diffComments} diff comment${pr.diffComments === 1 ? "" : "s"}`,
+          );
+        }
+        const detail = parts.join(" · ");
         const head = `${merged ? "✓" : "✗"} #${String(pr.number).padEnd(digits)}  `;
         const room = Math.max(0, width - head.length - pr.url.length - 5);
         return (
@@ -189,7 +197,10 @@ export function PullRequests({
   );
 }
 
-// One arm, in full: the numbers it is burning, everything it has done so far,
+// Activity rows an arm's tab keeps. See the trail in `ArmDetail`.
+export const ACTIVITY_ROWS = 10;
+
+// One arm, in full: the numbers it is burning, what it has been doing lately,
 // what it landed, and its answer or error verbatim.
 export function ArmDetail({
   state,
@@ -235,13 +246,18 @@ export function ArmDetail({
       : [];
   if (answer.length) rowsLeft -= 2 + answer.length;
 
+  // The trail is a *recent*-activity list, not a transcript: past ten lines it
+  // is scrollback nobody reads, and on a tall terminal it used to swallow the
+  // whole pane. The full history is in the arm's progress.log.
   const trail =
-    rowsLeft >= 3 ? state.recent.slice(-(rowsLeft - 2)) : ([] as string[]);
+    rowsLeft >= 3
+      ? state.recent.slice(-Math.min(ACTIVITY_ROWS, rowsLeft - 2))
+      : ([] as string[]);
 
   return (
     <Box flexDirection="column">
       <Field label="status">
-        <Text color={STATUS_COLOR[state.status]}>{state.status}</Text>
+        <Text color={STATUS_COLOR[state.status]}>{statusLabel(state)}</Text>
         <Text dimColor>
           {"   "}
           {formatDuration(elapsedSeconds(state))}
@@ -332,6 +348,78 @@ export function ArmDetail({
   );
 }
 
+const CLIMB_COLOR: Record<ClimbTone, string | undefined> = {
+  good: "green",
+  bad: "red",
+  now: "cyan",
+  dim: undefined,
+  plain: undefined,
+};
+
+// The climb, as a tree: every rung already built with what each arm landed on
+// it, the rung in flight, and the few queued behind it. It tails like a feed —
+// the newest rows are the ones you came for — and scrolls back into the
+// history. The climb's own log lines sit underneath, the last few of them,
+// beside the rung they are about.
+export function ClimbTree({
+  rows,
+  notes,
+  height,
+  anchor,
+  footer,
+}: {
+  rows: ClimbRow[];
+  notes: Line[];
+  height: number;
+  anchor: Anchor;
+  footer: string;
+}) {
+  const layout = climbLayout(height, notes.length);
+  if (rows.length === 0) {
+    return <Text dimColor>no plan yet — Greg has not written a rung</Text>;
+  }
+
+  const { visible, behind } = feedWindow(
+    rows,
+    anchor,
+    viewportRows(layout.treeHeight),
+  );
+
+  return (
+    <Box flexDirection="column">
+      {visible.map((row) => (
+        <Text
+          key={row.id}
+          color={CLIMB_COLOR[row.tone]}
+          bold={row.kind === "milestone" || row.tone === "now"}
+          dimColor={row.tone === "dim" || row.kind === "milestone"}
+          wrap="truncate-end"
+        >
+          {row.text}
+        </Text>
+      ))}
+      <Text
+        color={behind > 0 ? "yellow" : undefined}
+        dimColor={behind === 0}
+        wrap="truncate-end"
+      >
+        {behind > 0
+          ? `↓ ${behind} newer row${behind === 1 ? "" : "s"} · g to follow`
+          : footer}
+      </Text>
+      {layout.notes > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          {notes.slice(-layout.notes).map((line) => (
+            <Text key={line.id} dimColor wrap="truncate-end">
+              {line.text}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
 // A tail-following list: notes (Greg's climb) and the raw event feed both use
 // it. `anchor` says where the window is parked — `null` follows the live end.
 // The pane draws `height - 1` lines and one status row, always: the status row
@@ -344,23 +432,14 @@ export function Feed({
   empty,
   dim = false,
   transform,
-  highlight,
-  footer,
 }: {
   lines: Line[];
   height: number;
   anchor: Anchor;
   empty: string;
-  // The raw event feed is reference material and reads dim; the climb's own
-  // notes are the point of their tab and read plain.
+  // The raw event feed is reference material and reads dim.
   dim?: boolean;
   transform?: (text: string) => string;
-  // Lines to call out — the ladder pane marks the rung being built now, which
-  // is the one thing you open that tab to find.
-  highlight?: (text: string) => boolean;
-  // Replaces the "live · N lines" status row. The ladder is a document, not a
-  // feed, so "live" would be a lie there.
-  footer?: string;
 }) {
   if (lines.length === 0) return <Text dimColor>{empty}</Text>;
 
@@ -368,20 +447,11 @@ export function Feed({
 
   return (
     <Box flexDirection="column">
-      {visible.map((line) => {
-        const marked = highlight?.(line.text) ?? false;
-        return (
-          <Text
-            key={line.id}
-            dimColor={dim && !marked}
-            bold={marked}
-            color={marked ? "cyan" : undefined}
-            wrap="truncate-end"
-          >
-            {transform ? transform(line.text) : line.text}
-          </Text>
-        );
-      })}
+      {visible.map((line) => (
+        <Text key={line.id} dimColor={dim} wrap="truncate-end">
+          {transform ? transform(line.text) : line.text}
+        </Text>
+      ))}
       <Text
         color={behind > 0 ? "yellow" : undefined}
         dimColor={behind === 0}
@@ -389,8 +459,7 @@ export function Feed({
       >
         {behind > 0
           ? `↓ ${behind} newer line${behind === 1 ? "" : "s"} · g to follow`
-          : (footer ??
-            `live · ${lines.length} line${lines.length === 1 ? "" : "s"}`)}
+          : `live · ${lines.length} line${lines.length === 1 ? "" : "s"}`}
       </Text>
     </Box>
   );

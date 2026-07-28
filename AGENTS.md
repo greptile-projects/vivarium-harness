@@ -70,8 +70,9 @@ bun start -- --help              # the full option + env reference
   `LADDER.md`, which is part of the published record.
 - **`--tui` / `--no-tui`** force the live view (default: on when stdout is a
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
-  tab **per arm** with its context meter, activity trail and answer, Greg's
-  **ladder** notes, and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
+  tab **per arm** with its context meter, recent activity and answer, the
+  **climb** (every rung built, with both arms' pull requests, the rung in
+  flight, and the next few), and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
   scroll the list tabs, `q` quits — and quitting **stops the run**. The safety
   is an in-view confirmation, not a flag: while sessions are still working, `q`
   names what would be torn down and waits for `y` (any other key goes back to
@@ -449,7 +450,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   rung does not spend a Greptile review. A failed **review answer** is also
   fail-closed: it records `review-failed`, blocks both merges, and halts Greg
   rather than landing findings the arm never addressed. Watchers are grouped in
-  `HarnessSinks` (`onEvent`, `onArmComplete`, `onArmNote`, `onLanding`) and the
+  `HarnessSinks` (`onEvent`, `onArmComplete`, `onArmNote`, `onArmPhase`,
+  `onLanding`) and the
   outside world in `HarnessDeps` (`runner`, `github`, `environment`, `wait`,
   `now`) — the
   landing phase is testable without git, `gh`, or a clock. `armExecution` is the
@@ -542,7 +544,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   `climb.ts` (`runGregLive`) hands `runGreg` its `plan`/`harness`/`log` deps so
   the planner's *and* the builders' event streams are watchable — a silent
   multi-minute planning session is what used to look like a hang — and it seeds
-  the view from `state.json` and refreshes the ladder pane between phases.
+  the view from `state.json` and re-reads the ladder between phases (Greg
+  appends rungs as he plans and the loop checks boxes as it builds, so a plan
+  read once would quietly stop showing where the climb is).
   `ticket.ts` (`runTicketLive`) is the same shape with no Greg in it. They sit
   beside `index.ts`, their only caller, rather than inside `greg-tile/` or
   `view/`: those two are layers, and neither should have to know the other
@@ -554,13 +558,15 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   the deliberate counterpart to `LADDER.md` (see the warning under `ladder.ts`).
   Because *nothing* downstream reads it — never mounted, never in a prompt — it
   can hold everything worth reading later: per subticket, the run id, artifact
-  dir, and each arm's pull request with its review-round counts; per planning
+  dir, and each arm's pull request with its review-round counts — `comments` for
+  the whole conversation and `diffComments` for the inline ones, kept apart
+  because only the second is a count of findings; per planning
   turn, Greg's thread id and the transcript copied out of `CODEX_HOME`. Reads
   fail open (a missing or corrupt file is an empty climb) because this is a
   record for humans and must never stop the experiment it is recording. It is
   also what makes the live view survive a restart: `climb.ts` seeds the arm tabs
-  from it, so a climb spanning weeks and many `bun start` invocations shows
-  every pull request it has ever landed, not just the rung in flight.
+  and the climb tree from it, so a climb spanning weeks and many `bun start`
+  invocations shows every rung it has ever landed, not just the one in flight.
 
 - **`src/index.ts`** — the single entrypoint. Dispatches to either the ladder
   loop (default) or a one-ticket run, owns the `results/live-<ts>/` log
@@ -581,12 +587,35 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   line first. The interleaved view survives where it belongs — in the log tab.
   `store.ts` reduces raw `codex/event` messages into per-arm `ArmState`, plus
   `note()` for landing progress (waiting on a review is the arm working with
-  its session idle, and it belongs on the same activity trail);
+  its session idle, and it belongs on the same activity trail) and `phase()`
+  for the **status word**. A run spends long stretches with the session idle,
+  and "working" for forty minutes did not say whether the arm was writing code
+  or sitting on a review that had not arrived. So the harness *announces* what
+  each arm has moved on to — `preparing`, `building`, `waiting for review`,
+  `answering review`, `merging`, `held back` (`ArmPhase` in `harness/arms.ts`,
+  through the `onArmPhase` sink) — at the transition itself. Nothing infers a
+  phase by reading the prose of a note: the notes are the experiment's
+  human-facing text and get reworded, and a classifier over them would start
+  lying at the next rewrite. `statusLabel` in `format.ts` is the whole display
+  rule — the phase while the arm is live, the outcome once it settles;
   `model.ts` is `LiveModel`, the one view model **both** run modes render from
-  (arms, a subtitle, notes, the mirrored log, and the merged pull requests per
-  arm — those live on the model, not the store, because the store is cleared
-  between phases and merged pull requests are exactly what should accumulate
-  across them). `quit.ts` owns what closing the
+  (arms, a subtitle, notes, the mirrored log, the plan, and the merged pull
+  requests per arm — those live on the model, not the store, because the store
+  is cleared between phases and merged pull requests are exactly what should
+  accumulate across them). `climb()` is where the two halves of the experiment's
+  own history meet: the ladder says what was planned and which boxes are
+  checked, `state.json` and the run in flight say what each arm landed on each
+  rung. A landing arriving mid-run is filed under `currentSubticket`, so the
+  tree fills in as the run goes rather than only in the next process. The plan
+  reaches the model as four fields per rung (`PlanSubticket`) rather than as
+  ladder text, which is what keeps `view/` and `greg-tile/` ignorant of each
+  other. `climb.ts` beside it is the pure row builder — what the tree shows, in
+  what order, and what each row says — so the shape is testable without Ink.
+  The comment count on a pull-request row is **inline comments on the diff**,
+  not the whole conversation: that also holds the description, every review's
+  summary body and reactions, which inflated a two-finding review into "6
+  comments" and made the number useless for comparing arms.
+  `quit.ts` owns what closing the
   view means — quitting stops the run. `needsQuitConfirm`/`confirmQuitPrompt`
   drive the in-view `y / n` question while sessions are still working, and
   `onViewClosed` is the shared hook both modes hand to `mountLive`: it decides
@@ -606,27 +635,38 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   rest of the run. `app.tsx` is the shell: header, tab strip, body,
   key handling. `tabs.ts` is the pure tab logic, keyed on **stable ids, never
   indices** — Greg swaps which sessions are live between phases, so the tab list
-  changes shape mid-run, and the **ladder** tab appears only once a plan exists
+  changes shape mid-run, and the **climb** tab appears only once a plan exists
   (a one-ticket run has none, so the tab is absent rather than empty).
   `panes.tsx` holds the panes: `Overview` (one calm
   card per arm), `ArmDetail` (one arm in full — context meter, the pull
-  requests it has merged with their GitHub links, activity trail, answer),
-  `Feed` (tail-following list, used by the climb, ladder and log tabs — the
-  ladder tab passes a `highlight` predicate to mark the rung being built now,
-  which is the whole reason to open it mid-climb, and a `footer` because a
-  document is not a live feed). The pull
+  requests it has merged with their GitHub links, recent activity, answer),
+  `ClimbTree` (the rungs as a tree, with what each arm landed on them), and
+  `Feed` (tail-following list, used by the log tab). The ladder file used to
+  have a tab of its own next to the climb: the same plan with none of the
+  outcomes, and the rung being built was the only thing anyone opened it for —
+  which the climb tree marks anyway. The climb's own log lines survive as a
+  short tail under the tree, and in full in the log tab and `ladder.log`. The pull
   request rows are budgeted *before* the answer and print the URL whole,
   truncating the title instead: those rows exist to be opened, and a truncated
-  link is not a link.
+  link is not a link. The activity trail is capped at ten rows however tall the
+  terminal is — it is a *recent*-activity list, and the full history is in the
+  arm's `progress.log`.
   Every pane is told its height and **budgets its rows explicitly**: Ink resolves
   overflow by drawing rows on top of each other rather than scrolling, so a pane
   drops a section instead of nearly fitting. `wrapLines` in `format.ts` exists
   for the same reason — a block has to know its real height before it renders,
-  and so does `scroll.ts`, the pure scrollback logic behind `Feed`: it hands out
+  and so does `scroll.ts`, the pure scrollback logic behind `Feed` and the climb
+  tree: it hands out
   `height - 1` content rows because the status row at the bottom is permanent,
-  bounds a scroll to the buffer, and parks the view on a **line id** rather than
+  bounds a scroll to the buffer, and parks the view on a **row id** rather than
   a distance from the end, so arriving events cannot drag the text a human is
-  reading out from under them.
+  reading out from under them. Which is why a row id must identify the *row* and
+  never its position: the log feed numbers its lines as they arrive, but the
+  climb tree is rebuilt whole on every change and rows appear above existing
+  ones (a landing adds an arm row mid-list, a rung that left the ladder is
+  prepended), so its rows are keyed to the rung or arm they describe. A
+  positional id there re-points the anchor at different content, which is the
+  exact failure the anchor exists to prevent.
 
 - **`src/greg-tile/`** — the planner loop that sits *above* the harness.
   `ladder.ts` owns `LADDER.md`: parsing `### [ ] 1.2 Title — ENG-12` checkbox
@@ -775,4 +815,8 @@ is a plain promise-ordering test. `view-quit.test.ts` does the same for what
 quitting means — `quitNotice` is pure, and `onViewClosed` is checked against a
 real `LiveModel` with stdout spied. The matching harness-side guarantee lives
 in `harness.test.ts`: an aborted arm must record one failed attempt, **not**
-spend its remaining retries.
+spend its remaining retries. `view-climb.test.ts` is the same trick for the
+climb tab: `climbRows`/`climbFooter`/`climbLayout` are pure, so what the tree
+shows — which rungs, which arm rows, the pull request URLs whole — is asserted
+without Ink, and `LiveModel.climb()` is checked for the merge of plan and
+outcome it exists to do.

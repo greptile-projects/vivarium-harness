@@ -1,10 +1,17 @@
-import type { Line } from "../model.js";
+// Anything a scrollable pane draws a row of. The id has to identify the *row*,
+// not where it currently sits: the log feed numbers its lines as they arrive,
+// the climb tree keys each row to the rung or arm it describes.
+export type RowId = number | string;
+
+export interface Row {
+  id: RowId;
+}
 
 // Where a feed pane is parked. `null` follows the live end; otherwise it is the
-// **id** of the bottom-most visible line, never a distance from the end — lines
+// **id** of the bottom-most visible row, never a distance from the end — rows
 // keep arriving while a human reads, and a distance would let the text they are
 // looking at slide out from under them.
-export type Anchor = number | null;
+export type Anchor = RowId | null;
 
 // Content rows a feed may draw in `height` rows of pane. One row is always
 // reserved for the status line at the bottom, whether or not it has anything
@@ -24,7 +31,14 @@ function clampEnd(end: number, total: number, viewport: number): number {
 // Resolve an anchor to the index *after* the bottom-most visible line. An
 // anchor whose line has aged out of the ring buffer pins to the oldest lines
 // still held — the closest surviving spot to what the reader was looking at.
-function endFor(lines: Line[], anchor: Anchor, viewport: number): number {
+// Every function here is generic over the row type: the climb tree scrolls rows
+// that carry a kind and a tone beside their text, and it has to scroll by
+// exactly these rules.
+function endFor<T extends Row>(
+  lines: T[],
+  anchor: Anchor,
+  viewport: number,
+): number {
   if (anchor === null) return lines.length;
   const index = lines.findIndex((line) => line.id === anchor);
   return clampEnd(index < 0 ? 0 : index + 1, lines.length, viewport);
@@ -33,8 +47,8 @@ function endFor(lines: Line[], anchor: Anchor, viewport: number): number {
 // Scroll `delta` lines back (positive) or forward (negative), returning the new
 // anchor. Returns `null` — follow live again — whenever the window lands back
 // at the newest line, so scrolling down to the bottom resumes tailing.
-export function scrollAnchor(
-  lines: Line[],
+export function scrollAnchor<T extends Row>(
+  lines: T[],
   anchor: Anchor,
   viewport: number,
   delta: number,
@@ -45,11 +59,11 @@ export function scrollAnchor(
 }
 
 // The slice to draw, plus how many newer lines sit below it.
-export function feedWindow(
-  lines: Line[],
+export function feedWindow<T extends Row>(
+  lines: T[],
   anchor: Anchor,
   viewport: number,
-): { visible: Line[]; behind: number } {
+): { visible: T[]; behind: number } {
   const end = endFor(lines, anchor, viewport);
   return {
     visible: lines.slice(Math.max(0, end - viewport), end),
