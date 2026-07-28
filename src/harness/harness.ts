@@ -316,6 +316,9 @@ export async function runHarness(
         phase: (label: ArmPhase) => phase(arm.name, label),
         wait,
         now,
+        // The same abort that tears down the sessions: without it a quit
+        // during "waiting for review" sits out the rest of the review timeout.
+        signal,
         reply: (reviewPrompt: string) =>
           runner!(
             {

@@ -386,12 +386,26 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   above where most pull requests settle because the later rounds are where a
   *disagreement* plays out — the arm pushing back, Greptile holding or
   conceding — which is the experiment's subject matter. The exchange ends on
-  one of three bounded conditions:
+  one of four bounded conditions:
     - **The reviewer signs off with a thumbs-up reaction.** GitHub exposes that
       structured reaction as `+1`; it is the only event recorded `signedOff`.
       Review bodies and comments are always handed to the arm without trying to
       infer their meaning from prose, and every other reaction is ignored.
-    - **Nothing new arrives**, and the round times out.
+    - **The arm's answer leaves no trace on the pull request.** The reviewer
+      only ever responds to a ping — a pushed commit or a posted comment — and
+      its thumbs-up is an ACK to one. An answer that pushed nothing and posted
+      nothing (a clean review gives the arm nothing to fix and nothing to say)
+      gave the reviewer nothing to react to, so waiting again could only end in
+      the full timeout. The round is recorded `settled` and the exchange ends
+      immediately. An unreadable post-answer check fails open to waiting —
+      unknown must not end the exchange early.
+    - **The reviewer has been silent for `reviewTimeoutMs`** (default 20
+      minutes), and the round times out. The window is rolling — measured from
+      the reviewer's last comment as the harness observed it, or from the start
+      of the wait when there has been none — so it bounds total reviewer
+      silence, not each round afresh: a round that starts after a long answer
+      turn inherits the silence already on the clock. At least one poll always
+      happens, so activity that landed during the answer turn is still found.
     - **The maximum is reached.** At most `reviewRounds` reviewer comments are
       handed back to the arm, so a disagreement cannot create an unbounded
       comment loop.
@@ -405,11 +419,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   reply from that login. The harness deliberately does not paste comment text;
   this thread-state check is how the arm finds missed roots without being told
   their contents.
-  So a pull request that settles in one exchange costs one round, and only a
-  final *unanswered* round pays the full wait. A
+  So a pull request that settles in one exchange costs one round, and the full
+  wait is only ever paid for a reviewer that never shows: a
   review that never arrives merges unreviewed after
   `reviewTimeoutMs` rather than holding the climb, and the timeout is recorded
-  as the round's outcome. Each answered round pins the branch head on **both
+  as the round's outcome. The review wait also watches the run's abort signal —
+  the same one quitting the live view fires — and an aborted wait is recorded
+  as a failed round that refuses to merge, so a quit during "waiting for
+  review" tears down now instead of sitting out the rest of the timeout. Each answered round pins the branch head on **both
   sides** (`reviewedSha`, `respondedSha`). `reviewedSha` is captured before the
   arm can touch the ref: an amend or force-push makes the reviewed commits
   unreachable and GitHub marks the inline comments outdated, which would erase

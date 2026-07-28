@@ -47,6 +47,11 @@ export interface ReviewRound {
   // round, and the exchange ended here. Recorded rather than inferred from an
   // empty `response`, which is also what an errored answer turn leaves behind.
   signedOff?: boolean;
+  // The arm's answer pushed no commit and posted no comment, so there was
+  // nothing for the reviewer to respond to and the exchange ended with this
+  // round instead of waiting again. Recorded rather than inferred: an equal
+  // sha pair beside an unreadable conversation would look identical.
+  settled?: boolean;
 }
 
 // GitHub's reaction API represents thumbs-up as "+1". That structured event is
@@ -111,6 +116,11 @@ export interface LandDeps {
   phase?: (phase: ArmPhase) => void;
   wait: (ms: number) => Promise<void>;
   now: () => number;
+  // Quitting the live view aborts the controller every session runs under —
+  // but the landing phase waits on GitHub with no session in flight, so it has
+  // to watch the same signal itself or a quit during "waiting for review" sits
+  // out the rest of the review timeout before teardown can run.
+  signal?: AbortSignal;
 }
 
 export function landingSummary(record: LandingRecord): string {
@@ -122,7 +132,11 @@ export function landingSummary(record: LandingRecord): string {
   const where = pr ? `#${pr.number}` : "no pull request";
   // Preserve an explicit reviewer sign-off in the human-readable summary.
   const last = record.reviewRounds.at(-1);
-  const ended = last?.signedOff ? `, ${last.reviewer} signed off` : "";
+  const ended = last?.signedOff
+    ? `, ${last.reviewer} signed off`
+    : last?.settled
+      ? ", settled with nothing left to answer"
+      : "";
   switch (record.status) {
     case "merged":
       return rounds > 0
@@ -164,6 +178,26 @@ export async function prepareArm(
   return baseline;
 }
 
+// `deps.wait`, cut short when the run is aborted. Returns whether the signal
+// fired, so a poll loop stops at the next tick instead of sitting out its
+// timeout after the user has already quit.
+function waitUnlessAborted(
+  deps: Pick<LandDeps, "wait" | "signal">,
+  ms: number,
+): Promise<boolean> {
+  const signal = deps.signal;
+  if (!signal) return deps.wait(ms).then(() => false);
+  if (signal.aborted) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onAbort = (): void => resolve(true);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void deps.wait(ms).then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(signal.aborted);
+    });
+  });
+}
+
 // Wait for something new from the reviewer, or give up. Polls the whole
 // conversation rather than a cursor: comment ids are the only durable identity
 // here, and a review that arrives as three comments at once should count once.
@@ -179,16 +213,35 @@ async function waitForReview(
   timeoutMs: number,
   pollMs: number,
   debounceMs: number,
+  // The rolling anchor: when the harness last saw something from the reviewer,
+  // in `deps.now()` terms. The timeout window is "the reviewer has been silent
+  // for `timeoutMs`", not a fresh allowance per wait — so a round that starts
+  // after the arm spent a while answering inherits the silence already on the
+  // clock. Absent (round one, nothing seen yet), the window runs from the
+  // start of this wait. At least one poll always happens, so activity that
+  // landed during the arm's answer turn is found even past the deadline.
+  reviewerLastSeenAt?: number,
 ): Promise<{
   found: ReviewNote[];
   conversation: ReviewNote[];
   waitedMs: number;
   timedOut: boolean;
+  // The run was aborted mid-wait — the caller stops landing, it does not merge.
+  aborted?: boolean;
   // Set when the last poll before giving up could not read the conversation:
   // "the API was dark" must not be recorded as "the reviewer said nothing".
   error?: string;
 }> {
   const start = deps.now();
+  const deadline = (reviewerLastSeenAt ?? start) + timeoutMs;
+  const abortedResult = () => ({
+    found: [] as ReviewNote[],
+    conversation: [] as ReviewNote[],
+    waitedMs: deps.now() - start,
+    timedOut: false,
+    aborted: true,
+  });
+  if (deps.signal?.aborted) return abortedResult();
   const fromReviewer = (note: ReviewNote): boolean =>
     sameLogin(note.author, reviewer) &&
     !seen.has(note.id) &&
@@ -203,7 +256,7 @@ async function waitForReview(
       // A failed read is a failed poll, not reviewer silence — keep polling,
       // and if the whole wait ends this way, say so in the record.
       lastError = error instanceof Error ? error.message : String(error);
-      if (deps.now() - start >= timeoutMs) {
+      if (deps.now() >= deadline) {
         return {
           found: [],
           conversation: [],
@@ -212,7 +265,7 @@ async function waitForReview(
           error: lastError,
         };
       }
-      await deps.wait(pollMs);
+      if (await waitUnlessAborted(deps, pollMs)) return abortedResult();
       continue;
     }
     const found = conversation.filter(fromReviewer);
@@ -229,7 +282,9 @@ async function waitForReview(
       let settledFound = found;
       let ids = new Set(found.map((entry) => entry.id));
       for (;;) {
-        await deps.wait(debounceMs);
+        // Aborting mid-debounce drops the batch in hand, which is fine: the
+        // run is being torn down, not sent back to answer.
+        if (await waitUnlessAborted(deps, debounceMs)) return abortedResult();
         let next: ReviewNote[];
         try {
           next = await deps.github.conversation(pullRequest);
@@ -257,7 +312,7 @@ async function waitForReview(
         ids = new Set(settledFound.map((entry) => entry.id));
       }
     }
-    if (deps.now() - start >= timeoutMs) {
+    if (deps.now() >= deadline) {
       return {
         found: [],
         conversation,
@@ -266,8 +321,34 @@ async function waitForReview(
         error: lastError,
       };
     }
-    await deps.wait(pollMs);
+    if (await waitUnlessAborted(deps, pollMs)) return abortedResult();
   }
+}
+
+// Whether anything worth responding to appeared on the pull request since
+// `seen` was captured: a comment from anyone, or the reviewer's thumbs-up —
+// the one reaction the next round would act on. Every other reaction is noise
+// here just as it is in the wait loop.
+async function answerLeftTrace(
+  deps: Pick<LandDeps, "github">,
+  pullRequest: number,
+  reviewer: string,
+  seen: Set<string>,
+): Promise<boolean> {
+  let after: ReviewNote[];
+  try {
+    after = await deps.github.conversation(pullRequest);
+  } catch {
+    // Unreadable is unknown, and unknown must not end the exchange early —
+    // the next round's poll loop absorbs transient failures already.
+    return true;
+  }
+  return after.some(
+    (entry) =>
+      !seen.has(entry.id) &&
+      (entry.kind !== "reaction" ||
+        (sameLogin(entry.author, reviewer) && isThumbsUpReaction(entry))),
+  );
 }
 
 // The post-merge conversation is the close-reading record in land.json, so a
@@ -341,6 +422,10 @@ export async function reviewArm(
 
   const reviewRounds: ReviewRound[] = [];
   const seen = new Set<string>();
+  // When the harness last saw the reviewer say anything, on its own clock —
+  // the anchor that makes the review timeout a rolling window over reviewer
+  // silence rather than a fresh allowance per round.
+  let reviewerLastSeenAt: number | undefined;
 
   if (arm.reviewer) {
     for (let round = 1; round <= config.reviewRounds; round += 1) {
@@ -354,7 +439,24 @@ export async function reviewArm(
         config.reviewTimeoutMs,
         config.reviewPollMs,
         config.reviewDebounceMs,
+        reviewerLastSeenAt,
       );
+
+      if (waited.aborted) {
+        // The user quit. Refusing to merge is the point — recorded like any
+        // other failed answer so the barrier holds and Greg leaves the box
+        // unchecked, and teardown runs now instead of after the timeout.
+        reviewRounds.push({
+          round,
+          reviewer: arm.reviewer,
+          waitedMs: waited.waitedMs,
+          timedOut: false,
+          found: [],
+          error: "the run was aborted while waiting for the reviewer",
+        });
+        note("the run was aborted while waiting for review — refusing to merge");
+        return done("review-failed", { branch, pullRequest, reviewRounds });
+      }
 
       if (waited.timedOut) {
         reviewRounds.push({
@@ -377,6 +479,7 @@ export async function reviewArm(
 
       const found = waited.found;
       const conversation = waited.conversation;
+      reviewerLastSeenAt = deps.now();
 
       // Everything visible now counts as seen, including the arm's own replies:
       // the next round is only interested in what the reviewer says *after*
@@ -449,7 +552,7 @@ export async function reviewArm(
           `could not read the branch head on #${pullRequest.number} (${missing.join(", ")}) — round ${round} recorded without it`,
         );
       }
-      reviewRounds.push({
+      const answered: ReviewRound = {
         round,
         reviewer: arm.reviewer,
         waitedMs: waited.waitedMs,
@@ -466,7 +569,8 @@ export async function reviewArm(
         // engagement at all. The failure text is still kept, as `error`.
         response: answer.isError ? undefined : answer.output,
         error: answer.isError ? answer.output : undefined,
-      });
+      };
+      reviewRounds.push(answered);
 
       if (answer.isError) {
         note("the arm failed to answer the review — refusing to merge");
@@ -475,6 +579,31 @@ export async function reviewArm(
           pullRequest,
           reviewRounds,
         });
+      }
+
+      // The reviewer only responds to a ping — a pushed commit or a posted
+      // comment — and its thumbs-up sign-off is an ACK to one. An answer turn
+      // that left neither on the pull request (a clean review gives the arm
+      // nothing to fix and nothing to say) gave the reviewer nothing to react
+      // to, so waiting another round could only ever end in the full timeout.
+      // The exchange is settled the moment an answer leaves no trace on the
+      // record. On the last allowed round there is no next wait to spare, so
+      // the check is skipped rather than spent on a read nobody uses.
+      if (round < config.reviewRounds) {
+        const pushed =
+          reviewedSha !== undefined &&
+          respondedSha !== undefined &&
+          reviewedSha !== respondedSha;
+        if (
+          !pushed &&
+          !(await answerLeftTrace(deps, pullRequest.number, arm.reviewer, seen))
+        ) {
+          answered.settled = true;
+          note(
+            `the answer pushed nothing and posted nothing on #${pullRequest.number} — nothing for ${arm.reviewer} to respond to, so the review is settled`,
+          );
+          break;
+        }
       }
     }
   }

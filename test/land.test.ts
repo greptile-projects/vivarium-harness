@@ -540,6 +540,12 @@ describe("the rounds after the first", () => {
       conversations: [
         [],
         [note(REVIEWER, "c1", "this leaks the connection on the error path")],
+        // The post-answer read: the arm's reply is on the record, so the
+        // exchange stays open and the next round waits.
+        [
+          note(REVIEWER, "c1", "this leaks the connection on the error path"),
+          armReply("c2", "fixed in 3f21a — the finally block closes it"),
+        ],
         // Greptile answers back inside the thread: the fix did not convince it.
         [
           note(REVIEWER, "c1", "this leaks the connection on the error path"),
@@ -553,7 +559,8 @@ describe("the rounds after the first", () => {
             inReplyTo: "c1",
           },
         ],
-        // Round three: nothing new from the reviewer, so it times out.
+        // Round three: the arm replied again, but nothing new arrives from
+        // the reviewer, so it times out.
         [
           note(REVIEWER, "c1", "this leaks the connection on the error path"),
           armReply("c2", "fixed in 3f21a — the finally block closes it"),
@@ -612,15 +619,117 @@ describe("the rounds after the first", () => {
       }),
     );
 
+    // The prose still costs an answer turn — it is handed to the arm, never
+    // classified. The arm then posts nothing back to a compliment, so the
+    // exchange settles rather than being closed by the words themselves.
     expect(prompts).toHaveLength(2);
-    expect(record.reviewRounds).toHaveLength(3);
+    expect(record.reviewRounds).toHaveLength(2);
     expect(record.reviewRounds[1]?.signedOff).toBeUndefined();
     expect(record.reviewRounds[1]?.response).toBe("replied to every comment");
     expect(record.reviewRounds[1]?.found.map((entry) => entry.id)).toEqual([
       "c3",
     ]);
-    expect(record.reviewRounds[2]?.timedOut).toBe(true);
+    expect(record.reviewRounds[1]?.settled).toBe(true);
     expect(record.status).toBe("merged");
+  });
+
+  // The reviewer only ACKs a ping. A clean review gives the arm nothing to fix
+  // and nothing to say, so no +1 ever arrives and the next round could only
+  // end in the full timeout — the exchange must settle the moment an answer
+  // leaves no trace on the pull request.
+  it("settles when the answer pushes nothing and posts nothing", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "c1", "5/5 — no issues found")]],
+      // The branch never moves either.
+      heads: ["sha-unchanged"],
+    });
+    const prompts: string[] = [];
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    expect(prompts).toHaveLength(1);
+    expect(record.reviewRounds).toHaveLength(1);
+    expect(record.reviewRounds[0]?.settled).toBe(true);
+    expect(record.reviewRounds[0]?.timedOut).toBe(false);
+    expect(record.status).toBe("merged");
+  });
+
+  it("keeps waiting when the post-answer read fails, rather than settling blind", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "c1", "5/5 — no issues found")]],
+      heads: ["sha-unchanged"],
+    });
+    const conversation = github.conversation.bind(github);
+    let reads = 0;
+    github.conversation = async (pullRequest) => {
+      reads += 1;
+      // The second read is the post-answer trace check.
+      if (reads === 2) throw new Error("HTTP 502");
+      return conversation(pullRequest);
+    };
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    // Unknown is not settled: a second round runs and times out instead.
+    expect(record.reviewRounds).toHaveLength(2);
+    expect(record.reviewRounds[0]?.settled).toBeUndefined();
+    expect(record.reviewRounds[1]?.timedOut).toBe(true);
+    expect(record.status).toBe("merged");
+  });
+
+  // The timeout bounds total reviewer silence, not each round afresh: round
+  // two's window is measured from the comment round one found, so an answer
+  // turn that already outlived the window leaves only the guaranteed final
+  // poll, not a whole fresh wait.
+  it("rolls the timeout window from the reviewer's last comment, not the round start", async () => {
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [note(REVIEWER, "c1", "one finding")],
+        [
+          note(REVIEWER, "c1", "one finding"),
+          armReply("c2", "fixed in 3f21a"),
+        ],
+      ],
+      heads: ["sha-reviewed", "sha-after-fix"],
+    });
+    let clock = 0;
+    const record = await reviewArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      {
+        github,
+        // The answer turn alone outlives the 300ms window.
+        reply: async () => {
+          clock += 350;
+          return answer();
+        },
+        note: () => {},
+        wait: async (ms: number) => {
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    );
+
+    const [, second] = record.reviewRounds;
+    expect(record.reviewRounds).toHaveLength(2);
+    // Round two got its one poll and timed out on silence already spent.
+    expect(second?.timedOut).toBe(true);
+    expect(second?.waitedMs).toBe(0);
+    expect(record.status).toBe("ready");
   });
 
   it("treats a reviewer reaction to the arm's reply as a sign-off", async () => {
@@ -724,6 +833,11 @@ describe("the rounds after the first", () => {
       conversations: [
         [],
         [note(REVIEWER, "c1", "this leaks the connection")],
+        // Post-answer read: the arm's reply keeps the exchange open.
+        [
+          note(REVIEWER, "c1", "this leaks the connection"),
+          armReply("c2", "fixed in 3f21a"),
+        ],
         [
           note(REVIEWER, "c1", "this leaks the connection"),
           armReply("c2", "fixed in 3f21a"),
@@ -732,6 +846,17 @@ describe("the rounds after the first", () => {
             "c3",
             "I still read this as double-closing the socket when the early return fires",
           ),
+        ],
+        // Post-answer read again: the arm stood its ground on the record.
+        [
+          note(REVIEWER, "c1", "this leaks the connection"),
+          armReply("c2", "fixed in 3f21a"),
+          note(
+            REVIEWER,
+            "c3",
+            "I still read this as double-closing the socket when the early return fires",
+          ),
+          armReply("c4", "stood by the original design"),
         ],
         [
           note(REVIEWER, "c1", "this leaks the connection"),
@@ -770,6 +895,48 @@ describe("the rounds after the first", () => {
     expect(record.reviewRounds[2]?.found.map((entry) => entry.id)).toEqual(["c5"]);
     expect(record.reviewRounds.some((round) => round.timedOut)).toBe(false);
     expect(record.status).toBe("merged");
+  });
+});
+
+// Quitting the live view aborts the controller every session runs under, but
+// the review wait holds no session — it polls GitHub on a plain sleep. Without
+// the signal reaching it, a quit during "waiting for review" sat out the rest
+// of the review timeout (up to an hour) before teardown could run.
+describe("aborting the run while waiting for review", () => {
+  it("stops polling at the next tick and refuses to merge", async () => {
+    const github = fakeGitHub({ conversations: [[]] });
+    const controller = new AbortController();
+    let clock = 0;
+    let waits = 0;
+    const record = await reviewArm(
+      reviewed,
+      // A timeout far beyond the fake clock: only the abort can end the wait.
+      { ...config, reviewTimeoutMs: 1_000_000 },
+      succeeded(`PR: ${pr.url}`),
+      {
+        github,
+        reply: answer,
+        note: () => {},
+        wait: async (ms: number) => {
+          clock += ms;
+          waits += 1;
+          if (waits === 2) controller.abort(new Error("the live view was quit"));
+        },
+        now: () => clock,
+        signal: controller.signal,
+      },
+    );
+
+    // The poll loop stopped on the abort, not the timeout.
+    expect(waits).toBe(2);
+    expect(record.status).toBe("review-failed");
+    expect(record.reviewRounds).toHaveLength(1);
+    expect(record.reviewRounds[0]?.timedOut).toBe(false);
+    expect(record.reviewRounds[0]?.error).toContain("aborted");
+    // And the fail-closed status keeps the merge barrier shut.
+    const merged = await mergeArm(record, { github, note: () => {} });
+    expect(merged.status).toBe("review-failed");
+    expect(github.calls).not.toContain("merge");
   });
 });
 

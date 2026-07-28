@@ -40,7 +40,7 @@ CODEX_TITLE_PREFIX="${CODEX_TITLE_PREFIX:-[codex] }"
 
 API_RETRY_SLEEP="${API_RETRY_SLEEP:-2}"  # backoff between source-PR read attempts
 POLL_INTERVAL="${POLL_INTERVAL:-60}"     # seconds between review checks
-POLL_TIMEOUT="${POLL_TIMEOUT:-3600}"     # 1 hour; matches REVIEW_TIMEOUT_MS so both arms wait equally
+POLL_TIMEOUT="${POLL_TIMEOUT:-1200}"     # 20 min; matches REVIEW_TIMEOUT_MS so both arms wait equally
 TIMEOUT_LABEL="${TIMEOUT_LABEL:-review-timeout}"
 
 # Committer identity for mirror commits. In CI the workflow overrides these with
