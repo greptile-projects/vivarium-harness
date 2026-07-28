@@ -156,12 +156,13 @@ export async function runGregLive(
         onExit: () => onViewClosed(model, controller, options),
         onStopAfterRung: () => {
           if (stopAfterMilestone !== undefined || currentMilestone === undefined) {
-            return;
+            return false;
           }
           stopAfterMilestone = currentMilestone;
           const message = `stop scheduled after milestone ${currentMilestone}`;
           model.note(message);
           sinks.note(message);
+          return true;
         },
       })
     : undefined;

@@ -93,7 +93,7 @@ export function LiveApp({
 }: {
   model: LiveModel;
   logDir?: string;
-  onStopAfterRung?: () => void;
+  onStopAfterRung?: () => boolean;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -154,7 +154,6 @@ export function LiveApp({
       // milestone boundary.
       if (confirming) {
         if (input === "y" || input === "Y") exit();
-        else if ((input === "s" || input === "S") && onStopAfterRung) {
         else if ((input === "s" || input === "S") && onStopAfterRung) {
           const scheduled = onStopAfterRung();
           if (scheduled) setStopScheduled(true);
@@ -332,7 +331,7 @@ export function mountLive(
   options: {
     logDir?: string;
     onExit?: () => void;
-    onStopAfterRung?: () => void;
+    onStopAfterRung?: () => boolean;
   },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
