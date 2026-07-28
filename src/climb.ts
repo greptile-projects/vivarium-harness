@@ -121,8 +121,14 @@ export async function runGregLive(
     },
     harness: async (config) => {
       await refreshLadder();
+      const building = model
+        .climb()
+        .find((subticket) => subticket.state === "building");
+      const description = (building?.title ?? "current rung")
+        .replace(/\s+/g, " ")
+        .slice(0, 60);
       model.setPhase(
-        `building · ${config.ticket.replace(/\s+/g, " ").slice(0, 80)}`,
+        `building · ${description}`,
         config.arms.map((arm) => arm.name),
       );
       const run = await runHarness(config, sinks, controller.signal);
