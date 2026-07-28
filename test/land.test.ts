@@ -474,6 +474,29 @@ describe("a review round that the arm failed to answer", () => {
     // But the arm said nothing, and the record must not imply otherwise.
     expect(round.response).toBeUndefined();
     expect(round.error).toContain("session died");
+    expect(record.status).toBe("review-failed");
+    expect(github.calls).not.toContain("merge");
+    expect(landingError(record)).toContain("could not answer required review");
+  });
+
+  it("converts a thrown review turn into the same fail-closed result", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "c1")]],
+      heads: ["head-before", "head-after"],
+    });
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async () => {
+        throw new Error("watchdog aborted review turn");
+      }),
+    );
+
+    expect(record.status).toBe("review-failed");
+    expect(record.reviewRounds.at(-1)?.response).toBeUndefined();
+    expect(record.reviewRounds.at(-1)?.error).toContain("watchdog aborted");
+    expect(github.calls).not.toContain("merge");
   });
 
   it("still counts a round the arm did answer", async () => {

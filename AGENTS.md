@@ -452,7 +452,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   which `landingError` counts as failed, which halts Greg with the box
   unchecked. Losing a rung loudly beats desynchronising the experiment
   silently. A failed **build** short-circuits the review phase too, so a doomed
-  rung does not spend a Greptile review. Watchers are grouped in
+  rung does not spend a Greptile review. A failed **review answer** is also
+  fail-closed: it records `review-failed`, blocks both merges, and halts Greg
+  rather than landing findings the arm never addressed. Watchers are grouped in
   `HarnessSinks` (`onEvent`, `onArmComplete`, `onArmNote`, `onArmPhase`,
   `onLanding`) and the
   outside world in `HarnessDeps` (`runner`, `github`, `environment`, `wait`,
@@ -487,8 +489,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   into a failed run or replace an earlier run error. Host smoke mode is the
   explicit no-op implementation.
 
-- **`src/harness/session.ts`** — `runArmStreaming` runs one Codex session over its
-  own stdio MCP client. It is the `AttemptRunner` the harness spawns, so it sits
+- **`src/harness/session.ts`** — `createArmSession` owns one stdio MCP client
+  for an arm's whole subticket. The server's thread registry is in memory, so
+  build retries and review rounds must reuse that client; replacing it between
+  turns makes `codex-reply` reject the otherwise valid thread id.
+  `runArmStreaming` is the one-shot wrapper used by Greg and other callers that
+  genuinely need only one turn. This module sits
   beside `harness.ts` rather than under the view: the live view *watches* the
   events it emits, but a `--no-tui --json` run drives the identical module.
   Three things to preserve: (1) it registers a

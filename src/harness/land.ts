@@ -115,6 +115,8 @@ export type LandingStatus =
   // missing, and the arm is failed for it.
   | "no-pull-request"
   | "merge-failed"
+  // Actionable review arrived, but the arm could not complete its answer turn.
+  | "review-failed"
   // Reviewed and mergeable, but not merged yet — the transient state between
   // the review phase and the merge phase.
   | "ready"
@@ -172,6 +174,8 @@ export function landingSummary(record: LandingRecord): string {
         : `merged ${where}`;
     case "merge-failed":
       return `merge of ${where} failed: ${record.merge?.error ?? "unknown error"}`;
+    case "review-failed":
+      return `${where} was not merged because the arm failed to answer review`;
     case "no-pull-request":
       return "the session finished without opening a pull request";
     case "not-attempted":
@@ -452,9 +456,21 @@ export async function reviewArm(
       );
 
       deps.phase?.("answering review");
-      const answer = await deps.reply(
-        reviewPrompt(pullRequest.url, round, config.reviewRounds),
-      );
+      let answer: StreamResult;
+      try {
+        answer = await deps.reply(
+          reviewPrompt(pullRequest.url, round, config.reviewRounds),
+        );
+      } catch (error) {
+        // The real runner throws for transport failures, watchdog timeouts and
+        // external aborts. Those are still failed review answers, not reasons
+        // to escape the landing barrier without a durable outcome.
+        answer = {
+          output: error instanceof Error ? error.message : String(error),
+          isError: true,
+          timedOut: false,
+        };
+      }
       // And after: the pair is what says whether the arm pushed a fix or only
       // replied. Equal shas mean it argued and changed nothing.
       const respondedSha = await deps.github.headSha(
@@ -496,8 +512,12 @@ export async function reviewArm(
       });
 
       if (answer.isError) {
-        note("the arm failed to answer the review — merging what it has");
-        break;
+        note("the arm failed to answer the review — refusing to merge");
+        return done("review-failed", {
+          branch,
+          pullRequest,
+          reviewRounds,
+        });
       }
     }
   }
@@ -605,6 +625,10 @@ export function landingError(record: LandingRecord): string | undefined {
     return `pull request ${record.pullRequest?.number ?? "?"} could not be merged: ${
       record.merge?.error ?? "unknown error"
     }`;
+  }
+  if (record.status === "review-failed") {
+    const error = record.reviewRounds.at(-1)?.error ?? "unknown error";
+    return `pull request ${record.pullRequest?.number ?? "?"} could not answer required review: ${error}`;
   }
   // Nothing is wrong with this arm's own work — the rung still did not land,
   // and it must not look built.
