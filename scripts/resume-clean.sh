@@ -51,12 +51,12 @@ while IFS= read -r container; do
   open_pr=""
 
   log "$arm: $container (run: $run_id; running: $running)"
-  if [[ "$running" == true ]] && docker exec -i "$container" test -d /workspace/.git 2>/dev/null; then
-    branch="$(docker exec -i -w /workspace "$container" git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-    dirty="$(docker exec -i -w /workspace "$container" git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "$running" == true ]] && docker exec "$container" test -d /workspace/.git 2>/dev/null; then
+    branch="$(docker exec -w /workspace "$container" git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    dirty="$(docker exec -w /workspace "$container" git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
     log "  branch: $branch; changed paths: $dirty"
     if [[ "$branch" != main && "$branch" != master && "$branch" != unknown ]]; then
-      open_pr="$(docker exec -i -w /workspace "$container" gh pr list \
+      open_pr="$(docker exec -w /workspace "$container" gh pr list \
         --head "$branch" --state open --limit 1 --json number,title \
         --jq '.[0] | select(.) | "#\(.number) \(.title)"' 2>/dev/null || true)"
       [[ -n "$open_pr" ]] && log "  open PR: $open_pr"
@@ -73,7 +73,7 @@ while IFS= read -r container; do
   if [[ -n "${open_pr:-}" ]]; then
     pr_number="${open_pr%% *}"
     pr_number="${pr_number#\#}"
-    docker exec -i -w /workspace "$container" gh pr close "$pr_number" \
+    docker exec -w /workspace "$container" gh pr close "$pr_number" \
       --comment "Closed by resume-clean.sh: the ephemeral Vivarium run was interrupted and this subticket will restart from a fresh clone." \
       >/dev/null 2>&1 || log "  could not close $open_pr; close it manually"
   fi
