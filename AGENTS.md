@@ -75,10 +75,10 @@ bun start -- --help              # the full option + env reference
   flight, and the next few), and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
   scroll the list tabs. Each arm's duration excludes time spent idle at the
   merge barrier waiting only for its peer, so the two A/B timings do not
-  collapse into the shared run duration. `q` quits — and quitting **stops the run**. The safety
-  is an in-view confirmation, not a flag: while sessions are still working, `q`
-  names what would be torn down and waits for `y` (any other key goes back to
-  watching); once everything has settled the view is a report and closes
+  collapse into the shared run duration. `q` quits — and quitting **stops the
+  run**. The in-view confirmation offers `y` to stop immediately, `n` to keep
+  watching, and, during a climb, `S` to finish every subticket in the current
+  rung and stop before the next one; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
   everywhere else and does not acquire a second one here. Stopping live
   sessions exits 1. It runs on the alternate screen and gives the

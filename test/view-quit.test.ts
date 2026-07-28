@@ -105,6 +105,13 @@ describe("needsQuitConfirm", () => {
     expect(prompt).toContain("komodo");
     expect(prompt).toContain("y / n");
   });
+
+  it("offers a rung-boundary stop only when the climb supports it", () => {
+    const arms = [arm("tuatara", "working")];
+
+    expect(confirmQuitPrompt(arms)).not.toContain("S after rung");
+    expect(confirmQuitPrompt(arms, true)).toContain("y / n / S after rung");
+  });
 });
 
 describe("onViewClosed", () => {
