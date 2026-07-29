@@ -367,8 +367,9 @@ Options:
   --plan-only             Plan rungs onto the ladder; build nothing. A later
                           \`bun start\` builds everything queued this way.
   --tui / --no-tui        Force the live view on/off (default: on when stdout
-                          is a TTY). Both write one progress.log per arm under
-                          results/live-<ts>/<arm>/.
+                          is a TTY). Both write one progress.log per arm beside
+                          that subticket's record, in
+                          results/rung-<NN>/run/<N.M>/<arm>/.
   --json                  Print the machine-readable result; implies --no-tui.
   --help                  This message.
 

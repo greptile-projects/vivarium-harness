@@ -80,14 +80,14 @@ function TabStrip({
 // choice and never a second execution path.
 export function LiveApp({
   model,
-  logDir,
+  resultsDir,
   onStopAfterRung,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
 }: {
   model: LiveModel;
-  logDir?: string;
+  resultsDir?: string;
   onStopAfterRung?: () => boolean;
   initialTab?: string;
 }) {
@@ -291,9 +291,9 @@ export function LiveApp({
                 : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
             </Text>
             <Box flexGrow={1} />
-            {logDir && columns >= 100 ? (
+            {resultsDir && columns >= 100 ? (
               <Text dimColor wrap="truncate-start">
-                {logDir}
+                {resultsDir}
               </Text>
             ) : null}
           </>
@@ -322,7 +322,7 @@ export function mountLive(
   // "the human quit early" from "the run ended" is the caller's job, and it
   // reads that off the model rather than off the keypress.
   options: {
-    logDir?: string;
+    resultsDir?: string;
     onExit?: () => void;
     onStopAfterRung?: () => boolean;
   },
@@ -331,7 +331,7 @@ export function mountLive(
   const app = render(
     <LiveApp
       model={model}
-      logDir={options.logDir}
+      resultsDir={options.resultsDir}
       onStopAfterRung={options.onStopAfterRung}
     />,
     { exitOnCtrlC: true },

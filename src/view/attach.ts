@@ -1,5 +1,5 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname } from "node:path";
 import type { HarnessSinks } from "../harness/harness.js";
 import type { LandingRecord } from "../harness/land.js";
 import { LiveStore, NOISY, summarize } from "./store.js";
@@ -11,10 +11,15 @@ import type { CodexMsg } from "../harness/session.js";
 // mounted. Everything that attaches a live view shares this — the wiring
 // used to be copy-pasted per entrypoint, which is how the two drifted apart.
 //
-// Each arm gets its own directory and its own log file. One combined file read
-// fine live, where the label column tells the arms apart, but the artifact of
-// this experiment is a *pair* of independent builds, and reading one arm's
-// three-hour run meant grepping the other one out of every line first.
+// Each arm gets its own log file. One combined file read fine live, where the
+// label column tells the arms apart, but the artifact of this experiment is a
+// *pair* of independent builds, and reading one arm's three-hour run meant
+// grepping the other one out of every line first. The interleaved view
+// survives where it belongs — in the log tab.
+//
+// Where those files go is not this module's business: it is handed targets
+// (see LogTargets) and asks them per line. `harness/state.ts` spells the
+// actual paths, beside the run records the feeds describe.
 // Every harness sink is filled in here (they are optional on HarnessSinks so a
 // caller can supply a subset; a live view never does), so callers can use them
 // without a null check.
@@ -25,22 +30,27 @@ export interface LiveSinks extends Required<HarnessSinks> {
   flush: () => Promise<void>;
 }
 
-// The file each arm's feed lands in, given the run's live directory.
-export function armLogPath(logDir: string, arm: string): string {
-  return join(logDir, arm, "progress.log");
-}
-
-// Loop-level notes — planning, ladder bookkeeping, the closing outcome of each
-// subticket — which belong to the climb rather than to either arm.
-export function ladderLogPath(logDir: string): string {
-  return join(logDir, "ladder.log");
+// Where a feed lands *right now*. The climb re-points this as it moves between
+// planning a rung and building a subticket, because the destination is a
+// property of what is being written rather than of the process writing it:
+// an arm's commentary belongs in that subticket's run directory, Greg's in
+// that rung's plan directory. Returning undefined discards the line, which is
+// what a caller with no destination yet (or no interest in files) gets.
+//
+// Resolved per line rather than captured once, so a feed opened before the
+// first subticket exists still lands correctly once one does.
+export interface LogTargets {
+  // The file for this arm's feed, or undefined to discard it.
+  arm?: (arm: string) => string | undefined;
+  // The file for loop-level lines belonging to no arm.
+  climb?: () => string | undefined;
 }
 
 export function attachLive(
   store: LiveStore,
   options: {
     useTui: boolean;
-    logDir?: string;
+    logs?: LogTargets;
     startedAt?: number;
     // Mirror of what goes to the log files, for the TUI's log tab. Same text,
     // same moment — the tab is a window onto the files, not a second feed, and
@@ -60,18 +70,17 @@ export function attachLive(
   let writes: Promise<void> = Promise.resolve();
   const ensured = new Set<string>();
   const append = (arm: string | undefined, line: string): void => {
-    const directory = options.logDir;
-    if (!directory) return;
+    // Resolved at write time, not at attach time — the target moves as the
+    // climb advances, and a line is filed where it belonged when it was said.
+    const path = arm ? options.logs?.arm?.(arm) : options.logs?.climb?.();
+    if (!path) return;
     writes = writes
       .then(async () => {
-        if (arm && !ensured.has(arm)) {
-          await mkdir(join(directory, arm), { recursive: true });
-          ensured.add(arm);
+        if (!ensured.has(path)) {
+          await mkdir(dirname(path), { recursive: true });
+          ensured.add(path);
         }
-        await appendFile(
-          arm ? armLogPath(directory, arm) : ladderLogPath(directory),
-          line,
-        );
+        await appendFile(path, line);
       })
       .catch(() => {});
   };
