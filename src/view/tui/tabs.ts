@@ -27,8 +27,8 @@ export function tabsFor(model: LiveModel): Tab[] {
     label: state.arm,
   }));
   // The climb itself — the rungs, and what each arm landed on them — when there
-  // is a plan to show. A one-ticket run has none, so the tab simply is not
-  // there rather than opening empty. The ladder file used to have a second tab
+  // is a plan to show. Before the first milestone is planned there is none, so
+  // the tab simply is not there rather than opening empty. The ladder file used to have a second tab
   // of its own; it was the same plan with none of the outcomes, and the rung
   // being built was the only thing anyone opened it for.
   const climb = model.hasPlan() ? [CLIMB] : [];

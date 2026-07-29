@@ -8,7 +8,7 @@ import type { CodexMsg } from "../harness/session.js";
 // The one place raw `codex/event` traffic is turned into something a human can
 // watch: it updates the store the Ink panels render from, tees a readable line
 // into that arm's progress.log, and echoes that line to stdout when no TUI is
-// mounted. Both run modes (one ticket, or Greg's climb) share this — the wiring
+// mounted. Everything that attaches a live view shares this — the wiring
 // used to be copy-pasted per entrypoint, which is how the two drifted apart.
 //
 // Each arm gets its own directory and its own log file. One combined file read

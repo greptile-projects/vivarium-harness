@@ -120,8 +120,6 @@ describe("LiveModel.seedFromState", () => {
       arms: Array<{ arm: string; number: number }>;
     }>,
   ) => ({
-    schemaVersion: 1,
-    updatedAt: new Date(0).toISOString(),
     planner: [],
     subtickets: subtickets.map((subticket) => ({
       number: subticket.number,
@@ -174,8 +172,6 @@ describe("LiveModel.seedFromState", () => {
   it("skips an arm that landed no pull request", () => {
     const model = new LiveModel("greg tile", "climbing");
     model.seedFromState({
-      schemaVersion: 1,
-      updatedAt: new Date(0).toISOString(),
       planner: [],
       subtickets: [
         {

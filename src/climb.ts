@@ -21,7 +21,7 @@ import {
   readLadder,
 } from "./greg-tile/ladder.js";
 import { planNextMilestone } from "./greg-tile/planner.js";
-import { readClimbState, statePath } from "./harness/state.js";
+import { readClimbState } from "./harness/state.js";
 
 // What the entrypoint needs for its closing summary — common to built and
 // planned.
@@ -48,10 +48,10 @@ export async function runGregLive(
 
   // Everything the experiment has landed before this process started. The
   // ladder deliberately carries none of it (it crosses into both containers),
-  // so results/state.json is the only place a climb's history survives — and
-  // without this the arm tabs would open blank on every restart of a run that
-  // is meant to span weeks.
-  model.seedFromState(await readClimbState(statePath(base.resultsDir)));
+  // so the rung directories under results/ are the only place a climb's
+  // history survives — and without this the arm tabs would open blank on every
+  // restart of a run that is meant to span weeks.
+  model.seedFromState(await readClimbState(base.resultsDir));
 
   // Re-read the plan and mark the rung about to be built. The one being built
   // is by definition the first unchecked box, so this needs no extra bookkeeping

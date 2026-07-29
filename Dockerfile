@@ -78,11 +78,11 @@ RUN printf '%s\n' \
       > /etc/profile.d/10-vivarium-path.sh
 
 # Codex CLI (provides `codex mcp-server`), pinned to the host's version
-# (brew cask codex-cli 0.145.0). Pinned rather than floating on purpose: a climb
+# (brew cask codex-cli 0.146.0). Pinned rather than floating on purpose: a climb
 # runs for weeks, and `latest` would silently change what the arms are made of
 # partway through — an uncontrolled variable in the one place the experiment
 # holds everything else constant. Bump this deliberately, between milestones.
-RUN bun install -g @openai/codex@0.145.0
+RUN bun install -g @openai/codex@0.146.0
 
 # Nothing in here may ever wait for a TTY. An expired token should fail the
 # push loudly, not freeze the arm mid-subticket.

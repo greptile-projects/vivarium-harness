@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { armsForDisplay } from "./harness/arms.js";
 import {
   MAX_MILESTONES,
   RESULTS_DIR,
@@ -11,14 +10,11 @@ import {
   validateConfig,
 } from "./harness/config.js";
 import { runGregLive } from "./climb.js";
-import { landingSummary } from "./harness/land.js";
-import { runTicketLive } from "./ticket.js";
 
-// The single entrypoint. Default behaviour is the experiment itself: Greg
-// plans the next rung onto the ladder and the two arms build its subtickets,
-// on and on. Everything else here is an option on that one loop — building a
-// single ad-hoc ticket, or planning without building — not a separate command
-// with its own contract.
+// The single entrypoint, and it runs the experiment itself: Greg plans the
+// next rung onto the ladder and the two arms build its subtickets, on and on.
+// Every flag is an option on that one loop — planning without building,
+// lifting the pause — not a separate command with its own contract.
 
 async function main(): Promise<void> {
   try {
@@ -41,61 +37,7 @@ async function main(): Promise<void> {
     );
     const logs = `${logDir}/<arm>/progress.log`;
 
-    if (mode.kind !== "ladder") {
-      const config = await validateConfig(parseArgs(argv, process.env));
-      await mkdir(logDir, { recursive: true });
-
-      if (!useTui) {
-        process.stdout.write(
-          `vivarium · one ticket · ${config.arms.length} arms · logs: ${logs}\n`,
-        );
-      }
-
-      const { run, store } = await runTicketLive(config, {
-        useTui,
-        logDir,
-      });
-
-      // The summary prints in every non-JSON mode, including the TUI: the
-      // fullscreen view gives the terminal back on exit, so this is all the
-      // human is left holding.
-      if (json) {
-        process.stdout.write(`${JSON.stringify(run, null, 2)}\n`);
-      } else {
-        process.stdout.write(`\n=== ${run.status} ===\n`);
-        for (const state of armsForDisplay(store.snapshot())) {
-          const label = state.arm;
-          process.stdout.write(
-            `${label.padEnd(8)} ${state.status.padEnd(7)} ${state.events} events · ${(state.tokens ?? 0).toLocaleString()} tok · thread ${state.threadId ?? "—"}\n`,
-          );
-          // What the arm actually landed — the pull request is the deliverable,
-          // so it belongs in the last thing the human is left holding.
-          const landing = run.landings.find(
-            (record) => record.arm === state.arm,
-          );
-          if (landing && landing.status !== "skipped") {
-            process.stdout.write(
-              `         ${landingSummary(landing)}${landing.pullRequest ? `\n         ${landing.pullRequest.url}` : ""}\n`,
-            );
-          }
-        }
-      }
-      process.stdout.write(
-        `\nartifacts:     ${run.artifactDir}\nprogress logs: ${logs}\n`,
-      );
-
-      if (run.status === "completed_with_failures") {
-        process.exitCode = 1;
-      }
-      return;
-    }
-
-    // Ladder mode. Greg adds no configuration of its own — it reuses the arm
-    // setup and fills the ticket per subticket, so the placeholder below is
-    // only there to satisfy the shared parser.
-    const base = await validateConfig(
-      parseArgs(["--ticket", "greg-planner", ...argv], process.env),
-    );
+    const base = await validateConfig(parseArgs(argv, process.env));
     await mkdir(logDir, { recursive: true });
     const limit = mode.unbounded ? Infinity : MAX_MILESTONES;
 

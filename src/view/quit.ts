@@ -70,7 +70,7 @@ export function quitNotice(
   ].join("\n");
 }
 
-// The quit path both run modes share, called once the terminal is back. Reads
+// The quit path, called once the terminal is back. Reads
 // what is still running off the model rather than off the keypress, so the
 // ordinary end-of-run unmount — where nothing is left running — falls through
 // silently, aborts nothing, and leaves the closing summary to speak for itself.

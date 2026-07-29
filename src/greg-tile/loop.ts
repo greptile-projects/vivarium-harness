@@ -15,10 +15,9 @@ import {
 } from "./ladder.js";
 import { NORTH_STAR } from "../harness/prompts.js";
 import {
+  planDirectory,
   recordPlannerSession,
-  recordSubticket,
-  statePath,
-  subticketRecord,
+  subticketRunDirectory,
 } from "../harness/state.js";
 import { planNextMilestone } from "./planner.js";
 
@@ -80,9 +79,10 @@ async function setupLadder(
   }
 }
 
-// Preserve Greg's planning turn: record the thread id in state.json and copy
-// the raw Codex transcript beside it. Fails open — the milestone is already
-// planned and on the ladder, so losing the record of *how* must not unwind it.
+// Preserve Greg's planning turn under its rung — the thread id into
+// rung-NN/plan/plan.json and the raw Codex transcript beside it. Fails open —
+// the milestone is already planned and on the ladder, so losing the record of
+// *how* must not unwind it.
 async function preservePlannerSession(
   base: HarnessConfig,
   milestone: number,
@@ -97,13 +97,13 @@ async function preservePlannerSession(
         threadId,
       );
       if (source) {
-        const directory = join(base.resultsDir, "planner");
+        const directory = planDirectory(base.resultsDir, milestone);
         await mkdir(directory, { recursive: true });
-        copied = join(directory, `milestone-${milestone}-${threadId}.jsonl`);
+        copied = join(directory, `${threadId}.jsonl`);
         await copyFile(source, copied);
       }
     }
-    await recordPlannerSession(statePath(base.resultsDir), {
+    await recordPlannerSession(base.resultsDir, {
       milestone,
       threadId,
       transcript: copied,
@@ -199,10 +199,27 @@ export async function runGreg(
     // Mechanical harness run — the two arms build this subticket. Greg is not in
     // the loop here; the ladder already records the intent. Any failure halts
     // the whole run loudly rather than silently checking the box and moving on:
-    // the subticket is left unchecked so a re-run retries it.
+    // the subticket is left unchecked so a re-run retries it. The destination
+    // files the artifacts by ladder coordinates (rung-NN/run/N.M) — a re-run of
+    // a failed box builds into the same directory, archiving what it replaces.
     let run: HarnessRunResult;
     try {
-      run = await harness({ ...base, ticket: pending.description });
+      run = await harness({
+        ...base,
+        ticket: pending.description,
+        destination: {
+          directory: subticketRunDirectory(
+            base.resultsDir,
+            pending.milestone,
+            pending.number,
+          ),
+          subticket: {
+            number: pending.number,
+            milestone: pending.milestone,
+            title: pending.title,
+          },
+        },
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`  ${pending.number}: harness error — ${message}`);
@@ -220,19 +237,10 @@ export async function runGreg(
     }
 
     await completeSubticket(ladderPath, pending.number);
-    // The ladder gets the box; the durable record of what the rung actually
-    // landed goes to results/state.json, which never crosses into a container
-    // or a prompt. Fails open — the work merged and the box is checked, so a
-    // bookkeeping write must not halt the climb.
-    try {
-      await recordSubticket(
-        statePath(base.resultsDir),
-        subticketRecord(pending, run),
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log(`  ${pending.number}: state not recorded (continuing): ${message}`);
-    }
+    // The ladder gets the box and nothing else. The durable record of what the
+    // rung landed is the run's own artifact directory (rung-NN/run/N.M), which
+    // the harness already wrote and which never crosses into a container or a
+    // prompt — there is no separate bookkeeping write to fail.
     log(`  ${pending.number}: ${runOutcome(run)}`);
     milestonesTouched.add(pending.milestone);
     built.push({

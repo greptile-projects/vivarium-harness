@@ -81,7 +81,7 @@ export interface ArmSession {
 // This has to be set *here*, in the tool call. On the `codex mcp-server` path
 // the process-level switches are silently ignored — `--disable apps` and
 // `-c features.apps=false` on the argv both leave the connectors live (verified
-// against codex 0.145.0; they do work for `codex exec`, which is the trap).
+// against codex 0.146.0; they do work for `codex exec`, which is the trap).
 // What the session actually honours is `config`, the per-call override of
 // CODEX_HOME/config.toml. `codex-reply` needs no equivalent: it continues a
 // thread that was already created with this override.

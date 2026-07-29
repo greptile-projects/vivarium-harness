@@ -14,7 +14,7 @@ import type { HarnessRunResult } from "../harness/harness.js";
 // directly (he appends milestones); the loop only flips a subticket's checkbox
 // once the harness has built it, and writes nothing else — this file is
 // bind-mounted into both containers and is Greg's whole prompt, so what a run
-// actually landed goes to `results/state.json` instead. See `completeSubticket`.
+// actually landed goes to `results/rung-NN/` instead. See `completeSubticket`.
 //
 // A subticket is one PR-sized step, written as a checkbox heading:
 //
@@ -191,8 +191,8 @@ export function malformedSubticketHeadings(text: string): string[] {
 // ladder (and the worker prompt tells it to read "predecessor logs") learned it
 // was one of two being compared, and Greg saw the pull requests he is
 // documented as blind to. The box alone is what the loop needs to resume and
-// what Greg needs to plan forward; everything else now lives in
-// `results/state.json`, which is never mounted and never prompted.
+// what Greg needs to plan forward; everything else now lives in the rung
+// directories under `results/`, which are never mounted and never prompted.
 export async function completeSubticket(
   ladderPath: string,
   number: string,

@@ -40,6 +40,16 @@ export interface ReviewRound {
   // whether the arm pushed a fix or merely replied.
   reviewedSha?: string;
   respondedSha?: string;
+  // The fix itself, archived while its commits are still cheap to reach: the
+  // sha pair alone points at objects that a squash-merge and branch deletion
+  // eventually strand on GitHub, and the checkout that made them is destroyed
+  // with the subticket. `diff` is in-memory only — the artifact writer moves
+  // it to `<arm>/rounds/round-NN.diff` and leaves `diffFile` in the record.
+  // `diffError` says a diff was owed but could not be produced; its absence on
+  // an unpushed round means there was nothing to archive.
+  diff?: string;
+  diffFile?: string;
+  diffError?: string;
   respondedAt?: string;
   response?: string;
   error?: string;
@@ -389,7 +399,7 @@ async function answerLeftTrace(
   );
 }
 
-// The post-merge conversation is the close-reading record in land.json, so a
+// The post-merge conversation is the close-reading record in run.json, so a
 // transient API failure must not quietly become an empty list. Retry; the
 // caller records an explicit gap when even the retries fail.
 async function captureConversation(
@@ -653,6 +663,23 @@ export async function reviewArm(
         );
       }
 
+      // Archive what the push changed, while both commits are still in the
+      // arm's checkout. Only a *known* push has a diff to take: the unknown-sha
+      // case above holds the exchange open but names nothing to compare. Fails
+      // open — the round is already recorded, and losing the diff must not
+      // cost the rung — but the gap is recorded as a gap.
+      if (reviewedSha && respondedSha && reviewedSha !== respondedSha) {
+        try {
+          answered.diff = await deps.github.diff(reviewedSha, respondedSha);
+        } catch (error) {
+          answered.diffError =
+            error instanceof Error ? error.message : String(error);
+          note(
+            `could not archive round ${round}'s diff (${answered.diffError}) — recompute it from ${reviewedSha}..${respondedSha} while GitHub still serves them`,
+          );
+        }
+      }
+
       // The reviewer only responds to a ping — a pushed commit or a posted
       // comment. An answer turn that left neither on the pull request (a clean
       // review gives the arm nothing to fix and nothing to say) gave the
@@ -702,7 +729,7 @@ export async function mergeArm(
 
   const merge = await deps.github.merge(record.pullRequest.number);
   // An empty conversation and an unreadable one must not look alike in the
-  // record: the comments stay re-fetchable from GitHub, but only if land.json
+  // record: the comments stay re-fetchable from GitHub, but only if the run record
   // says they are missing rather than absent.
   let conversation: ReviewNote[] = [];
   try {
@@ -728,8 +755,24 @@ export async function mergeArm(
   }
 
   note(`merged #${record.pullRequest.number}`);
+
+  // Refresh the pull request's churn now that it is final: the ref captured
+  // before review counts only the build, and review fixes change the numbers
+  // the record is asked for (findings per changed line). Fails open — the
+  // merge already happened, and the pre-review snapshot beats none.
+  let pullRequest = record.pullRequest;
+  try {
+    const refreshed = await deps.github.findPullRequest({
+      url: record.pullRequest.url,
+    });
+    if (refreshed) pullRequest = refreshed;
+  } catch {
+    // Keep the earlier snapshot.
+  }
+
   return {
     ...record,
+    pullRequest,
     status: "merged",
     completedAt: new Date().toISOString(),
     conversation,

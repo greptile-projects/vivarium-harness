@@ -6,7 +6,10 @@ import type { HarnessConfig } from "../src/harness/config.js";
 import type { HarnessRunResult } from "../src/harness/harness.js";
 import { initLadder, nextPendingSubticket } from "../src/greg-tile/ladder.js";
 import { planAhead, runGreg } from "../src/greg-tile/loop.js";
-import { readClimbState, statePath } from "../src/harness/state.js";
+import {
+  readClimbState,
+  subticketRunDirectory,
+} from "../src/harness/state.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -481,10 +484,13 @@ describe("planAhead", () => {
 describe("durable climb record", () => {
   // The counterpart to the ladder's silence. Everything the ladder can no
   // longer carry — run ids, artifact dirs, both arms' pull request URLs — has
-  // to land somewhere that never crosses into a container or a prompt, or the
-  // experiment's output is only reconstructable by globbing results/.
-  it("records each built subticket and both arms' pull requests", async () => {
+  // to land somewhere that never crosses into a container or a prompt. The
+  // loop's part of that contract is the destination: it files each run under
+  // its ladder coordinates (rung-NN/run/N.M), where the harness writes the
+  // record readClimbState reads back.
+  it("files each subticket's run by its ladder coordinates", async () => {
     const { base, ladderPath } = await makeSetup();
+    const destinations: Array<HarnessConfig["destination"]> = [];
 
     await runGreg(
       base,
@@ -496,54 +502,29 @@ describe("durable climb record", () => {
             { title: "Storage", description: "do 1.2" },
           ]),
         harness: async (harnessConfig) => {
-          const n = harnessConfig.ticket === "do 1.1" ? 1 : 2;
-          return {
-            runId: `run-${n}`,
-            artifactDir: `results/run-${n}`,
-            status: "completed",
-            results: [],
-            landings: [
-              {
-                arm: "tuatara",
-                status: "merged",
-                pullRequest: {
-                  number: n,
-                  url: `https://github.com/acme/vivarium-tuatara/pull/${n}`,
-                  title: `PR ${n}`,
-                },
-                reviewRounds: [{ round: 1, response: "answered" }],
-                conversation: [{ body: "c" }],
-              },
-              {
-                arm: "komodo",
-                status: "merged",
-                pullRequest: {
-                  number: n,
-                  url: `https://github.com/acme/vivarium-komodo/pull/${n}`,
-                  title: `PR ${n}`,
-                },
-                reviewRounds: [],
-                conversation: [],
-              },
-            ],
-          } as unknown as HarnessRunResult;
+          destinations.push(harnessConfig.destination);
+          return fakeRun(`run-${destinations.length}`);
         },
         log: () => {},
       },
       ladderPath,
     );
 
-    const state = await readClimbState(statePath(base.resultsDir));
-    expect(state.subtickets.map((entry) => entry.number)).toEqual(["1.1", "1.2"]);
-    expect(state.subtickets[0].runId).toBe("run-1");
-    expect(state.subtickets[0].arms.map((arm) => arm.arm).sort()).toEqual([
-      "komodo",
-      "tuatara",
+    expect(destinations.map((entry) => entry?.subticket?.number)).toEqual([
+      "1.1",
+      "1.2",
     ]);
-    expect(
-      state.subtickets[1].arms.find((arm) => arm.arm === "tuatara")
-        ?.pullRequest?.url,
-    ).toContain("vivarium-tuatara/pull/2");
+    expect(destinations[0]?.subticket).toEqual({
+      number: "1.1",
+      milestone: 1,
+      title: "Skeleton",
+    });
+    expect(destinations[0]?.directory).toBe(
+      subticketRunDirectory(base.resultsDir, 1, "1.1"),
+    );
+    expect(destinations[1]?.directory).toBe(
+      subticketRunDirectory(base.resultsDir, 1, "1.2"),
+    );
 
     // …and none of it reached the ladder, which both containers can read.
     const ladder = await readFile(ladderPath, "utf8");
@@ -571,7 +552,7 @@ describe("durable climb record", () => {
       ladderPath,
     );
 
-    const state = await readClimbState(statePath(base.resultsDir));
+    const state = await readClimbState(base.resultsDir);
     expect(state.planner).toHaveLength(1);
     expect(state.planner[0].threadId).toBe("thread-greg-1");
     expect(state.planner[0].milestone).toBe(1);
