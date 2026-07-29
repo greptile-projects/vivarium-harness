@@ -41,6 +41,33 @@ export function subticketRunDirectory(
   return join(rungDirectory(resultsDir, milestone), "run", number);
 }
 
+// Where the live feed lands. These are the debugging counterpart to the
+// records above and are filed by the same coordinates on purpose: a feed
+// named after the process that happened to produce it says nothing about what
+// it contains, and accumulates one directory per `bun start` beside the tree
+// that actually matters. Filed here, each feed sits next to the record it
+// explains, and `results/` holds only rungs and one climb log.
+//
+// The arm's feed goes beside its attempts, so `<run>/tuatara/` holds that
+// arm's attempt directories and the running commentary on them together.
+export function armLogPath(runDirectory: string, arm: string): string {
+  return join(runDirectory, arm, "progress.log");
+}
+
+// Greg plans between subtickets, so his feed belongs to the rung rather than
+// to any run under it — beside the plan.json and transcript for the same turn.
+export function plannerLogPath(resultsDir: string, milestone: number): string {
+  return join(planDirectory(resultsDir, milestone), "progress.log");
+}
+
+// The climb's own lines — planning boundaries, box flips, each subticket's
+// outcome — belong to no rung and to no arm. One file for the whole
+// experiment, appended across every invocation, so the loop-level narrative
+// reads continuously instead of being sliced by process boundaries.
+export function climbLogPath(resultsDir: string): string {
+  return join(resultsDir, "climb.log");
+}
+
 export interface StateArmRecord {
   arm: string;
   status: LandingStatus;

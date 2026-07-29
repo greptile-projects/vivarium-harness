@@ -57,14 +57,25 @@ describe("quitNotice", () => {
   it("names what it is stopping and where its feed went", () => {
     const notice = quitNotice(
       [arm("tuatara", "working"), arm("komodo", "done")],
-      { logDir: "results/live-x" },
+      { runDirectory: "results/rung-02/run/2.3" },
     );
 
     expect(notice).toContain("stopping 1 session");
     expect(notice).toContain("tuatara");
     expect(notice).not.toContain("komodo");
-    // The one thing the reader needs from it: where the run keeps writing.
-    expect(notice).toContain("results/live-x/<arm>/progress.log");
+    // The one thing the reader needs from it: where the run keeps writing —
+    // the directory of the subticket that was in flight.
+    expect(notice).toContain("results/rung-02/run/2.3/<arm>/progress.log");
+  });
+
+  // Stopped while planning, or before the first rung: there is no subticket
+  // directory to name, so the notice points at the shape rather than
+  // inventing a path that does not exist.
+  it("falls back to the tree shape when no subticket is in flight", () => {
+    const notice = quitNotice([arm("greg", "working")], {});
+
+    expect(notice).toContain("stopping 1 session");
+    expect(notice).toContain("rung-<NN>/run/<N.M>/<arm>/progress.log");
   });
 
   it("names every running session", () => {
@@ -128,7 +139,9 @@ describe("onViewClosed", () => {
     );
 
     try {
-      onViewClosed(modelMidRun(), controller, { logDir: "log/path" });
+      onViewClosed(modelMidRun(), controller, {
+        runDirectory: "results/rung-01/run/1.1",
+      });
     } finally {
       write.mockRestore();
     }
@@ -136,7 +149,9 @@ describe("onViewClosed", () => {
     expect(controller.signal.aborted).toBe(true);
     expect(written.join("")).toContain("stopping 1 session");
     expect(written.join("")).toContain("tuatara");
-    expect(written.join("")).toContain("log/path/<arm>/progress.log");
+    expect(written.join("")).toContain(
+      "results/rung-01/run/1.1/<arm>/progress.log",
+    );
   });
 
   // The end-of-run unmount: nothing running, so nothing to say and nothing to

@@ -21,7 +21,12 @@ import {
   readLadder,
 } from "./greg-tile/ladder.js";
 import { planNextMilestone } from "./greg-tile/planner.js";
-import { readClimbState } from "./harness/state.js";
+import {
+  armLogPath,
+  climbLogPath,
+  plannerLogPath,
+  readClimbState,
+} from "./harness/state.js";
 
 // What the entrypoint needs for its closing summary — common to built and
 // planned.
@@ -41,7 +46,7 @@ export async function runGregLive(
   base: HarnessConfig,
   limit: number,
   writeAhead: boolean,
-  options: { useTui: boolean; logDir?: string },
+  options: { useTui: boolean },
 ): Promise<GregSubticketSummary[]> {
   const { useTui } = options;
   const model = new LiveModel("greg tile", "starting…");
@@ -76,8 +81,24 @@ export async function runGregLive(
     }
   };
   await refreshLadder();
+
+  // Where the per-arm feed is going right now. The climb owns this because it
+  // is the only layer that knows which rung is being planned and which
+  // subticket is being built; `attachLive` just asks. Undefined until the
+  // first phase begins — nothing is written before there is a place for it to
+  // belong, which is also what keeps a run that dies during setup from
+  // leaving an empty directory behind.
+  let armLog: ((arm: string) => string | undefined) | undefined;
+  // The subticket in flight, for the quit notice — the one directory a human
+  // who just stopped a run wants named.
+  let currentRunDirectory: string | undefined;
+
   const sinks = attachLive(model.live, {
     ...options,
+    logs: {
+      arm: (arm) => armLog?.(arm),
+      climb: () => climbLogPath(base.resultsDir),
+    },
     onLine: (line) => model.appendLog(line),
     onLanding: (record) => model.recordLanding(record),
   });
@@ -98,6 +119,9 @@ export async function runGregLive(
   const deps: Partial<GregDeps> = {
     plan: async (config, ladderPath, ladder, milestoneNumber) => {
       currentMilestone = milestoneNumber;
+      // Greg's turn belongs to the rung he is planning, not to any run under
+      // it — the transcript of this same turn lands in that directory too.
+      armLog = () => plannerLogPath(base.resultsDir, milestoneNumber);
       model.setPhase(`milestone ${milestoneNumber} · planning`, ["greg"]);
       // Greg's session runs outside the harness, so nothing else would ever
       // give his panel a phase — and "working" for a five-minute planning turn
@@ -123,6 +147,12 @@ export async function runGregLive(
       }
     },
     harness: async (config) => {
+      // The loop has already filed this subticket's artifacts under its ladder
+      // coordinates; the feed follows them into the same directory rather than
+      // into a parallel tree keyed by when the process happened to start.
+      const directory = config.destination?.directory;
+      currentRunDirectory = directory;
+      armLog = directory ? (arm) => armLogPath(directory, arm) : undefined;
       await refreshLadder();
       const building = model
         .climb()
@@ -141,8 +171,10 @@ export async function runGregLive(
       return run;
     },
     // The climb's own lines: under the tree on the climb tab, and always into
-    // ladder.log beside the per-arm feeds (attachLive echoes them to stdout
-    // itself when no view is mounted, and mirrors them into the log tab).
+    // results/climb.log — one continuous narrative across every invocation,
+    // since these lines belong to no rung and no arm (attachLive echoes them
+    // to stdout itself when no view is mounted, and mirrors them to the log
+    // tab).
     log: (message) => {
       if (useTui) model.note(message);
       sinks.note(message);
@@ -152,8 +184,11 @@ export async function runGregLive(
 
   const app = useTui
     ? mountLive(model, {
-        ...options,
-        onExit: () => onViewClosed(model, controller, options),
+        resultsDir: base.resultsDir,
+        onExit: () =>
+          onViewClosed(model, controller, {
+            runDirectory: currentRunDirectory,
+          }),
         onStopAfterRung: () => {
           if (stopAfterMilestone !== undefined || currentMilestone === undefined) {
             return false;

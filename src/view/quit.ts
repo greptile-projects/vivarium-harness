@@ -55,17 +55,22 @@ export function confirmQuitPrompt(
 // everything worth saying and a second message would only be noise.
 export function quitNotice(
   arms: ArmState[],
-  options: { logDir?: string },
+  options: { runDirectory?: string },
 ): string | null {
   const running = stillRunning(arms);
   if (running.length === 0) return null;
 
   const { count, names } = describe(running);
+  // Name the directory of the subticket that was in flight when known: that
+  // is where the interrupted feed actually is, and it is the one thing a
+  // human wants to open next. Without one — stopped while planning, or before
+  // the first rung — the tree root is the honest answer.
+  const where = options.runDirectory ?? "results/rung-<NN>/run/<N.M>";
   return [
     "",
     `quit · stopping ${count} (${names})`,
     "what they wrote before the stop is under",
-    `  ${options.logDir ?? "results/live-<ts>"}/<arm>/progress.log`,
+    `  ${where}/<arm>/progress.log`,
     "",
   ].join("\n");
 }
@@ -77,9 +82,11 @@ export function quitNotice(
 export function onViewClosed(
   model: LiveModel,
   controller: AbortController,
-  options: { logDir?: string },
+  options: { runDirectory?: string },
 ): void {
-  const notice = quitNotice(model.live.snapshot(), { logDir: options.logDir });
+  const notice = quitNotice(model.live.snapshot(), {
+    runDirectory: options.runDirectory,
+  });
   if (!notice) return;
 
   process.stdout.write(`${notice}\n`);
