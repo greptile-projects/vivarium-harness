@@ -267,6 +267,12 @@ export async function runHarness(
   signal?: AbortSignal,
   deps: HarnessDeps = {},
 ): Promise<HarnessRunResult> {
+  // parseArgs leaves the ticket blank on purpose — the ladder loop fills it
+  // per subticket. A run reaching here without one is a wiring bug, and both
+  // arms would otherwise burn a full session on an empty instruction.
+  if (!config.ticket.trim()) {
+    throw new Error("runHarness needs a ticket; the ladder loop supplies one per subticket");
+  }
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
   let runner = deps.runner;
@@ -494,5 +500,6 @@ export async function runHarness(
         await artifacts.recordCleanupError(cleanupError).catch(() => {});
       }
     }
+    await artifacts.release();
   }
 }

@@ -25,7 +25,7 @@ export interface PullRequestEntry {
   rounds: number;
   answered: number;
   // Inline comments on the diff, both sides of the exchange. Undefined when the
-  // record predates the field (an older `state.json`) — the row then says
+  // record predates the field (an older run record) — the row then says
   // nothing rather than printing a number it cannot stand behind.
   diffComments?: number;
 }
@@ -81,8 +81,8 @@ export interface ClimbArm {
 }
 
 // One rung of the climb, merged from the two sources that know about it: the
-// ladder says what was planned and whether the box is checked, `state.json`
-// (and the run in flight) says what each arm landed.
+// ladder says what was planned and whether the box is checked, the rung
+// directories (and the run in flight) say what each arm landed.
 export interface ClimbSubticket {
   number: string;
   milestone: number;
@@ -108,11 +108,10 @@ export function compareSubticketNumbers(left: string, right: string): number {
 const LOG_LIMIT = 2000;
 const NOTE_LIMIT = 500;
 
-// Everything the live view renders, for *either* run mode. A one-ticket run and
-// Greg's climb differ only in what they put here: the climb sets a phase per
-// milestone, swaps which Codex sessions are live, and writes notes; a ticket run
-// sets the subtitle once and never writes a note. Keeping one model means the
-// two views cannot drift apart the way two copies of the wiring did.
+// Everything the live view renders. The climb sets a phase per milestone,
+// swaps which Codex sessions are live between planning and building, and
+// writes notes — one model for all of it means the panes render from one
+// source of truth instead of each wiring keeping its own copy.
 export class LiveModel {
   readonly live = new LiveStore();
   subtitle: string;
@@ -123,8 +122,8 @@ export class LiveModel {
   private logLines: Line[] = [];
   // The plan as the ladder file has it, in file order.
   private planned: PlanSubticket[] = [];
-  // What each rung landed, keyed by subticket number — seeded from state.json
-  // and topped up as the run in flight lands its own.
+  // What each rung landed, keyed by subticket number — seeded from the rung
+  // directories and topped up as the run in flight lands its own.
   private landed = new Map<
     string,
     { milestone: number; title: string; arms: ClimbArm[] }
@@ -161,9 +160,10 @@ export class LiveModel {
     return this.logLines;
   }
 
-  // A climb has a plan to show; a one-ticket run has none, so its tab is absent
-  // rather than opening empty. State alone is enough: a ladder we could not
-  // read still leaves every rung the experiment has already landed.
+  // Whether there is a plan to show yet — before the first milestone is
+  // planned there is none, and the climb tab is absent rather than open and
+  // empty. State alone is enough: a ladder we could not read still leaves
+  // every rung the experiment has already landed.
   hasPlan(): boolean {
     return this.planned.length > 0 || this.landed.size > 0;
   }
@@ -231,8 +231,9 @@ export class LiveModel {
 
   // Seed the pull-request lists from the durable climb record so an arm's tab
   // opens showing every pull request the experiment has ever landed, not just
-  // the ones from this process. `results/state.json` is the only place that
-  // history survives — the ladder deliberately does not carry it.
+  // the ones from this process. The rung directories under `results/` are the
+  // only place that history survives — the ladder deliberately does not carry
+  // it.
   seedFromState(state: ClimbState): void {
     for (const subticket of state.subtickets) {
       this.landed.set(subticket.number, {
@@ -297,8 +298,8 @@ export class LiveModel {
   }
 
   // File a landing under the rung being built, so the climb tab fills in as the
-  // run goes rather than only after `state.json` is next read. The rung in
-  // flight is by definition the current one — nothing else is running.
+  // run goes rather than only after the rung directories are next read. The
+  // rung in flight is by definition the current one — nothing else is running.
   private recordClimbArm(record: LandingRecord): void {
     const number = this.currentSubticket;
     if (!number) return;
@@ -354,8 +355,8 @@ export class LiveModel {
   }
 
   // Mark the run over so the view can unmount. The subtitle is only replaced
-  // when the caller has something better to say than what is already there —
-  // a ticket run's ticket stays worth reading in the final frame.
+  // when the caller has something better to say than what is already there in
+  // the final frame.
   finish(subtitle?: string): void {
     if (subtitle !== undefined) this.subtitle = subtitle;
     this.finished = true;

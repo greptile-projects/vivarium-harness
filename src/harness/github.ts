@@ -54,6 +54,13 @@ export interface PullRequestRef {
   headRefName: string;
   state: string;
   checks?: string;
+  // Churn, as GitHub counts it. Snapshotted so the record can answer
+  // findings-per-line and cost-of-review questions without a network. The
+  // pre-review fetch carries the build's churn; the merge-time refresh
+  // replaces it with the final numbers, review fixes included.
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
 }
 
 // One entry in a pull request's conversation: a review body, an inline review
@@ -114,6 +121,13 @@ export interface ArmGitHub {
   // `branch` is the fallback path: with it, a refusing API can be routed around
   // via `git ls-remote` rather than costing the sha outright.
   headSha(pullRequest: number, branch?: string): Promise<string | undefined>;
+  // The unified diff between two commits of this arm's checkout. Used to
+  // archive each review round's fix (reviewedSha → respondedSha) while the
+  // commits are still cheap to reach: after squash-merge and branch deletion
+  // they are only reachable on GitHub for a while, and the arm's checkout —
+  // which made them — is destroyed with the subticket's container. Throws when
+  // git cannot produce it; the caller records the gap rather than guessing.
+  diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
 }
 
@@ -368,7 +382,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // forgets to quote its URL still opened a real pull request.
     async findPullRequest(hint) {
       const fields =
-        "number,url,title,headRefName,state,statusCheckRollup";
+        "number,url,title,headRefName,state,statusCheckRollup,additions,deletions,changedFiles";
       const number = hint.url ? pullRequestNumber(hint.url) : undefined;
 
       if (number !== undefined) {
@@ -446,6 +460,19 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       return sha && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : undefined;
     },
 
+    // Read from the local object store: the arm made both commits in this
+    // checkout, so even a sha an amend or force-push unhooked from the branch
+    // is still on disk here.
+    async diff(base, head) {
+      const result = await git(["diff", `${base}..${head}`]);
+      if (result.code !== 0) {
+        throw new Error(
+          result.stderr.trim() || `git diff ${base}..${head} failed`,
+        );
+      }
+      return result.stdout;
+    },
+
     // Reviews, issue comments, inline review comments and their reactions,
     // merged into one chronological record. Comments come from REST so their
     // reaction counts are available; identities are fetched only for comments
@@ -456,7 +483,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // fall through to an empty list, and an empty list is indistinguishable
     // from a quiet reviewer: a rate limit during the review wait read as
     // "merging unreviewed", and a failure at merge time wrote `conversation:
-    // []` into land.json — the close-reading record — with nothing anywhere
+    // []` into the run record — the close-reading input — with nothing anywhere
     // saying it was a gap. Callers decide what a failure means (a failed poll
     // is retried; a failed capture is recorded as unavailable), but only if
     // they can see it.
@@ -642,6 +669,8 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
 
 function toRef(value: Record<string, unknown>): PullRequestRef {
   const rollup = value.statusCheckRollup;
+  const count = (churn: unknown): number | undefined =>
+    typeof churn === "number" && Number.isFinite(churn) ? churn : undefined;
   return {
     number: Number(value.number ?? 0),
     url: String(value.url ?? ""),
@@ -651,6 +680,9 @@ function toRef(value: Record<string, unknown>): PullRequestRef {
     checks: Array.isArray(rollup)
       ? summarizeChecks(rollup as Record<string, unknown>[])
       : undefined,
+    additions: count(value.additions),
+    deletions: count(value.deletions),
+    changedFiles: count(value.changedFiles),
   };
 }
 

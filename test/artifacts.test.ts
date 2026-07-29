@@ -3,6 +3,7 @@ import {
   copyFile,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   rm,
   writeFile,
@@ -32,6 +33,7 @@ describe("run artifacts", () => {
 
     const config: HarnessConfig = {
       ticket: "ENG-123",
+      destination: { directory: join(root, "results", "rung-01", "run", "1.1") },
       arms: [
         { name: "komodo", repo: "/tmp/komodo" },
         { name: "tuatara", repo: "/tmp/tuatara" },
@@ -81,7 +83,7 @@ describe("run artifacts", () => {
     await artifacts.complete(results);
 
     expect(
-      await readFile(join(artifacts.directory, "prompt.txt"), "utf8"),
+      await readFile(join(artifacts.directory, "prompt.md"), "utf8"),
     ).toBe("exact prompt\n");
     expect(
       await readFile(
@@ -106,12 +108,140 @@ describe("run artifacts", () => {
       ),
     ).toBe('{"arm":"tuatara"}\n');
 
-    const manifest = JSON.parse(
-      await readFile(join(artifacts.directory, "manifest.json"), "utf8"),
+    const record = JSON.parse(
+      await readFile(join(artifacts.directory, "run.json"), "utf8"),
     );
-    expect(manifest.status).toBe("completed_with_failures");
-    expect(manifest.arms.komodo.final.transcriptStatus).toBe("copied");
-    expect(manifest.arms.tuatara.final.transcriptStatus).toBe("copied");
+    expect(record.schemaVersion).toBe(4);
+    expect(record.status).toBe("completed_with_failures");
+    expect(record.arms.komodo.final.transcriptStatus).toBe("copied");
+    expect(record.arms.tuatara.final.transcriptStatus).toBe("copied");
+    // The redacted config travels inside the one record — no config.json.
+    expect(record.config.arms[0].name).toBe("komodo");
+    // Filed exactly where the destination says, nowhere else.
+    expect(artifacts.directory).toBe(
+      join(root, "results", "rung-01", "run", "1.1"),
+    );
+    await artifacts.release();
+  });
+
+  it("refuses a run with no destination — a record nothing can find again", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "ENG-1",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+    };
+    await expect(RunArtifacts.create(config, "prompt")).rejects.toThrow(
+      /no destination/,
+    );
+  });
+
+  it("builds into its destination and archives what a re-run replaces", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "do 1.2",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+      destination: {
+        directory: join(root, "results", "rung-01", "run", "1.2"),
+        subticket: { number: "1.2", milestone: 1, title: "Storage" },
+      },
+    };
+
+    const first = await RunArtifacts.create(config, "first prompt");
+    expect(first.directory).toBe(join(root, "results", "rung-01", "run", "1.2"));
+    await first.fail(new Error("arm exhausted its retries"));
+    await first.release();
+
+    // The re-run of the same box builds into the same directory; the failed
+    // run's record moves under superseded/ instead of being overwritten.
+    const second = await RunArtifacts.create(config, "second prompt");
+    expect(second.directory).toBe(first.directory);
+
+    const record = JSON.parse(
+      await readFile(join(second.directory, "run.json"), "utf8"),
+    );
+    expect(record.runId).toBe(second.runId);
+    expect(record.subticket).toEqual({
+      number: "1.2",
+      milestone: 1,
+      title: "Storage",
+    });
+
+    const [archive] = await readdir(join(second.directory, "superseded"));
+    const archived = JSON.parse(
+      await readFile(
+        join(second.directory, "superseded", archive, "run.json"),
+        "utf8",
+      ),
+    );
+    expect(archived.runId).toBe(first.runId);
+    expect(archived.status).toBe("failed");
+    expect(
+      await readFile(
+        join(second.directory, "superseded", archive, "prompt.md"),
+        "utf8",
+      ),
+    ).toBe("first prompt\n");
+    await second.release();
+  });
+
+  it("refuses a second writer while a destination is active", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "do 1.2",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+      destination: {
+        directory: join(root, "results", "rung-01", "run", "1.2"),
+        subticket: { number: "1.2", milestone: 1, title: "Storage" },
+      },
+    };
+
+    const active = await RunArtifacts.create(config, "first prompt");
+    await expect(RunArtifacts.create(config, "second prompt")).rejects.toThrow(
+      /already active/,
+    );
+    expect(await readFile(join(active.directory, "prompt.md"), "utf8")).toBe(
+      "first prompt\n",
+    );
+    await active.release();
   });
 
   it("accepts a transcript copied out of an ephemeral container", async () => {
@@ -125,6 +255,7 @@ describe("run artifacts", () => {
 
     const config: HarnessConfig = {
       ticket: "ENG-9",
+      destination: { directory: join(root, "results", "rung-01", "run", "1.1") },
       arms: [
         {
           name: "komodo",
@@ -184,6 +315,7 @@ describe("run artifacts", () => {
     temporaryDirectories.push(root);
     const config: HarnessConfig = {
       ticket: "ENG-10",
+      destination: { directory: join(root, "results", "rung-01", "run", "1.1") },
       arms: [
         { name: "komodo", repo: "/tmp/komodo" },
         { name: "tuatara", repo: "/tmp/tuatara" },
@@ -241,6 +373,7 @@ describe("run artifacts", () => {
     temporaryDirectories.push(root);
     const config: HarnessConfig = {
       ticket: "ENG-11",
+      destination: { directory: join(root, "results", "rung-01", "run", "1.1") },
       arms: [
         { name: "komodo", repo: "/tmp/komodo" },
         { name: "tuatara", repo: "/tmp/tuatara" },
@@ -309,6 +442,85 @@ describe("run artifacts", () => {
     );
   });
 
+  // A review round's diff is raw text and lands as a file beside the attempts,
+  // with run.json keeping only the pointer — inlining it would bloat every
+  // rewrite of the record for the life of the run.
+  it("moves each round's diff into rounds/ and leaves a pointer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "ENG-12",
+      destination: { directory: join(root, "results", "rung-01", "run", "1.1") },
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+    };
+    const artifacts = await RunArtifacts.create(config, "prompt");
+    const artifactDir = await artifacts.startAttempt(
+      config.arms[1],
+      { prompt: "prompt", cwd: "/workspace" },
+      "2026-07-29T00:00:00.000Z",
+      1,
+    );
+    const finished = await artifacts.finishArm({
+      arm: "tuatara",
+      repo: "/tmp/tuatara",
+      attempt: 1,
+      maxAttempts: 1,
+      status: "succeeded",
+      startedAt: "2026-07-29T00:00:00.000Z",
+      completedAt: "2026-07-29T00:01:00.000Z",
+      durationMs: 60_000,
+      output: "done",
+      artifactDir,
+    });
+    await artifacts.recordLanding(
+      {
+        arm: "tuatara",
+        status: "merged",
+        startedAt: "2026-07-29T00:01:00.000Z",
+        completedAt: "2026-07-29T00:02:00.000Z",
+        reviewRounds: [
+          {
+            round: 1,
+            reviewer: "greptile-apps[bot]",
+            waitedMs: 0,
+            timedOut: false,
+            found: [],
+            reviewedSha: "aaa",
+            respondedSha: "bbb",
+            diff: "diff --git a/fix.ts b/fix.ts",
+          },
+        ],
+        conversation: [],
+        notes: [],
+      },
+      finished,
+    );
+
+    const record = JSON.parse(
+      await readFile(join(artifacts.directory, "run.json"), "utf8"),
+    );
+    const [round] = record.arms.tuatara.landing.reviewRounds;
+    expect(round.diff).toBeUndefined();
+    expect(round.diffFile).toBe(
+      join(artifacts.directory, "tuatara", "rounds", "round-01.diff"),
+    );
+    expect(await readFile(round.diffFile, "utf8")).toBe(
+      "diff --git a/fix.ts b/fix.ts\n",
+    );
+  });
+
   // Codex can flush a session file after the session settles, so the copy at
   // finishArm can miss it — and the landing record is written long after,
   // when the file exists. Leaving the arm `not-found` forever would lose the
@@ -322,6 +534,7 @@ describe("run artifacts", () => {
 
     const config: HarnessConfig = {
       ticket: "ENG-7",
+      destination: { directory: join(root, "results", "rung-01", "run", "1.1") },
       arms: [
         { name: "komodo", repo: "/tmp/komodo" },
         { name: "tuatara", repo: "/tmp/tuatara" },

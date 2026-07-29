@@ -75,7 +75,7 @@ function TabStrip({
   );
 }
 
-// The whole live view, for both run modes. Everything it shows comes from the
+// The whole live view. Everything it shows comes from the
 // model; it never reaches into the harness, so watching a run stays a display
 // choice and never a second execution path.
 export function LiveApp({

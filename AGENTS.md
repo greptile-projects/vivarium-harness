@@ -12,10 +12,9 @@ checkout) — and durably records everything each one did, so the two outcomes
 can be compared. Tuatara is presented first in human-facing output. `tuatara`
 and `komodo` are the identifiers everywhere — env vars (`TUATARA_*`,
 `KOMODO_*`), artifact directories, and the code — with no second vocabulary to
-translate through. The only
-per-run input is `--ticket`; which two checkouts run, and whether they're
-isolated in containers, is deployment configuration set once in `.env`, never
-per ticket.
+translate through. There is no per-run input at all: the tickets come from the
+ladder, and which two checkouts run, and whether they're isolated in
+containers, is deployment configuration set once in `.env`, never per ticket.
 
 Each arm drives a real Codex session over MCP (`codex mcp-server`, stdio
 transport). For real runs each arm's Codex runs inside its own Docker container
@@ -23,13 +22,14 @@ so it cannot see the other arm's checkout. Greg's fresh planning attempts run
 in ephemeral containers containing only a scratch ladder. The harness itself
 always runs on the host and orchestrates them.
 
-**Greg Tile** is the layer above, and the default behaviour of `bun start`: a
-stateless planner loop that supplies the tickets itself. Rather than you passing
-`--ticket`, Greg plans the next milestone toward a fixed North Star, writes it
-into `LADDER.md` as checkbox subtickets, then mechanically runs the same two-arm
-harness on each one. Greg takes no configuration of its own — it reuses the arms
-from `.env`. The experiment *is* this loop running for a long time; a one-off
-ticket run is a debugging option (`--ticket`), not the product.
+**Greg Tile** is the layer above, and what `bun start` runs: a stateless
+planner loop that supplies the tickets itself. Greg plans the next milestone
+toward a fixed North Star, writes it into `LADDER.md` as checkbox subtickets,
+then mechanically runs the same two-arm harness on each one. Greg takes no
+configuration of its own — it reuses the arms from `.env`. The experiment *is*
+this loop running for a long time; there is no other run mode (`--ticket`, the
+old one-off escape hatch, is gone — exercising the harness directly is what
+`runHarness` and the test suite's fakes are for).
 
 ## Commands
 
@@ -47,12 +47,11 @@ Everything else is an option on that loop, not a separate entrypoint.
 bun start                        # climb: plan a rung, build its subtickets, pause after 2 rungs
 bun start -- --unbounded         # same, without the 2-milestone pause
 bun start -- --plan-only         # plan rungs onto the ladder; build nothing
-bun start -- --ticket "..."      # skip the ladder: one ad-hoc ticket, then exit
 bun start -- --no-tui --json     # machine-readable, for scripts
 bun start -- --help              # the full option + env reference
 ```
 
-- **Default (ladder mode)** — read `LADDER.md`, build the first unchecked
+- **The climb** — read `LADDER.md`, build the first unchecked
   subticket via `runHarness`, check its box, repeat; when nothing is pending,
   run a fresh planner session to append the next milestone. Pauses after
   `MAX_MILESTONES` (2) built milestones — always finishing the rung it is on,
@@ -63,11 +62,6 @@ bun start -- --help              # the full option + env reference
   onto the ladder without ever invoking the harness, so several rungs can be
   reviewed before runs are spent on them. Same cap, also liftable with
   `--unbounded`. A later bare `bun start` builds everything queued this way.
-- **`--ticket "..."`** is the escape hatch for exercising the harness itself
-  (does `docker exec` work, does the transcript get copied) without invoking
-  the planner or touching the ladder. It is not how the experiment runs — it
-  exists so harness debugging never has to write a throwaway milestone into
-  `LADDER.md`, which is part of the published record.
 - **`--tui` / `--no-tui`** force the live view (default: on when stdout is a
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
   tab **per arm** with its context meter, recent activity and answer, the
@@ -87,8 +81,9 @@ bun start -- --help              # the full option + env reference
 - **`--json`** prints the machine-readable result and implies `--no-tui`.
 - Exit code is **1** whenever an arm exhausts its retries or the run throws, in
   every mode — the watchable path and the scriptable path are the same path.
-- Conflicting combinations (`--ticket` with `--plan-only` or `--unbounded`)
-  fail up front rather than silently ignoring a flag.
+- A flag that cannot be honoured fails up front rather than being silently
+  ignored — including the removed `--ticket`, which errors with what replaced
+  it instead of quietly climbing the ladder.
 
 ### Check, test, build
 
@@ -257,10 +252,10 @@ The pipeline is `config → prompt → harness → (per-arm streaming) → artif
 with the live view tapping the same event stream.
 
 Those three stages are three directories, and `src/` itself holds only the
-entrypoint and the two run-mode wirings:
+entrypoint and the climb's wiring:
 
 ```
-src/index.ts climb.ts ticket.ts   # entrypoint + the two run-mode wirings
+src/index.ts climb.ts             # entrypoint + the climb's live wiring
 src/harness/                      # running one ticket through both arms, and landing it
 src/greg-tile/                    # the planner loop above the harness
 src/view/                         # the live view watching it
@@ -271,8 +266,10 @@ into it and `view/` watches what it emits, while it imports from neither. Its
 own modules are siblings, so they refer to each other by bare `./name.js`; a
 cross-layer import is always visible as a `../harness/` in the specifier.
 
-- **`src/harness/config.ts`** — turns `--ticket` + env into a validated `HarnessConfig`.
-  `parseArgs` reads env (repos, containers, sandbox, attempts, timeout);
+- **`src/harness/config.ts`** — turns env into a validated `HarnessConfig`.
+  `parseArgs` reads env (repos, containers, sandbox, attempts, timeout) and
+  leaves the ticket blank — the ladder loop fills it per subticket, and
+  `runHarness` refuses to run on the placeholder;
   for container deployments `validateConfig` requires two distinct plain HTTPS
   GitHub clone URLs, while the host smoke path canonicalizes local repo paths
   with `realpath` and rejects two paths resolving to the same directory. An arm gains `container`
@@ -369,8 +366,13 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   protect the only things `-x` must not take: `node_modules` and the mounted
   ladder),
   `findPullRequest` (by the URL the arm
-  reported, falling back to its branch), `conversation` (reviews + issue
-  comments + inline review comments + reactions, merged chronologically), and
+  reported, falling back to its branch, carrying GitHub's churn numbers —
+  additions, deletions, changed files — so the record can answer
+  findings-per-line without a network), `conversation` (reviews + issue
+  comments + inline review comments + reactions, merged chronologically),
+  `diff` (the unified diff between two commits, read from the arm's own
+  checkout — the local object store still holds commits an amend or squash
+  unhooked from every ref), and
   `merge`. Comment list responses expose reaction counts, so identities are
   fetched only for comments with a nonzero count rather than making one extra
   API call per historical comment on every poll. For containerized arms these
@@ -403,6 +405,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
       `signedOff`; any prose beside an ACK is handed to the arm. Review bodies
       and comments are never classified by their wording, and every other
       reaction is ignored.
+      Every distinct comment revision observed during polling is retained in
+      the landing record's `conversationRevisions`, in addition to the final
+      `conversation` snapshot. Greptile edits its PR-level overview in place
+      after re-review — including the confidence score — so without this
+      history the score trajectory and earlier summaries survive only behind
+      GitHub's awkward edit-history API.
     - **The arm's answer leaves no trace on the pull request.** The reviewer
       only ever responds to a ping — a pushed commit or a posted comment — and
       its thumbs-up is an ACK to one. An answer that pushed nothing and posted
@@ -458,7 +466,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   unreachable and GitHub marks the inline comments outdated, which would erase
   the one diff showing what the review changed — and a sha stays fetchable long
   after the ref moves. The pair also says, with no text analysis at all, whether
-  the arm pushed a fix or only argued. `headSha` is the one method in
+  the arm pushed a fix or only argued. A round that did push also **archives
+  the diff itself** (`rung-NN/run/N.M/<arm>/rounds/round-NN.diff`, with a
+  `diffFile` pointer in the round): the sha pair alone names commits that a
+  squash-merge and branch deletion eventually strand, and the checkout that
+  made them is destroyed with the subticket. A diff that cannot be produced is
+  recorded as `diffError` — a gap, not "no push". After a successful merge the
+  pull request's churn is re-fetched so the recorded numbers include the
+  review fixes. `headSha` is the one method in
   `github.ts` that retries, and the only one with a **second source**: when the
   API keeps refusing it asks the git remote (`git ls-remote`) instead. The same
   fact is published over two protocols with two quotas, and unlike every other
@@ -523,7 +538,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   all runtime resources after landing or failure. Tests inject the entire
   interface, so lifecycle and teardown are covered without Docker. Teardown
   happens after the run has settled and is diagnostic-only: a failure writes
-  `cleanup-error.txt` and `manifest.cleanupError`, but cannot turn merged work
+  `cleanup-error.txt` and `run.json`'s `cleanupError`, but cannot turn merged work
   into a failed run or replace an earlier run error. Host smoke mode is the
   explicit no-op implementation.
 
@@ -564,65 +579,85 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   `docker exec … codex mcp-server` and does **not** anchor the host spawn cwd
   (the cwd is an in-container path).
 
-- **`src/harness/artifacts.ts`** — `RunArtifacts` owns the on-disk record under
-  `results/<run-id>/`. Every write goes through `atomicWrite` (temp file +
-  `rename`). The top-level `manifest.json` (`schemaVersion: 3`) is the source of
-  truth for run status; manifest writes are **serialized through a promise
-  chain** (`manifestWrite`) that swallows its own errors so one failed write
+- **`src/harness/artifacts.ts`** — `RunArtifacts` owns the on-disk record of
+  one run. The climb hands it a **destination** — `config.destination`, filled
+  in by the loop as `results/rung-NN/run/<N.M>/` with the subticket's number,
+  milestone and title — so the record is filed by ladder coordinates, and a
+  run without a destination is refused: a record without an address is one
+  nothing can find again. A re-run of a
+  failed box builds into the **same directory** and moves what it replaces
+  under `superseded/<startedAt>/`, so the top level always holds the run that
+  counted and the failures stay readable underneath. Every write goes through
+  `atomicWrite` (temp file + `rename`). The single `run.json`
+  (`schemaVersion: 4`) is the whole record — status, the subticket
+  coordinates, the redacted config, each arm's baselines, attempts and
+  landing — with only the raw texts beside it (`ticket.md`, `prompt.md`, the
+  per-attempt files); there is no separate manifest, baselines or landing file
+  to drift from it. `run.json` writes are **serialized through a promise
+  chain** (`recordWrite`) that swallows its own errors so one failed write
   can't poison later ones. In container mode the environment exporter copies
   the matching `threadId` out of the ephemeral `/codex/sessions`; host smoke
   mode still searches `config.codexHome`. `transcriptStatus` records copied /
   partial / not-found / copy-failed / no-thread-id; `transcriptError` preserves
   the exporter failure without changing the arm's result.
   `recordBaselines` writes the commit each arm started from (they should match;
-  when they do not, that *is* the finding). `recordLanding` writes
-  `<arm>/land.json` — pull request, every review round with what the reviewer
-  said and what the arm answered, the merge — replaces the arm's final result
-  (a session that opened no pull request is a failed arm), and **re-copies the
-  transcript**, because the review rounds are more turns on the same thread and
-  the first copy stops short of them.
+  when they do not, that *is* the finding). `recordLanding` writes the arm's
+  landing into `run.json` — pull request, every review round with what the
+  reviewer said and what the arm answered, the merge — replaces the arm's final
+  result (a session that opened no pull request is a failed arm), and
+  **re-copies the transcript**, because the review rounds are more turns on the
+  same thread and the first copy stops short of them.
 
-- **`src/climb.ts` / `src/ticket.ts`** — the two run-mode wirings, and the only
-  places the injectable seams get filled with real implementations.
-  `climb.ts` (`runGregLive`) hands `runGreg` its `plan`/`harness`/`log` deps so
+- **`src/climb.ts`** — the climb's live wiring, and the only place the
+  injectable seams get filled with real implementations.
+  `runGregLive` hands `runGreg` its `plan`/`harness`/`log` deps so
   the planner's *and* the builders' event streams are watchable — a silent
   multi-minute planning session is what used to look like a hang — and it seeds
-  the view from `state.json` and re-reads the ladder between phases (Greg
+  the view from the rung directories and re-reads the ladder between phases (Greg
   appends rungs as he plans and the loop checks boxes as it builds, so a plan
-  read once would quietly stop showing where the climb is).
-  `ticket.ts` (`runTicketLive`) is the same shape with no Greg in it. They sit
-  beside `index.ts`, their only caller, rather than inside `greg-tile/` or
+  read once would quietly stop showing where the climb is). It sits
+  beside `index.ts`, its only caller, rather than inside `greg-tile/` or
   `view/`: those two are layers, and neither should have to know the other
   exists. The Ink boundary is the real constraint here — `greg-tile/loop.ts`
   must stay free of React so `greg-tile-loop.test.ts` can drive a whole climb
   headlessly, which is why this wiring is a separate module at all.
 
-- **`src/harness/state.ts`** — `results/state.json`, the durable record of the climb and
-  the deliberate counterpart to `LADDER.md` (see the warning under `ladder.ts`).
-  Because *nothing* downstream reads it — never mounted, never in a prompt — it
-  can hold everything worth reading later: per subticket, the run id, artifact
-  dir, and each arm's pull request with its review-round counts — `comments` for
-  the whole conversation and `diffComments` for the inline ones, kept apart
-  because only the second is a count of findings; per planning
-  turn, Greg's thread id and the transcript copied out of `CODEX_HOME`. Reads
-  fail open (a missing or corrupt file is an empty climb) because this is a
-  record for humans and must never stop the experiment it is recording. It is
-  also what makes the live view survive a restart: `climb.ts` seeds the arm tabs
-  and the climb tree from it, so a climb spanning weeks and many `bun start`
-  invocations shows every rung it has ever landed, not just the one in flight.
+- **`src/harness/state.ts`** — the climb's durable record, and the deliberate
+  counterpart to `LADDER.md` (see the warning under `ladder.ts`). There is no
+  state file: the record **is** the artifact tree, filed by ladder coordinates
+  (`rungDirectory` / `planDirectory` / `subticketRunDirectory` are the one
+  place the paths are spelled), and `readClimbState` reassembles the climb by
+  scanning `results/rung-*/` and reconciling it with the checked boxes parsed
+  from `LADDER.md` — a completed `run.json` is evidence, but does not enter
+  climb history until its box is durably checked. Each accepted subticket's
+  `run.json` supplies the run id,
+  artifact dir and each arm's pull request with its review-round counts
+  (`comments` for the whole conversation and `diffComments` for the inline
+  ones, kept apart because only the second is a count of findings), each
+  rung's `plan/plan.json` for Greg's planning turns (thread id and the
+  transcript copied out of `CODEX_HOME` — `recordPlannerSession` appends them,
+  because a milestone that took two attempts is worth seeing as two). Because
+  *nothing* downstream reads any of it — never mounted, never in a prompt — it
+  can hold everything worth reading later. Reads fail open per file (a missing
+  `results/` is an empty climb; one corrupt `run.json` loses one row, never
+  the climb) because this is a record for humans and must never stop the
+  experiment it is recording. It is also what makes the live view survive a
+  restart: `climb.ts` seeds the arm tabs and the climb tree from it, so a
+  climb spanning weeks and many `bun start` invocations shows every rung it
+  has ever landed, not just the one in flight.
 
-- **`src/index.ts`** — the single entrypoint. Dispatches to either the ladder
-  loop (default) or a one-ticket run, owns the `results/live-<ts>/` log
-  directory and the exit code, and owns no run logic of its own. Flag resolution
-  lives in `config.ts` as `parseRunMode` (pure, and tested in
-  `test/config.test.ts`) — combinations that could only be honoured by ignoring
-  a flag the caller typed throw instead.
+- **`src/index.ts`** — the single entrypoint. Runs the ladder loop, owns the
+  `results/live-<ts>/` log directory and the exit code, and owns no run logic
+  of its own. Flag resolution lives in `config.ts` as `parseRunMode` (pure, and
+  tested in `test/config.test.ts`) — a flag that could only be honoured by
+  ignoring it throws instead, including the removed `--ticket`.
 
 - **`src/view/`** — the live view. `attach.ts` is the shared sink wiring
   (`attachLive`): it updates the store, tees a readable line into **that arm's
   own** `progress.log` through a serialized write chain, mirrors that line to
-  the TUI's log tab, and echoes to stdout when no TUI is mounted — **both** run
-  modes go through it, so a change to the feed can't drift between them. One
+  the TUI's log tab, and echoes to stdout when no TUI is mounted — the TUI and
+  the `--no-tui` path go through the same wiring, so a change to the feed
+  can't drift between them. One
   file per arm (`live-<ts>/<arm>/progress.log`, plus `ladder.log` for the
   climb's own lines): one combined file read fine live, where the label column
   tells the arms apart, but the artifact is a *pair* of independent builds and
@@ -643,14 +678,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   human-facing text and get reworded, and a classifier over them would start
   lying at the next rewrite. `statusLabel` in `format.ts` is the whole display
   rule — the phase while the arm is live, the outcome once it settles;
-  `model.ts` is `LiveModel`, the one view model **both** run modes render from
+  `model.ts` is `LiveModel`, the one view model everything renders from
   (arms, a subtitle, notes, the mirrored log, the plan, and the merged pull
   requests per arm — those live on the model, not the store, because the store
   is cleared between phases and merged pull requests are exactly what should
   accumulate across them). `climb()` is where the two halves of the experiment's
   own history meet: the ladder says what was planned and which boxes are
-  checked, `state.json` and the run in flight say what each arm landed on each
-  rung. A landing arriving mid-run is filed under `currentSubticket`, so the
+  checked, the rung directories and the run in flight say what each arm landed
+  on each rung. A landing arriving mid-run is filed under `currentSubticket`, so the
   tree fills in as the run goes rather than only in the next process. The plan
   reaches the model as four fields per rung (`PlanSubticket`) rather than as
   ladder text, which is what keeps `view/` and `greg-tile/` ignorant of each
@@ -681,7 +716,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   key handling. `tabs.ts` is the pure tab logic, keyed on **stable ids, never
   indices** — Greg swaps which sessions are live between phases, so the tab list
   changes shape mid-run, and the **climb** tab appears only once a plan exists
-  (a one-ticket run has none, so the tab is absent rather than empty).
+  (before the first milestone is planned there is none, so the tab is absent
+  rather than empty).
   `panes.tsx` holds the panes: `Overview` (one calm
   card per arm), `ArmDetail` (one arm in full — context meter, the pull
   requests it has merged with their GitHub links, recent activity, answer),
@@ -748,18 +784,19 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   without building. The live wiring is `src/climb.ts`, one directory up, so
   `greg-tile/` imports nothing from `view/` — the layers do not know each other.
   The ladder file **is** the plan, with no JSON hand-off to drift; what each
-  rung *landed* is `results/state.json`, and the split between those two is the
-  isolation boundary, not a convenience.
+  rung *landed* is its `results/rung-NN/` directory, and the split between
+  those two is the isolation boundary, not a convenience.
 
 ## Run statuses
 
 `completed` (both arms succeeded) · `completed_with_failures` (an arm exhausted
 its retries, **or landed nothing** — process exits 1) · `failed` (the harness
-itself threw). These appear in both the CLI JSON result and `manifest.json`.
+itself threw). These appear in both the CLI JSON result and `run.json`.
 
 Succeeding means landing: an arm whose session ended cheerfully but opened no
-pull request, or whose pull request could not be merged, is a failed arm
-(`land.json` says which, as `no-pull-request` or `merge-failed`). So is an arm
+pull request, or whose pull request could not be merged, is a failed arm (the
+arm's landing in `run.json` says which, as `no-pull-request` or
+`merge-failed`). So is an arm
 that was perfectly mergeable but whose *peer* was not: it is recorded `blocked`
 and left unmerged on purpose, because merging it alone would put the two
 codebases permanently out of step on a rung only one arm ever built. The ladder
@@ -794,27 +831,37 @@ On a clean shutdown the command is a no-op.
 
 ## Artifact layout
 
+Everything a rung produced lives under its own directory, filed by ladder
+coordinates — the path answers "what is this" without opening a file:
+
 ```
-results/<run-id>/
-  manifest.json ticket.txt prompt.txt config.json baselines.json
-  tuatara/land.json         # pull request, review rounds, conversation, merge
-  tuatara/attempt-01/  request.json status.json response.json output.txt
-                       error.txt transcript.jsonl
-  komodo/land.json     ...
-  komodo/attempt-01/   ...
+results/rung-01/            # one directory per rung (milestone)
+  plan/
+    plan.json               # Greg's planning turns for this rung, appended per attempt
+    <threadId>.jsonl        # …and each turn's raw Codex transcript
+  run/1.1/                  # one directory per subticket — this IS the run dir
+    run.json                # the whole record: status, subticket, config,
+                            # baselines, each arm's attempts and landing
+    ticket.md prompt.md
+    tuatara/attempt-01/  request.json status.json response.json output.txt
+                         error.txt transcript.jsonl
+    tuatara/rounds/round-01.diff   # what each answered review round pushed
+    komodo/attempt-01/   ...
+    superseded/<ts>/        # what a re-run of a failed box replaced, in full
+  run/1.2/ ...
 results/live-<ts>/
   tuatara/progress.log      # one feed per arm, written by the live view
   komodo/progress.log
   greg/progress.log         # the planner session, when there is one
   ladder.log                # the climb's own lines
-results/state.json          # the durable climb record, across every run
-results/planner/            # Greg's raw transcripts, one per planning turn
-  milestone-2-<threadId>.jsonl
 ```
 
-`land.json` is the close-reading input the experiment is for: the reviewer's
-findings and the arm's answers to them, in one chronological list per pull
-request, beside the transcript of the session that wrote both.
+The landing inside `run.json` is the close-reading input the experiment is
+for: the reviewer's findings and the arm's answers to them, in one
+chronological list per pull request, beside the transcript of the session that
+wrote both. There is no separate state file — `readClimbState` reassembles the
+whole climb by scanning the rung directories and accepting only records whose
+ladder boxes are checked, so keeping the record and ladder is keeping the tree.
 
 `LADDER.md` sits at the repo root, outside `results/` — it is Greg's durable
 state across runs (North Star, every milestone, every subticket and its
