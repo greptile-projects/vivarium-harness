@@ -405,6 +405,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
       `signedOff`; any prose beside an ACK is handed to the arm. Review bodies
       and comments are never classified by their wording, and every other
       reaction is ignored.
+      Every distinct comment revision observed during polling is retained in
+      the landing record's `conversationRevisions`, in addition to the final
+      `conversation` snapshot. Greptile edits its PR-level overview in place
+      after re-review — including the confidence score — so without this
+      history the score trajectory and earlier summaries survive only behind
+      GitHub's awkward edit-history API.
     - **The arm's answer leaves no trace on the pull request.** The reviewer
       only ever responds to a ping — a pushed commit or a posted comment — and
       its thumbs-up is an ACK to one. An answer that pushed nothing and posted

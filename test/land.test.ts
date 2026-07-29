@@ -988,6 +988,14 @@ describe("the rounds after the first", () => {
     );
 
     expect(prompts).toHaveLength(2);
+    expect(
+      record.conversationRevisions
+        ?.filter((entry) => entry.id === "issue-comment:summary")
+        .map((entry) => entry.body),
+    ).toEqual([
+      "one blocking finding remains",
+      "the pushed fix is safe; no blocking finding remains",
+    ]);
     expect(record.reviewRounds).toHaveLength(2);
     expect(record.reviewRounds[1]?.found.map((entry) => entry.id)).toEqual([
       "issue-comment:summary",

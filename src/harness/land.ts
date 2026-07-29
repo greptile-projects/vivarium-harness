@@ -141,6 +141,12 @@ export interface LandingRecord {
   // the close-reading input: the reviewer's findings and the arm's answers,
   // in one chronological list.
   conversation: ReviewNote[];
+  // Every distinct revision the harness observed while polling, in observation
+  // order. GitHub edits Greptile's PR-level overview in place (including its
+  // confidence score), so `conversation` alone preserves only the final body.
+  // Stable comment ids intentionally repeat here with different updatedAt/body
+  // pairs, making the review's evolution durable without a later API lookback.
+  conversationRevisions?: ReviewNote[];
   merge?: MergeOutcome;
   notes: string[];
 }
@@ -258,6 +264,7 @@ async function waitForReview(
   // flight, and its ACKs to the previous answer must not surface as a batch —
   // the wait holds out for prose or the timeout instead.
   acceptReactions: boolean,
+  observed: Map<string, ReviewNote>,
   // The rolling anchor: when the harness last saw something from the reviewer,
   // in `deps.now()` terms. The timeout window is "the reviewer has been silent
   // for `timeoutMs`", not a fresh allowance per wait — so a round that starts
@@ -297,6 +304,7 @@ async function waitForReview(
     let conversation: ReviewNote[];
     try {
       conversation = await deps.github.conversation(pullRequest);
+      rememberConversation(observed, conversation);
       lastError = undefined;
     } catch (error) {
       // A failed read is a failed poll, not reviewer silence — keep polling,
@@ -334,6 +342,7 @@ async function waitForReview(
         let next: ReviewNote[];
         try {
           next = await deps.github.conversation(pullRequest);
+          rememberConversation(observed, next);
         } catch {
           // The batch in hand is complete as of the last successful read —
           // hand it over rather than losing it to a failed re-poll.
@@ -382,10 +391,12 @@ async function answerLeftTrace(
   pullRequest: number,
   reviewer: string,
   seen: Set<string>,
+  observed: Map<string, ReviewNote>,
 ): Promise<boolean> {
   let after: ReviewNote[];
   try {
     after = await deps.github.conversation(pullRequest);
+    rememberConversation(observed, after);
   } catch {
     // Unreadable is unknown, and unknown must not end the exchange early —
     // the next round's poll loop absorbs transient failures already.
@@ -397,6 +408,15 @@ async function answerLeftTrace(
       (entry.kind !== "reaction" ||
         (sameLogin(entry.author, reviewer) && isThumbsUpReaction(entry))),
   );
+}
+
+function rememberConversation(
+  observed: Map<string, ReviewNote>,
+  conversation: ReviewNote[],
+): void {
+  for (const note of conversation) {
+    observed.set(reviewRevision(note), note);
+  }
 }
 
 // The post-merge conversation is the close-reading record in run.json, so a
@@ -431,6 +451,7 @@ export async function reviewArm(
 ): Promise<LandingRecord> {
   const startedAt = new Date().toISOString();
   const notes: string[] = [];
+  const observedRevisions = new Map<string, ReviewNote>();
   const note = (text: string): void => {
     notes.push(text);
     deps.note(text);
@@ -446,6 +467,7 @@ export async function reviewArm(
     reviewer: arm.reviewer,
     reviewRounds: [],
     conversation: [],
+    conversationRevisions: [...observedRevisions.values()],
     notes,
     ...rest,
   });
@@ -495,6 +517,7 @@ export async function reviewArm(
         config.reviewPollMs,
         config.reviewDebounceMs,
         !reReviewPending,
+        observedRevisions,
         reviewerLastSeenAt,
       );
 
@@ -691,7 +714,13 @@ export async function reviewArm(
       // spare, so the check is skipped rather than spent on a read nobody uses.
       if (round < config.reviewRounds && !reReviewPending) {
         if (
-          !(await answerLeftTrace(deps, pullRequest.number, arm.reviewer, seen))
+          !(await answerLeftTrace(
+            deps,
+            pullRequest.number,
+            arm.reviewer,
+            seen,
+            observedRevisions,
+          ))
         ) {
           answered.settled = true;
           note(
@@ -720,6 +749,7 @@ export async function mergeArm(
   deps: Pick<LandDeps, "github" | "note">,
 ): Promise<LandingRecord> {
   if (record.status !== "ready" || !record.pullRequest) return record;
+  const originalPullRequest = record.pullRequest;
 
   const notes = [...record.notes];
   const note = (text: string): void => {
@@ -727,13 +757,21 @@ export async function mergeArm(
     deps.note(text);
   };
 
-  const merge = await deps.github.merge(record.pullRequest.number);
+  const merge = await deps.github.merge(originalPullRequest.number);
   // An empty conversation and an unreadable one must not look alike in the
   // record: the comments stay re-fetchable from GitHub, but only if the run record
   // says they are missing rather than absent.
   let conversation: ReviewNote[] = [];
   try {
-    conversation = await captureConversation(deps, record.pullRequest.number);
+    conversation = await captureConversation(deps, originalPullRequest.number);
+    const observed = new Map(
+      (record.conversationRevisions ?? []).map((note) => [
+        reviewRevision(note),
+        note,
+      ]),
+    );
+    rememberConversation(observed, conversation);
+    record = { ...record, conversationRevisions: [...observed.values()] };
   } catch (error) {
     note(
       `conversation unavailable at merge time (${
@@ -754,16 +792,16 @@ export async function mergeArm(
     };
   }
 
-  note(`merged #${record.pullRequest.number}`);
+  note(`merged #${originalPullRequest.number}`);
 
   // Refresh the pull request's churn now that it is final: the ref captured
   // before review counts only the build, and review fixes change the numbers
   // the record is asked for (findings per changed line). Fails open — the
   // merge already happened, and the pre-review snapshot beats none.
-  let pullRequest = record.pullRequest;
+  let pullRequest = originalPullRequest;
   try {
     const refreshed = await deps.github.findPullRequest({
-      url: record.pullRequest.url,
+      url: originalPullRequest.url,
     });
     if (refreshed) pullRequest = refreshed;
   } catch {
@@ -797,6 +835,14 @@ export async function blockArm(
   if (record.pullRequest) {
     try {
       conversation = await captureConversation(deps, record.pullRequest.number);
+      const observed = new Map(
+        (record.conversationRevisions ?? []).map((note) => [
+          reviewRevision(note),
+          note,
+        ]),
+      );
+      rememberConversation(observed, conversation);
+      record = { ...record, conversationRevisions: [...observed.values()] };
     } catch (error) {
       // Same rule as mergeArm: an unreadable conversation is recorded as a
       // gap, never passed off as an empty one.
