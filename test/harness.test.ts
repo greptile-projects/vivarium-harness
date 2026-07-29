@@ -46,6 +46,10 @@ async function makeConfig(): Promise<{
     reviewPollMs: 10,
     reviewDebounceMs: 0,
     reviewRounds: 2,
+    destination: {
+      directory: join(root, "results", "rung-01", "run", "1.1"),
+      subticket: { number: "1.1", milestone: 1, title: "Retry" },
+    },
   };
   const artifacts = await RunArtifacts.create(config, "original prompt");
   return { config, artifacts };

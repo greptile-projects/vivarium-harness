@@ -184,8 +184,6 @@ describe("LiveModel.climb", () => {
     }) as unknown as LandingRecord;
 
   const state = (): ClimbState => ({
-    schemaVersion: 1,
-    updatedAt: new Date(0).toISOString(),
     planner: [],
     subtickets: [
       {

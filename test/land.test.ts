@@ -85,6 +85,10 @@ function fakeGitHub(options: {
       headIndex += 1;
       return current;
     },
+    async diff(base, head) {
+      calls.push("diff");
+      return `diff --git a/fix.ts b/fix.ts\n--- ${base}\n+++ ${head}\n`;
+    },
     async isGitHubCheckout() {
       return options.isCheckout ?? true;
     },
@@ -296,6 +300,34 @@ describe("landArm", () => {
     // Captured either side of the reply, never after the fact.
     const order = github.calls.filter((call) => call === "headSha");
     expect(order).toHaveLength(2);
+    // The fix itself rides with the round, taken from exactly that sha pair —
+    // the commits it names go unreachable once the branch is squashed away.
+    expect(first?.diff).toContain("--- sha-reviewed");
+    expect(first?.diffError).toBeUndefined();
+  });
+
+  it("refreshes the pull request's churn once the numbers are final", async () => {
+    const github = fakeGitHub({});
+    let fetches = 0;
+    github.findPullRequest = async () => {
+      fetches += 1;
+      // Review fixes land between the first fetch and the merge, so the
+      // pre-review churn is stale by the time anyone reads it.
+      return fetches === 1
+        ? { ...pr, additions: 10, deletions: 2, changedFiles: 1 }
+        : { ...pr, additions: 14, deletions: 3, changedFiles: 2 };
+    };
+    const record = await landArm(
+      komodo,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(record.pullRequest?.additions).toBe(14);
+    expect(record.pullRequest?.deletions).toBe(3);
+    expect(record.pullRequest?.changedFiles).toBe(2);
   });
 
   it("records an equal pair when the arm argues but pushes nothing", async () => {
@@ -317,6 +349,43 @@ describe("landArm", () => {
 
     const [first] = record.reviewRounds;
     expect(first?.reviewedSha).toBe(first?.respondedSha);
+    // Nothing pushed, nothing to archive — and no error either: absence of a
+    // diff on an unpushed round is the record, not a gap in it.
+    expect(first?.diff).toBeUndefined();
+    expect(first?.diffError).toBeUndefined();
+    expect(github.calls.filter((call) => call === "diff")).toHaveLength(0);
+  });
+
+  it("records a gap when the push's diff cannot be produced", async () => {
+    const github = fakeGitHub({
+      conversations: [
+        [],
+        [note(REVIEWER, "c1", "this leaks a connection")],
+        [
+          note(REVIEWER, "c1", "this leaks a connection"),
+          note("vivarium-tuatara-bot", "c2", "fixed"),
+        ],
+      ],
+      heads: ["sha-reviewed", "sha-after-fix"],
+    });
+    github.diff = async () => {
+      throw new Error("bad object sha-reviewed");
+    };
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`opened it\n\nPR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    // The round survives — losing the diff must not cost the rung — but the
+    // gap is named so an analysis recomputes it instead of reading "no diff"
+    // as "no push".
+    const [first] = record.reviewRounds;
+    expect(first?.diff).toBeUndefined();
+    expect(first?.diffError).toContain("bad object");
+    expect(first?.respondedSha).toBe("sha-after-fix");
+    expect(record.status).toBe("merged");
   });
 
   // An absent sha otherwise reads exactly like a run made before these were

@@ -81,11 +81,23 @@ export interface ArmConfig {
   reviewer?: string;
 }
 
+// Where one run's artifacts land. The climb fills this in per subticket so the
+// record is filed by ladder coordinates (results/rung-01/run/1.2) rather than
+// by an opaque run id. Optional on the type only because parseArgs cannot know
+// it — RunArtifacts refuses to run without one.
+export interface RunDestination {
+  directory: string;
+  // The ladder coordinates this run builds, recorded into run.json so the
+  // directory tree and the record inside it can never disagree.
+  subticket?: { number: string; milestone: number; title: string };
+}
+
 export interface HarnessConfig {
   ticket: string;
   arms: [ArmConfig, ArmConfig];
   sandbox: SandboxMode;
   resultsDir: string;
+  destination?: RunDestination;
   codexHome: string;
   maxAttempts: number;
   idleTimeoutMs: number;
@@ -93,17 +105,6 @@ export interface HarnessConfig {
   reviewPollMs: number;
   reviewDebounceMs: number;
   reviewRounds: number;
-}
-
-function valueAfter(args: string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  if (index === -1) return undefined;
-
-  const value = args[index + 1];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`${flag} requires a value`);
-  }
-  return value;
 }
 
 // An explicit CODEX_SANDBOX always wins; unset returns undefined so each arm
@@ -156,10 +157,6 @@ export function parseArgs(
     throw new Error("HELP");
   }
 
-  const ticket = valueAfter(args, "--ticket");
-  if (!ticket) {
-    throw new Error("--ticket is required");
-  }
   if (!env.KOMODO_REPO || !env.TUATARA_REPO) {
     throw new Error("KOMODO_REPO and TUATARA_REPO must be configured");
   }
@@ -167,7 +164,10 @@ export function parseArgs(
   const sandbox = sandboxFromEnv(env.CODEX_SANDBOX);
 
   return {
-    ticket,
+    // There is no per-run ticket input: the ladder loop fills this per
+    // subticket from the rung's description. runHarness refuses to run on the
+    // placeholder, so a wiring that forgets fails loudly.
+    ticket: "",
     arms: [
       {
         name: "komodo",
@@ -212,40 +212,29 @@ export function parseArgs(
 }
 
 // How a single `bun start` invocation should behave. Every option is a
-// modifier on the one loop, so resolving them is pure argv reading — kept here
-// beside parseArgs (and out of the entrypoint's main()) so it is testable.
+// modifier on the one ladder loop, so resolving them is pure argv reading —
+// kept here beside parseArgs (and out of the entrypoint's main()) so it is
+// testable.
 export interface RunMode {
-  // "ladder" is the experiment: plan a rung, build its subtickets, repeat.
-  // "ticket" runs one ad-hoc ticket — the escape hatch for exercising the
-  // harness without letting Greg write a debug milestone into LADDER.md, which
-  // is part of the published record.
-  kind: "ladder" | "ticket";
   planOnly: boolean;
   unbounded: boolean;
-  ticket?: string;
   useTui: boolean;
   json: boolean;
 }
 
 export function parseRunMode(args: string[], isTty: boolean): RunMode {
+  // The one-ticket escape hatch is gone: the ladder is the only run mode.
+  // Refuse the old flag rather than silently climbing the ladder under a
+  // caller who asked for something else.
+  if (args.includes("--ticket")) {
+    throw new Error(
+      "--ticket has been removed; bun start always climbs the ladder",
+    );
+  }
+
   const json = args.includes("--json");
   const planOnly = args.includes("--plan-only");
   const unbounded = args.includes("--unbounded");
-  const ticket = valueAfter(args, "--ticket");
-  const kind = ticket !== undefined ? "ticket" : "ladder";
-
-  // Reject combinations that could only be honoured by silently ignoring one
-  // of the flags the caller typed.
-  if (kind !== "ladder" && planOnly) {
-    throw new Error(
-      "--plan-only plans ladder rungs; it cannot be combined with --ticket",
-    );
-  }
-  if (kind !== "ladder" && unbounded) {
-    throw new Error(
-      "--unbounded lifts the ladder's milestone cap; it has no meaning with --ticket",
-    );
-  }
   // --json is for machines; never fight it for the terminal.
   const useTui = args.includes("--tui")
     ? true
@@ -253,7 +242,7 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
       ? false
       : isTty;
 
-  return { kind, planOnly, unbounded, ticket, useTui, json };
+  return { planOnly, unbounded, useTui, json };
 }
 
 export async function validateConfig(
@@ -356,8 +345,6 @@ Options:
   --unbounded             Do not pause after ${MAX_MILESTONES} milestones (never returns).
   --plan-only             Plan rungs onto the ladder; build nothing. A later
                           \`bun start\` builds everything queued this way.
-  --ticket <description>  Skip the ladder: run this one ticket through both
-                          arms and exit. For debugging the harness itself.
   --tui / --no-tui        Force the live view on/off (default: on when stdout
                           is a TTY). Both write one progress.log per arm under
                           results/live-<ts>/<arm>/.
@@ -402,6 +389,6 @@ Optional environment:
   REVIEW_ROUNDS=<n>       Review → answer → re-review rounds per pull request.
                           Defaults to ${REVIEW_ROUNDS}.
 
-The caller supplies only --ticket. Repository and tool isolation are deployment
-configuration, not per-ticket orchestration inputs. Results dir (./results) and
-attempts per arm (3) are fixed constants.`;
+The caller supplies nothing per run — the ladder is the input. Repository and
+tool isolation are deployment configuration, not per-ticket orchestration
+inputs. Results dir (./results) and attempts per arm (3) are fixed constants.`;

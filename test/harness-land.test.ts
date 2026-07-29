@@ -55,6 +55,10 @@ async function makeConfig(): Promise<HarnessConfig> {
     reviewPollMs: 10,
     reviewDebounceMs: 0,
     reviewRounds: 1,
+    destination: {
+      directory: join(root, "results", "rung-01", "run", "1.1"),
+      subticket: { number: "1.1", milestone: 1, title: "Do the thing" },
+    },
   };
 }
 
@@ -78,6 +82,9 @@ function fakeGitHub(
     },
     async headSha() {
       return `head-${arm.name}`;
+    },
+    async diff() {
+      return `diff --git a/${arm.name}.ts b/${arm.name}.ts\n`;
     },
     async conversation(): Promise<ReviewNote[]> {
       if (!options.withReview) return [];
@@ -177,19 +184,18 @@ describe("runHarness landing", () => {
     // …and that second turn is the review round for its own pull request.
     expect(tuatara[1]?.prompt).toContain(urlFor("tuatara"));
 
-    const manifest = JSON.parse(
-      await readFile(join(run.artifactDir, "manifest.json"), "utf8"),
+    // One record: baselines and each arm's landing live in run.json — there is
+    // no separate baselines.json or land.json to drift from it.
+    const record = JSON.parse(
+      await readFile(join(run.artifactDir, "run.json"), "utf8"),
     );
-    expect(manifest.schemaVersion).toBe(3);
-    expect(manifest.baselines.tuatara.sha).toBe("sha-tuatara");
-    expect(manifest.arms.tuatara.landing.status).toBe("merged");
-    expect(manifest.arms.tuatara.landing.reviewRounds).toHaveLength(1);
-
-    const land = JSON.parse(
-      await readFile(join(run.artifactDir, "tuatara", "land.json"), "utf8"),
-    );
-    expect(land.pullRequest.url).toBe(urlFor("tuatara"));
-    expect(land.conversation).toHaveLength(1);
+    expect(record.schemaVersion).toBe(4);
+    expect(record.baselines.tuatara.sha).toBe("sha-tuatara");
+    const landing = record.arms.tuatara.landing;
+    expect(landing.status).toBe("merged");
+    expect(landing.reviewRounds).toHaveLength(1);
+    expect(landing.pullRequest.url).toBe(urlFor("tuatara"));
+    expect(landing.conversation).toHaveLength(1);
   });
 
   // The status word in the live view. An arm sitting on a review it has not
@@ -382,6 +388,9 @@ describe("runHarness environment lifecycle", () => {
           async headSha() {
             return undefined;
           },
+          async diff() {
+            return "";
+          },
           async merge() {
             return { merged: false };
           },
@@ -427,11 +436,11 @@ describe("runHarness environment lifecycle", () => {
     expect(
       await readFile(join(run.artifactDir, "cleanup-error.txt"), "utf8"),
     ).toBe("docker network is still busy\n");
-    const manifest = JSON.parse(
-      await readFile(join(run.artifactDir, "manifest.json"), "utf8"),
+    const record = JSON.parse(
+      await readFile(join(run.artifactDir, "run.json"), "utf8"),
     );
-    expect(manifest.status).toBe("completed");
-    expect(manifest.cleanupError).toBe("docker network is still busy");
+    expect(record.status).toBe("completed");
+    expect(record.cleanupError).toBe("docker network is still busy");
   });
 
   it("does not retry successful work when transcript export fails", async () => {
@@ -503,6 +512,9 @@ describe("runHarness environment lifecycle", () => {
           },
           async headSha() {
             return undefined;
+          },
+          async diff() {
+            return "";
           },
           async merge() {
             return { merged: false };

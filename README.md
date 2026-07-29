@@ -32,7 +32,7 @@ feedback.
    the PR url and nothing else, to fetch greptile's review and answer every
    comment; then the harness merges. komodo merges straight away. that
    difference is the entire experiment.
-4. **everything is saved** to `results/<run-id>/`.
+4. **everything is saved** to `results/rung-NN/`, filed by ladder coordinates.
 
 a subticket isn't done when the agent says so, it's done when it's merged — no
 pull request, or a merge that won't go through, fails the arm and halts the
@@ -72,7 +72,6 @@ actually look at the page it built. the harness reports a
 bun start                     # plan a rung, build its subtickets, repeat
 bun start -- --unbounded      # don't pause every 2 milestones
 bun start -- --plan-only      # plan rungs, build nothing
-bun start -- --ticket "..."   # one ad-hoc ticket, then exit
 bun start -- --no-tui --json  # machine-readable
 bun start -- --help           # every option, plus the env reference
 ```
@@ -104,11 +103,14 @@ away, so it's safe to run every time.
 
 ## what you get
 
-`results/<run-id>/` holds the ticket, the prompt, the config, the commit each
-arm started from, and a directory per arm — every attempt's request, response
-and codex transcript, plus a `land.json`: the pull request, every review round
-with what the reviewer said and what the arm answered, and the merge. that file
-is the close reading.
+each rung gets a directory: `results/rung-NN/plan/` holds greg's planning
+turns and their transcripts, and `results/rung-NN/run/<N.M>/` holds that
+subticket's whole build — the ticket, the prompt, a directory per arm with
+every attempt's request, response and codex transcript, and one `run.json`:
+the config, the commit each arm started from, and per arm the pull request,
+every review round with what the reviewer said and what the arm answered, and
+the merge. that file is the close reading. a re-run of a failed subticket
+archives what it replaces under `superseded/` in the same directory.
 
 a run where both arms succeed is `completed`; one where an arm used up its
 retries or landed nothing is `completed_with_failures` (exit 1); one that broke

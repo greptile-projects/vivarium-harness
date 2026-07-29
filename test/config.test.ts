@@ -31,10 +31,12 @@ const env = {
 };
 
 describe("parseArgs", () => {
-  it("accepts only the ticket as a per-run input", () => {
-    const config = parseArgs(["--ticket", "ENG-123"], env);
+  it("takes no per-run input — the ladder supplies the tickets", () => {
+    const config = parseArgs([], env);
 
-    expect(config.ticket).toBe("ENG-123");
+    // Blank on purpose: the loop fills it per subticket, and runHarness
+    // refuses to run on the placeholder.
+    expect(config.ticket).toBe("");
     expect(config.arms.map((arm) => [arm.name, arm.repo])).toEqual([
       ["komodo", "/tmp/komodo"],
       ["tuatara", "/tmp/tuatara"],
@@ -46,7 +48,7 @@ describe("parseArgs", () => {
   });
 
   it("keeps image and reviewer identity out of deployment configuration", () => {
-    const config = parseArgs(["--ticket", "ENG-123"], {
+    const config = parseArgs([], {
       ...env,
       GREPTILE_BOT_LOGIN: "other-reviewer[bot]",
       VIVARIUM_IMAGE: "other-image",
@@ -57,7 +59,7 @@ describe("parseArgs", () => {
   });
 
   it("gives a containerized arm full access and a host arm a sandbox", () => {
-    const containerized = parseArgs(["--ticket", "ENG-123"], {
+    const containerized = parseArgs([], {
       ...env,
       KOMODO_CONTAINER: "vivarium-komodo",
     });
@@ -67,7 +69,7 @@ describe("parseArgs", () => {
     expect(containerized.arms[1].sandbox).toBe("workspace-write");
 
     // An explicit setting still wins for both arms.
-    const explicit = parseArgs(["--ticket", "ENG-123"], {
+    const explicit = parseArgs([], {
       ...env,
       KOMODO_CONTAINER: "vivarium-komodo",
       CODEX_SANDBOX: "workspace-write",
@@ -79,7 +81,7 @@ describe("parseArgs", () => {
   });
 
   it("passes each arm's GitHub token through for landing", () => {
-    const config = parseArgs(["--ticket", "ENG-123"], {
+    const config = parseArgs([], {
       ...env,
       KOMODO_GH_TOKEN: "ghp_control",
       TUATARA_GH_TOKEN: "ghp_greptile",
@@ -91,13 +93,13 @@ describe("parseArgs", () => {
   });
 
   it("requires static arm configuration", () => {
-    expect(() => parseArgs(["--ticket", "ENG-123"], {})).toThrow(
+    expect(() => parseArgs([], {})).toThrow(
       /KOMODO_REPO.*TUATARA_REPO/,
     );
   });
 
   it("uses the fixed experiment constants, not env overrides", () => {
-    const config = parseArgs(["--ticket", "ENG-123"], {
+    const config = parseArgs([], {
       ...env,
       // These are no longer configurable; they must be ignored.
       MAX_ATTEMPTS: "5",
@@ -114,41 +116,23 @@ describe("run mode", () => {
   it("defaults to the ladder loop with no arguments", () => {
     const mode = parseRunMode([], true);
 
-    expect(mode.kind).toBe("ladder");
     expect(mode.planOnly).toBe(false);
     expect(mode.unbounded).toBe(false);
-    expect(mode.ticket).toBeUndefined();
   });
 
-  it("treats --ticket as a one-ticket run", () => {
-    expect(parseRunMode(["--ticket", "ENG-1"], true)).toMatchObject({
-      kind: "ticket",
-      ticket: "ENG-1",
-    });
-  });
-
-  it("keeps --plan-only and --unbounded on the ladder", () => {
+  it("allows planning ahead without the milestone cap", () => {
     const mode = parseRunMode(["--plan-only", "--unbounded"], true);
 
-    expect(mode.kind).toBe("ladder");
     expect(mode.planOnly).toBe(true);
     expect(mode.unbounded).toBe(true);
   });
 
-  // Silently ignoring one of two typed flags is the failure mode worth
-  // guarding: it would look like the run honoured both.
-  it("rejects ladder options combined with a one-ticket run", () => {
-    expect(() => parseRunMode(["--ticket", "ENG-1", "--plan-only"], true)).toThrow(
-      /--plan-only/,
-    );
-    expect(() => parseRunMode(["--ticket", "ENG-1", "--unbounded"], true)).toThrow(
-      /--unbounded/,
-    );
-  });
-
-  it("rejects --ticket without a value instead of falling back to the ladder", () => {
-    expect(() => parseRunMode(["--ticket", "--json"], true)).toThrow(
-      /--ticket requires a value/,
+  // The one-ticket escape hatch is gone. A caller still passing the flag is
+  // asking for a run mode that no longer exists — refuse loudly rather than
+  // climbing the ladder under them.
+  it("rejects the removed --ticket flag instead of silently climbing", () => {
+    expect(() => parseRunMode(["--ticket", "ENG-1"], true)).toThrow(
+      /--ticket has been removed/,
     );
   });
 

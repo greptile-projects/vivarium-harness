@@ -112,7 +112,7 @@ describe("climb tab", () => {
     expect(tabsFor(model).map((tab) => tab.id)).toContain("climb");
   });
 
-  // A one-ticket run has no plan to show, so the tab is absent rather than
+  // Before a plan exists there is nothing to show, so the tab is absent rather than
   // present-and-empty.
   test("stays absent for a run with no plan", () => {
     const model = new LiveModel("vivarium", "a ticket");
