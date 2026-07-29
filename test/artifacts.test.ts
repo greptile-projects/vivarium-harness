@@ -121,6 +121,7 @@ describe("run artifacts", () => {
     expect(artifacts.directory).toBe(
       join(root, "results", "rung-01", "run", "1.1"),
     );
+    await artifacts.release();
   });
 
   it("refuses a run with no destination — a record nothing can find again", async () => {
@@ -174,6 +175,7 @@ describe("run artifacts", () => {
     const first = await RunArtifacts.create(config, "first prompt");
     expect(first.directory).toBe(join(root, "results", "rung-01", "run", "1.2"));
     await first.fail(new Error("arm exhausted its retries"));
+    await first.release();
 
     // The re-run of the same box builds into the same directory; the failed
     // run's record moves under superseded/ instead of being overwritten.
@@ -205,6 +207,41 @@ describe("run artifacts", () => {
         "utf8",
       ),
     ).toBe("first prompt\n");
+    await second.release();
+  });
+
+  it("refuses a second writer while a destination is active", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
+    temporaryDirectories.push(root);
+    const config: HarnessConfig = {
+      ticket: "do 1.2",
+      arms: [
+        { name: "komodo", repo: "/tmp/komodo" },
+        { name: "tuatara", repo: "/tmp/tuatara" },
+      ],
+      sandbox: "workspace-write",
+      resultsDir: join(root, "results"),
+      codexHome: join(root, "codex"),
+      maxAttempts: 1,
+      idleTimeoutMs: 600_000,
+      reviewTimeoutMs: 1_000,
+      reviewPollMs: 10,
+      reviewDebounceMs: 0,
+      reviewRounds: 2,
+      destination: {
+        directory: join(root, "results", "rung-01", "run", "1.2"),
+        subticket: { number: "1.2", milestone: 1, title: "Storage" },
+      },
+    };
+
+    const active = await RunArtifacts.create(config, "first prompt");
+    await expect(RunArtifacts.create(config, "second prompt")).rejects.toThrow(
+      /already active/,
+    );
+    expect(await readFile(join(active.directory, "prompt.md"), "utf8")).toBe(
+      "first prompt\n",
+    );
+    await active.release();
   });
 
   it("accepts a transcript copied out of an ephemeral container", async () => {

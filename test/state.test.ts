@@ -53,6 +53,7 @@ async function writeRun(
   subticket: { number: string; milestone: number; title: string },
   runId: string,
   landings: LandingRecord[],
+  status: "running" | "completed" | "completed_with_failures" | "failed" = "completed",
 ): Promise<string> {
   const directory = subticketRunDirectory(
     resultsDir,
@@ -69,7 +70,7 @@ async function writeRun(
       schemaVersion: 4,
       runId,
       subticket,
-      status: "completed",
+      status,
       startedAt: new Date(0).toISOString(),
       completedAt: new Date(1).toISOString(),
       config: {},
@@ -179,6 +180,31 @@ describe("readClimbState", () => {
       }),
       "utf8",
     );
+
+    const state = await readClimbState(resultsDir);
+    expect(state.subtickets).toEqual([]);
+  });
+
+  it("excludes failed, partial, and interrupted attempts from climb history", async () => {
+    const resultsDir = await scratch();
+    const statuses = [
+      "running",
+      "failed",
+      "completed_with_failures",
+    ] as const;
+    for (const [index, status] of statuses.entries()) {
+      await writeRun(
+        resultsDir,
+        {
+          number: `1.${index + 1}`,
+          milestone: 1,
+          title: `${status} attempt`,
+        },
+        `r${index + 1}`,
+        [landing("komodo", index + 1)],
+        status,
+      );
+    }
 
     const state = await readClimbState(resultsDir);
     expect(state.subtickets).toEqual([]);

@@ -137,7 +137,10 @@ function subticketFromRun(
   record: RunRecord,
   artifactDir: string,
 ): StateSubticketRecord | undefined {
-  if (!record.subticket) return undefined;
+  // Only a fully successful run checks the ladder box. Failed, partial, and
+  // interrupted records remain useful evidence at their stable address, but
+  // they are not durable climb history and will be superseded on retry.
+  if (record.status !== "completed" || !record.subticket) return undefined;
   return {
     number: record.subticket.number,
     milestone: record.subticket.milestone,

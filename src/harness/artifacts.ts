@@ -3,11 +3,14 @@ import {
   copyFile,
   mkdir,
   readdir,
+  readlink,
   rename,
   rm,
+  symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
   ArmConfig,
   ArmName,
@@ -155,10 +158,81 @@ async function archiveSupersededRun(
   }
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "EPERM"
+    );
+  }
+}
+
+// The ladder has one stable destination per subticket, so that destination
+// must have exactly one writer. A symlink is both the atomic exclusion and the
+// owner record: unlike a lock file, there is no interval where the lock exists
+// but its PID/run id have not been written yet. A process that died without
+// reaching finally leaves a stale lock, which the next run can safely replace.
+async function acquireDestinationLock(
+  directory: string,
+  runId: string,
+): Promise<string> {
+  const lock = `${directory}.lock`;
+  const owner = `${process.pid}:${runId}`;
+  await mkdir(dirname(directory), { recursive: true });
+
+  for (;;) {
+    try {
+      await symlink(owner, lock);
+      return lock;
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "EEXIST"
+      ) {
+        throw error;
+      }
+    }
+
+    let current: string;
+    try {
+      current = await readlink(lock);
+    } catch {
+      throw new Error(`run destination is locked: ${directory}`);
+    }
+    const pid = Number(current.split(":", 1)[0]);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || processIsAlive(pid)) {
+      throw new Error(`run destination is already active: ${directory}`);
+    }
+
+    // Serialize stale-lock recovery too. Without this second atomic claim, two
+    // starters could both inspect the dead owner and one could unlink the
+    // other's newly acquired destination lock.
+    const recovery = `${lock}.recovery`;
+    try {
+      await mkdir(recovery);
+    } catch {
+      throw new Error(`run destination is being recovered: ${directory}`);
+    }
+    try {
+      if (await readlink(lock).catch(() => undefined) === current) {
+        await unlink(lock).catch(() => {});
+      }
+    } finally {
+      await rm(recovery, { recursive: true, force: true });
+    }
+  }
+}
+
 export class RunArtifacts {
   readonly runId: string;
   readonly directory: string;
   private readonly codexHome: string;
+  private readonly destinationLock: string;
   private record: RunRecord;
   private recordWrite: Promise<void> = Promise.resolve();
 
@@ -168,10 +242,12 @@ export class RunArtifacts {
     codexHome: string,
     startedAt: string,
     config: HarnessConfig,
+    destinationLock: string,
   ) {
     this.runId = runId;
     this.directory = directory;
     this.codexHome = codexHome;
+    this.destinationLock = destinationLock;
     this.record = {
       schemaVersion: 4,
       runId,
@@ -209,22 +285,29 @@ export class RunArtifacts {
     }
     const directory = resolve(config.destination.directory);
     const globalCodexHome = resolve(config.codexHome);
+    const destinationLock = await acquireDestinationLock(directory, runId);
     const artifacts = new RunArtifacts(
       runId,
       directory,
       globalCodexHome,
       startedAt,
       config,
+      destinationLock,
     );
 
-    await mkdir(directory, { recursive: true });
-    await archiveSupersededRun(directory, startedAt);
-    await Promise.all([
-      atomicWrite(join(directory, RUN_RECORD_FILE), json(artifacts.record)),
-      atomicWrite(join(directory, "ticket.md"), `${config.ticket}\n`),
-      atomicWrite(join(directory, "prompt.md"), `${prompt}\n`),
-    ]);
-    return artifacts;
+    try {
+      await mkdir(directory, { recursive: true });
+      await archiveSupersededRun(directory, startedAt);
+      await Promise.all([
+        atomicWrite(join(directory, RUN_RECORD_FILE), json(artifacts.record)),
+        atomicWrite(join(directory, "ticket.md"), `${config.ticket}\n`),
+        atomicWrite(join(directory, "prompt.md"), `${prompt}\n`),
+      ]);
+      return artifacts;
+    } catch (error) {
+      await artifacts.release();
+      throw error;
+    }
   }
 
   async startAttempt(
@@ -398,6 +481,15 @@ export class RunArtifacts {
       `${this.record.cleanupError}\n`,
     );
     await this.writeRecord();
+  }
+
+  // Held through environment cleanup: cleanup diagnostics are part of this
+  // run's record and must land before a retry may archive it.
+  async release(): Promise<void> {
+    const owner = await readlink(this.destinationLock).catch(() => undefined);
+    if (owner === `${process.pid}:${this.runId}`) {
+      await unlink(this.destinationLock).catch(() => {});
+    }
   }
 
   // Transcript export is evidence collection, not arm execution. Keep a

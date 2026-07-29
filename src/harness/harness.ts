@@ -500,5 +500,6 @@ export async function runHarness(
         await artifacts.recordCleanupError(cleanupError).catch(() => {});
       }
     }
+    await artifacts.release();
   }
 }
