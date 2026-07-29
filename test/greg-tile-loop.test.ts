@@ -552,7 +552,7 @@ describe("durable climb record", () => {
       ladderPath,
     );
 
-    const state = await readClimbState(base.resultsDir);
+    const state = await readClimbState(base.resultsDir, new Set(["1.1"]));
     expect(state.planner).toHaveLength(1);
     expect(state.planner[0].threadId).toBe("thread-greg-1");
     expect(state.planner[0].milestone).toBe(1);

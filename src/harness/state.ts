@@ -136,11 +136,18 @@ function compareNumbers(left: string, right: string): number {
 function subticketFromRun(
   record: RunRecord,
   artifactDir: string,
+  completedSubtickets: ReadonlySet<string>,
 ): StateSubticketRecord | undefined {
-  // Only a fully successful run checks the ladder box. Failed, partial, and
-  // interrupted records remain useful evidence at their stable address, but
-  // they are not durable climb history and will be superseded on retry.
-  if (record.status !== "completed" || !record.subticket) return undefined;
+  // A successful run and a checked ladder box are both required. `run.json`
+  // reaches "completed" before the loop can durably flip LADDER.md; a crash in
+  // between leaves useful evidence at this address, but not climb history.
+  if (
+    record.status !== "completed" ||
+    !record.subticket ||
+    !completedSubtickets.has(record.subticket.number)
+  ) {
+    return undefined;
+  }
   return {
     number: record.subticket.number,
     milestone: record.subticket.milestone,
@@ -157,7 +164,10 @@ function subticketFromRun(
 
 // Reassemble the climb from the rung directories. Every failure is a skip: a
 // missing results/ is an empty climb, an unreadable run.json loses one row.
-export async function readClimbState(resultsDir: string): Promise<ClimbState> {
+export async function readClimbState(
+  resultsDir: string,
+  completedSubtickets: ReadonlySet<string>,
+): Promise<ClimbState> {
   const state: ClimbState = { planner: [], subtickets: [] };
 
   let entries: string[];
@@ -190,7 +200,11 @@ export async function readClimbState(resultsDir: string): Promise<ClimbState> {
         join(directory, RUN_RECORD_FILE),
       );
       if (!record) continue;
-      const subticket = subticketFromRun(record, directory);
+      const subticket = subticketFromRun(
+        record,
+        directory,
+        completedSubtickets,
+      );
       if (subticket) state.subtickets.push(subticket);
     }
   }

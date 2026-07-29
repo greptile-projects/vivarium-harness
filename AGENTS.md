@@ -627,7 +627,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   state file: the record **is** the artifact tree, filed by ladder coordinates
   (`rungDirectory` / `planDirectory` / `subticketRunDirectory` are the one
   place the paths are spelled), and `readClimbState` reassembles the climb by
-  scanning `results/rung-*/` — each subticket's `run.json` for the run id,
+  scanning `results/rung-*/` and reconciling it with the checked boxes parsed
+  from `LADDER.md` — a completed `run.json` is evidence, but does not enter
+  climb history until its box is durably checked. Each accepted subticket's
+  `run.json` supplies the run id,
   artifact dir and each arm's pull request with its review-round counts
   (`comments` for the whole conversation and `diffComments` for the inline
   ones, kept apart because only the second is a count of findings), each
@@ -857,8 +860,8 @@ The landing inside `run.json` is the close-reading input the experiment is
 for: the reviewer's findings and the arm's answers to them, in one
 chronological list per pull request, beside the transcript of the session that
 wrote both. There is no separate state file — `readClimbState` reassembles the
-whole climb by scanning the rung directories, so keeping the record is keeping
-the tree.
+whole climb by scanning the rung directories and accepting only records whose
+ladder boxes are checked, so keeping the record and ladder is keeping the tree.
 
 `LADDER.md` sits at the repo root, outside `results/` — it is Greg's durable
 state across runs (North Star, every milestone, every subticket and its

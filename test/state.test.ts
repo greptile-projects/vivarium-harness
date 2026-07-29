@@ -12,6 +12,8 @@ import {
 } from "../src/harness/state.js";
 
 const temporaryDirectories: string[] = [];
+const completed = (...numbers: string[]): ReadonlySet<string> =>
+  new Set(numbers);
 
 afterEach(async () => {
   await Promise.all(
@@ -95,7 +97,7 @@ describe("rung directories", () => {
 
 describe("readClimbState", () => {
   it("reads a missing results directory as an empty climb", async () => {
-    const state = await readClimbState(await scratch());
+    const state = await readClimbState(await scratch(), completed());
     expect(state.subtickets).toEqual([]);
     expect(state.planner).toEqual([]);
   });
@@ -126,7 +128,10 @@ describe("readClimbState", () => {
       ],
     );
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(
+      resultsDir,
+      completed("1.9", "1.10", "2.1"),
+    );
     expect(state.subtickets.map((entry) => entry.number)).toEqual([
       "1.9",
       "1.10",
@@ -160,7 +165,7 @@ describe("readClimbState", () => {
     await mkdir(broken, { recursive: true });
     await writeFile(join(broken, "run.json"), "{ not json", "utf8");
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(resultsDir, completed("1.1"));
     expect(state.subtickets.map((entry) => entry.number)).toEqual(["1.1"]);
   });
 
@@ -181,7 +186,7 @@ describe("readClimbState", () => {
       "utf8",
     );
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(resultsDir, completed("1.1"));
     expect(state.subtickets).toEqual([]);
   });
 
@@ -206,8 +211,30 @@ describe("readClimbState", () => {
       );
     }
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(
+      resultsDir,
+      completed("1.1", "1.2", "1.3"),
+    );
     expect(state.subtickets).toEqual([]);
+  });
+
+  it("excludes a successful run until its ladder box is checked", async () => {
+    const resultsDir = await scratch();
+    await writeRun(
+      resultsDir,
+      { number: "1.1", milestone: 1, title: "Still pending" },
+      "r1",
+      [landing("komodo", 1), landing("tuatara", 2)],
+    );
+
+    expect(
+      (await readClimbState(resultsDir, completed())).subtickets,
+    ).toEqual([]);
+    expect(
+      (await readClimbState(resultsDir, completed("1.1"))).subtickets.map(
+        (entry) => entry.number,
+      ),
+    ).toEqual(["1.1"]);
   });
 });
 
@@ -229,7 +256,7 @@ describe("recordPlannerSession", () => {
       plannedAt: new Date(0).toISOString(),
     });
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(resultsDir, completed());
     expect(state.planner.map((entry) => entry.threadId)).toEqual([
       "thread-a",
       "thread-b",
@@ -251,7 +278,7 @@ describe("recordPlannerSession", () => {
       plannedAt: new Date(0).toISOString(),
     });
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(resultsDir, completed());
     expect(state.planner).toHaveLength(1);
     expect(state.planner[0].threadId).toBeUndefined();
   });
@@ -268,7 +295,7 @@ describe("recordPlannerSession", () => {
       plannedAt: new Date(0).toISOString(),
     });
 
-    const state = await readClimbState(resultsDir);
+    const state = await readClimbState(resultsDir, completed());
     expect(state.planner.map((entry) => entry.threadId)).toEqual(["thread-a"]);
   });
 });

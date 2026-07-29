@@ -51,7 +51,17 @@ export async function runGregLive(
   // so the rung directories under results/ are the only place a climb's
   // history survives — and without this the arm tabs would open blank on every
   // restart of a run that is meant to span weeks.
-  model.seedFromState(await readClimbState(base.resultsDir));
+  const initialLadder = await readLadder(LADDER_PATH);
+  model.seedFromState(
+    await readClimbState(
+      base.resultsDir,
+      new Set(
+        parseSubtickets(initialLadder)
+          .filter((subticket) => subticket.done)
+          .map((subticket) => subticket.number),
+      ),
+    ),
+  );
 
   // Re-read the plan and mark the rung about to be built. The one being built
   // is by definition the first unchecked box, so this needs no extra bookkeeping
