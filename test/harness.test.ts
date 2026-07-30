@@ -38,6 +38,7 @@ async function makeConfig(): Promise<{
       { name: "tuatara", repo: "/tmp/tuatara" },
     ],
     sandbox: "workspace-write",
+    fastMode: true,
     resultsDir: join(root, "results"),
     codexHome,
     maxAttempts: 3,
@@ -91,6 +92,8 @@ describe("autonomous arm retries", () => {
     // First attempt starts fresh; the retry continues the same thread.
     expect(calls[0].threadId).toBeUndefined();
     expect(calls[1].threadId).toBe("retry-thread");
+    expect(calls[0].fastMode).toBe(true);
+    expect(calls[1].fastMode).toBe(true);
     expect(calls[1].prompt).toContain("first attempt failed");
     expect(
       await readFile(

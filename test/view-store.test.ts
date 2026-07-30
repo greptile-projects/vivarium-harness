@@ -32,11 +32,24 @@ describe("session configuration", () => {
       type: "session_configured",
       model: "gpt-5.6-sol",
       reasoning_effort: "high",
+      service_tier: "priority",
     });
 
     expect(store.arms.get("komodo")).toMatchObject({
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
+      serviceTier: "priority",
     });
+  });
+
+  test("summarizes the effective model, effort, and fast tier on one line", () => {
+    expect(
+      summarize({
+        type: "session_configured",
+        model: "gpt-5.6-sol",
+        reasoning_effort: "high",
+        service_tier: "priority",
+      }),
+    ).toBe("model gpt-5.6-sol high fast");
   });
 });

@@ -64,7 +64,8 @@ bun start -- --help              # the full option + env reference
   `--unbounded`. A later bare `bun start` builds everything queued this way.
 - **`--tui` / `--no-tui`** force the live view (default: on when stdout is a
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
-  tab **per arm** with its context meter, recent activity and answer, the
+  tab **per arm** with its effective model/effort/tier on one line, context
+  meter, recent activity and answer, the
   **climb** (every rung built, with both arms' pull requests, the rung in
   flight, and the next few), and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
   scroll the list tabs. Each arm's duration excludes time spent idle at the
@@ -136,8 +137,10 @@ harness and `scripts/arm-run.sh` read it — nothing is passed on the command li
 Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives a containerized
 arm `danger-full-access` — it has to push, open a PR and answer a review, and
 the container is the boundary — and a host arm `workspace-write`),
-`REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review phase, `CODEX_HOME`, and
-`IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0` disables). The image,
+`CODEX_FAST_MODE` (default `false`; selects the same Codex fast service tier
+for Greg and both arms), `REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review
+phase, `CODEX_HOME`, and `IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0`
+disables). The image,
 nested Docker, GUI, screen geometry, noVNC ports, and reviewer identity are
 fixed experiment constants rather than deployment knobs. See `.env.example`
 for the annotated list.
@@ -267,7 +270,7 @@ own modules are siblings, so they refer to each other by bare `./name.js`; a
 cross-layer import is always visible as a `../harness/` in the specifier.
 
 - **`src/harness/config.ts`** — turns env into a validated `HarnessConfig`.
-  `parseArgs` reads env (repos, containers, sandbox, attempts, timeout) and
+  `parseArgs` reads env (repos, containers, sandbox, fast mode, timeout) and
   leaves the ticket blank — the ladder loop fills it per subticket, and
   `runHarness` refuses to run on the placeholder;
   for container deployments `validateConfig` requires two distinct plain HTTPS
@@ -555,8 +558,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   feeds both the TUI and the watchdog) rather than discarded; (2) an **activity
   watchdog** aborts an arm after `idleTimeoutMs` of event silence (default 4m),
   independent of the 24h hard ceiling; (3) every fresh session is started with
-  **`config: {features: {apps: false, plugins: false}}`** (`codexToolArguments`,
-  the one pure, tested part of this module) — no ambient account tooling, in
+  a tested **tool-call config override** (`codexToolArguments`) that pins
+  `service_tier` to `fast` or `default`, pins `features.fast_mode` to the
+  matching `CODEX_FAST_MODE` value, and disables `features.apps` and
+  `features.plugins` — no ambient service-tier choice or account tooling, in
   either arm or in Greg. `codex_apps` connectors (Linear, GitHub) are
   *account*-scoped and arrive via `$CODEX_HOME/auth.json` alone, which
   `arm-run.sh` mounts into every container, so an arm would otherwise read the

@@ -24,6 +24,9 @@ export interface StreamParams {
   // (e.g. /workspace) when exec wraps the launch in `docker exec`.
   cwd: string;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  // Select Codex's fast service tier for a fresh thread. Continued turns keep
+  // the tier chosen when their thread was created.
+  fastMode?: boolean;
   codexHome?: string;
   // Command prefix that launches `codex mcp-server` somewhere other than the
   // host — e.g. ["docker", "exec", "-i", "<container>"] for per-arm container
@@ -85,22 +88,32 @@ export interface ArmSession {
 // What the session actually honours is `config`, the per-call override of
 // CODEX_HOME/config.toml. `codex-reply` needs no equivalent: it continues a
 // thread that was already created with this override.
-const AMBIENT_TOOLING_OFF = {
-  features: { apps: false, plugins: false },
-} as const;
+function sessionConfig(fastMode = false): Record<string, unknown> {
+  return {
+    // Pin both sides of the toggle. The MCP tool-call config is layered over
+    // CODEX_HOME/config.toml, so omitting the standard side would let an
+    // operator's global `service_tier = "fast"` leak into host smoke tests.
+    service_tier: fastMode ? "fast" : "default",
+    features: {
+      apps: false,
+      plugins: false,
+      fast_mode: fastMode,
+    },
+  };
+}
 
 // Arguments for a fresh `codex` tool call. Pure and exported so a test can pin
 // the kill-switches — the rest of this module spawns real processes and cannot
 // be exercised offline.
 export function codexToolArguments(
-  params: Pick<StreamParams, "prompt" | "cwd" | "sandbox">,
+  params: Pick<StreamParams, "prompt" | "cwd" | "sandbox" | "fastMode">,
 ): Record<string, unknown> {
   return {
     prompt: params.prompt,
     cwd: params.cwd,
     sandbox: params.sandbox,
     "approval-policy": "never",
-    config: AMBIENT_TOOLING_OFF,
+    config: sessionConfig(params.fastMode),
   };
 }
 

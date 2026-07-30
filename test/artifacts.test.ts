@@ -39,6 +39,7 @@ describe("run artifacts", () => {
         { name: "tuatara", repo: "/tmp/tuatara" },
       ],
       sandbox: "workspace-write",
+      fastMode: true,
       resultsDir: join(root, "results"),
       codexHome,
       maxAttempts: 3,
@@ -117,6 +118,7 @@ describe("run artifacts", () => {
     expect(record.arms.tuatara.final.transcriptStatus).toBe("copied");
     // The redacted config travels inside the one record — no config.json.
     expect(record.config.arms[0].name).toBe("komodo");
+    expect(record.config.fastMode).toBe(true);
     // Filed exactly where the destination says, nowhere else.
     expect(artifacts.directory).toBe(
       join(root, "results", "rung-01", "run", "1.1"),

@@ -260,6 +260,7 @@ export class RunArtifacts {
           ghToken: arm.ghToken ? "[redacted]" : undefined,
         })),
         sandbox: config.sandbox,
+        fastMode: Boolean(config.fastMode),
         resultsDir: resolve(config.resultsDir),
         codexHome: resolve(config.codexHome),
         maxAttempts: config.maxAttempts,

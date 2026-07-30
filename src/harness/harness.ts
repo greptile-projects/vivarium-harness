@@ -151,7 +151,12 @@ export async function runArm(
       : {
           tool: "codex",
           ...(arm.container ? { container: arm.container } : {}),
-          ...codexToolArguments({ prompt: attemptPrompt, cwd: workspace, sandbox }),
+          ...codexToolArguments({
+            prompt: attemptPrompt,
+            cwd: workspace,
+            sandbox,
+            fastMode: config.fastMode,
+          }),
         };
     const artifactDir = await artifacts.startAttempt(
       arm,
@@ -176,6 +181,7 @@ export async function runArm(
           prompt: attemptPrompt,
           cwd: workspace,
           sandbox,
+          fastMode: config.fastMode,
           codexHome: config.codexHome,
           idleTimeoutMs: config.idleTimeoutMs,
           threadId,
@@ -347,6 +353,7 @@ export async function runHarness(
               prompt: reviewPrompt,
               cwd: workspace,
               sandbox,
+              fastMode: runtimeConfig.fastMode,
               codexHome: runtimeConfig.codexHome,
               idleTimeoutMs: runtimeConfig.idleTimeoutMs,
               threadId: result.threadId,

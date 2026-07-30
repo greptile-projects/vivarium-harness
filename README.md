@@ -52,9 +52,10 @@ docker build -t vivarium-arm .
 ```
 
 `.env` is the one place deployment config lives — repository URLs, container
-name prefixes, and each arm's github token. the image, services, screen,
-noVNC ports, and reviewer identity are fixed experiment constants. for every
-subticket the harness creates two fresh containers from that image,
+name prefixes, each arm's github token, and run-wide Codex settings such as
+`CODEX_FAST_MODE=true`. the image, services, screen, noVNC ports, and reviewer
+identity are fixed experiment constants. for every subticket the harness
+creates two fresh containers from that image,
 `arm-run.sh` clones one remote into each private `/workspace`, and the token
 stays in `GH_TOKEN`, never in the remote URL. after build, retries, review, and
 merge, transcripts are copied into the run artifacts and the containers,
@@ -77,9 +78,9 @@ bun start -- --help           # every option, plus the env reference
 ```
 
 there's a fullscreen live view when stdout is a terminal: a tab per running
-session with its context meter, what it's been doing and its answer, plus
-greg's ladder and the raw log. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll, `q`
-quits.
+session with its effective model configuration (`gpt-5.6-sol high fast`), its
+context meter, what it's been doing and its answer, plus greg's ladder and the
+raw log. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll, `q` quits.
 
 `q` quits, and quitting stops the run. while sessions are still working it
 asks first (`y / n`) and names what would be torn down; anything other than

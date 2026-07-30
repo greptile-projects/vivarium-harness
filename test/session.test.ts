@@ -33,7 +33,15 @@ describe("codexToolArguments", () => {
   // own Linear board, and Greg regains the operator's plugins.
   test("disables account connectors and plugins for every session", () => {
     expect(codexToolArguments(params).config).toEqual({
-      features: { apps: false, plugins: false },
+      service_tier: "default",
+      features: { apps: false, plugins: false, fast_mode: false },
+    });
+  });
+
+  test("selects and enables the fast service tier together", () => {
+    expect(codexToolArguments({ ...params, fastMode: true }).config).toEqual({
+      service_tier: "fast",
+      features: { apps: false, plugins: false, fast_mode: true },
     });
   });
 
