@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { ArmConfig, HarnessConfig } from "../src/harness/config.js";
 import type {
+  AnswerTrace,
   ArmGitHub,
+  FinalizedMerge,
   MergeOutcome,
   PullRequestCheck,
   PullRequestRef,
@@ -75,13 +77,18 @@ function fakeGitHub(options: {
   checks?: PullRequestCheck[];
   checkError?: string;
   commentError?: string;
+  // The bundled single-crossing reads, present only when a test opts in — the
+  // discrete-path tests keep exercising the fallback by leaving them off.
+  afterAnswer?: AnswerTrace[] | "throw";
+  finalizeMerge?: FinalizedMerge | "throw";
 }): ArmGitHub & { calls: string[] } {
   const conversations = options.conversations ?? [[]];
   const heads = options.heads ?? [];
   let index = 0;
   let headIndex = 0;
+  let traceIndex = 0;
   const calls: string[] = [];
-  return {
+  const github: ArmGitHub & { calls: string[] } = {
     calls,
     async headSha() {
       calls.push("headSha");
@@ -127,6 +134,24 @@ function fakeGitHub(options: {
       return options.merge ?? { merged: true, method: "merge" };
     },
   };
+  if (options.afterAnswer) {
+    github.afterAnswer = async () => {
+      calls.push("afterAnswer");
+      if (options.afterAnswer === "throw") throw new Error("bundle failed");
+      const traces = options.afterAnswer!;
+      const current = traces[Math.min(traceIndex, traces.length - 1)]!;
+      traceIndex += 1;
+      return current;
+    };
+  }
+  if (options.finalizeMerge) {
+    github.finalizeMerge = async () => {
+      calls.push("finalizeMerge");
+      if (options.finalizeMerge === "throw") throw new Error("bundle failed");
+      return options.finalizeMerge!;
+    };
+  }
+  return github;
 }
 
 function deps(
@@ -1440,5 +1465,195 @@ describe("a conversation that cannot be read", () => {
     expect(
       record.notes.some((entry) => entry.includes("conversation unavailable")),
     ).toBe(true);
+  });
+});
+
+// The bundled single-crossing reads: when the GitHub side offers them, the
+// landing phase must take them instead of the discrete calls (each discrete
+// call is a full sbx control-plane crossing in isolated mode), and must fall
+// back to the discrete sequence when a bundle fails.
+describe("the bundled single-crossing reads", () => {
+  it("settles and merges from the bundles without discrete post-answer reads", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "root-1")]],
+      heads: ["sha-1"],
+      afterAnswer: [{ sha: "sha-1", conversation: [] }],
+      finalizeMerge: {
+        merge: { merged: true, method: "merge", commit: "deadbeef" },
+        conversation: [note(REVIEWER, "summary-1", "post-merge summary")],
+      },
+    });
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(record.merge?.commit).toBe("deadbeef");
+    expect(record.reviewRounds).toHaveLength(1);
+    expect(record.reviewRounds[0]?.settled).toBe(true);
+    expect(record.reviewRounds[0]?.respondedSha).toBe("sha-1");
+    expect(record.conversation.map((entry) => entry.id)).toEqual(["summary-1"]);
+    // The bundle refresh came back empty, so the earlier snapshot is kept.
+    expect(record.pullRequest?.number).toBe(pr.number);
+    // One conversation read: the poll that found the review. The settle check
+    // and the merge-time capture both came out of the bundles.
+    expect(github.calls.filter((call) => call === "conversation")).toHaveLength(
+      1,
+    );
+    // One head read: the pre-answer pin. The responded side came from the bundle.
+    expect(github.calls.filter((call) => call === "headSha")).toHaveLength(1);
+    expect(github.calls).toContain("afterAnswer");
+    expect(github.calls).toContain("finalizeMerge");
+    expect(github.calls).not.toContain("merge");
+    expect(github.calls).not.toContain("diff");
+  });
+
+  it("archives the bundled diff when the answer pushed", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "root-1")], []],
+      heads: ["sha-reviewed"],
+      afterAnswer: [{ sha: "sha-responded", diff: "bundled diff\n" }],
+    });
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    const first = record.reviewRounds[0];
+    expect(first?.reviewedSha).toBe("sha-reviewed");
+    expect(first?.respondedSha).toBe("sha-responded");
+    expect(first?.diff).toBe("bundled diff\n");
+    expect(github.calls).not.toContain("diff");
+  });
+
+  it("records a bundled diff gap as a gap, not as no push", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "root-1")], []],
+      heads: ["sha-reviewed"],
+      afterAnswer: [{ sha: "sha-responded", diffError: "git diff failed" }],
+    });
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    const first = record.reviewRounds[0];
+    expect(first?.diff).toBeUndefined();
+    expect(first?.diffError).toBe("git diff failed");
+  });
+
+  it("falls back to the discrete reads when the post-answer bundle fails", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "root-1")], []],
+      heads: ["sha-reviewed", "sha-responded"],
+      afterAnswer: "throw",
+    });
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    const first = record.reviewRounds[0];
+    expect(first?.respondedSha).toBe("sha-responded");
+    expect(first?.diff).toContain("--- sha-reviewed");
+    expect(github.calls).toContain("diff");
+    expect(github.calls.filter((call) => call === "headSha")).toHaveLength(2);
+  });
+
+  it("keeps waiting when the bundled settle read carried no conversation", async () => {
+    const github = fakeGitHub({
+      conversations: [[note(REVIEWER, "root-1")], []],
+      heads: ["sha-1"],
+      afterAnswer: [{ sha: "sha-1", conversationError: "rate limited" }],
+    });
+
+    const record = await landArm(
+      reviewed,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    // Unknown must not settle the exchange: the round is not marked settled,
+    // and the next wait runs (and times out, which still merges).
+    expect(record.reviewRounds[0]?.settled).toBeUndefined();
+    expect(record.reviewRounds).toHaveLength(2);
+    expect(record.reviewRounds[1]?.timedOut).toBe(true);
+    expect(record.status).toBe("merged");
+  });
+
+  it("records a bundled capture failure as a gap and a failed merge as merge-failed", async () => {
+    const github = fakeGitHub({
+      finalizeMerge: {
+        merge: { merged: false, error: "merge queue rejected it" },
+        conversationError: "rate limited",
+      },
+    });
+
+    const record = await landArm(
+      komodo,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merge-failed");
+    expect(record.conversation).toEqual([]);
+    expect(
+      record.notes.some((entry) => entry.includes("rate limited")),
+    ).toBe(true);
+  });
+
+  it("takes the bundled churn refresh for the final record", async () => {
+    const github = fakeGitHub({
+      finalizeMerge: {
+        merge: { merged: true, method: "merge" },
+        conversation: [],
+        refreshed: { ...pr, additions: 12, deletions: 4, changedFiles: 3 },
+      },
+    });
+
+    const record = await landArm(
+      komodo,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(record.pullRequest?.additions).toBe(12);
+    expect(record.pullRequest?.changedFiles).toBe(3);
+    expect(github.calls).not.toContain("merge");
+    expect(github.calls).not.toContain("conversation");
+  });
+
+  it("falls back to the discrete merge when the bundle fails", async () => {
+    const github = fakeGitHub({ finalizeMerge: "throw" });
+
+    const record = await landArm(
+      komodo,
+      config,
+      succeeded(`done\n\nPR: ${pr.url}`),
+      deps(github, answer),
+    );
+
+    expect(record.status).toBe("merged");
+    expect(github.calls).toContain("merge");
+    expect(github.calls).toContain("conversation");
   });
 });

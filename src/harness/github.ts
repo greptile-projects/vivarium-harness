@@ -111,6 +111,31 @@ export interface MergeOutcome {
   error?: string;
 }
 
+// Everything the landing phase wants to know right after an arm's answer turn,
+// read in one piece: where the branch head ended up, what a push changed, and
+// the conversation as it stands. Each part fails independently — a missing
+// `sha` is an unreadable head (which the caller treats as "pushed", the
+// fail-open direction), a missing `diff` beside differing shas is a `diffError`
+// gap, and a missing `conversation` is unknown, never "no trace".
+export interface AnswerTrace {
+  sha?: string;
+  diff?: string;
+  diffError?: string;
+  conversation?: ReviewNote[];
+  conversationError?: string;
+}
+
+// The whole irreversible tail of a merge, read in one piece: the merge itself,
+// the conversation capture, and the churn refresh. `conversation` and
+// `refreshed` fail independently of the merge — the caller records their gaps
+// without un-merging anything.
+export interface FinalizedMerge {
+  merge: MergeOutcome;
+  conversation?: ReviewNote[];
+  conversationError?: string;
+  refreshed?: PullRequestRef;
+}
+
 // One arm's git/GitHub surface, bound to its checkout and token so callers
 // never pass either around. Injected as a whole in tests.
 export interface ArmGitHub {
@@ -144,6 +169,25 @@ export interface ArmGitHub {
   // git cannot produce it; the caller records the gap rather than guessing.
   diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
+  // The two bundled reads, defined only for isolated arms. Docker Sandbox
+  // performs credential/template upkeep on every `sbx exec`, so a landing step
+  // that makes three or four GitHub calls in sequence pays that fixed cost
+  // three or four times — the post-answer bookkeeping and the merge tail were
+  // each minutes of pure control-plane crossings. Each bundle is one crossing.
+  // Callers fall back to the discrete methods above when a bundle is absent
+  // (host mode, test fakes) or throws, so these are an optimization, never the
+  // only path.
+  //
+  // `wantTrace` says whether the caller could still use the conversation for a
+  // settle check (there is a round left and the shas may match); when false, or
+  // when the shas differ, the bundle skips the conversation read.
+  afterAnswer?(
+    pullRequest: number,
+    branch: string | undefined,
+    reviewedSha: string | undefined,
+    wantTrace: boolean,
+  ): Promise<AnswerTrace>;
+  finalizeMerge?(pullRequest: number): Promise<FinalizedMerge>;
 }
 
 export type GitHubFactory = (arm: ArmConfig) => ArmGitHub;
@@ -192,6 +236,20 @@ function parseJson<T>(stdout: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+// `vivarium-sync` owns the final compact JSON line on stdout. Older sandbox
+// images did not redirect git clean's "Removing …" messages, and the sandbox
+// client may also emit control-plane notices before the command response.
+// Reading from the end preserves the JSON contract without requiring an image
+// rebuild before an interrupted climb can resume.
+function parseLastJsonLine<T>(stdout: string): T | undefined {
+  const lines = stdout.trim().split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const parsed = parseJson<T>(lines[index] ?? "");
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
 }
 
 // The environment variable the credential helper below reads the token out of.
@@ -253,6 +311,313 @@ interface GhReaction {
   user?: { login?: string };
   content?: string;
   created_at?: string;
+}
+
+interface BundledReaction {
+  parentKind?: "issue-comment" | "review-comment";
+  parentId?: number;
+  reaction?: GhReaction;
+}
+
+interface ConversationBundle {
+  reviews?: GhReviewsResponse["reviews"];
+  issueComments?: GhComment[];
+  inlineComments?: GhReviewComment[];
+  reactions?: BundledReaction[];
+}
+
+// One review poll used to cross the sandbox control plane once for `gh pr
+// view`, once for the origin URL, once for each comment collection, and once
+// per reacted comment. Docker Sandbox performs credential/template upkeep on
+// every `sbx exec`; when its refresh lock is contended, each crossing can pay
+// the full lock timeout. A mature conversation therefore took minutes to read
+// even after Greptile had already posted its response.
+//
+// Keep all GitHub requests inside one fixed, argument-only bash program. It
+// still re-reads every reaction identity on every poll—the structured +1 is a
+// landing decision, so caching by reaction count would be unsafe—but the host
+// pays for one `sbx exec`. stdout is one compact JSON control-plane response;
+// gh diagnostics remain on stderr.
+const ISOLATED_CONVERSATION_SCRIPT = String.raw`
+set -euo pipefail
+
+slug="$1"
+pull_request="$2"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+gh pr view "$pull_request" --json reviews >"$scratch/reviews.json"
+gh api --paginate "repos/$slug/issues/$pull_request/comments" >"$scratch/issues.json"
+gh api --paginate "repos/$slug/pulls/$pull_request/comments" >"$scratch/inline.json"
+
+: >"$scratch/reactions.ndjson"
+while IFS= read -r id; do
+  gh api --paginate "repos/$slug/issues/comments/$id/reactions" </dev/null |
+    jq -c --argjson parentId "$id" \
+      '.[] | {parentKind: "issue-comment", parentId: $parentId, reaction: .}' \
+      >>"$scratch/reactions.ndjson"
+done < <(
+  jq -r '.[] | select(.id != null and ((.reactions.total_count // 0) > 0)) | .id' \
+    "$scratch/issues.json"
+)
+
+while IFS= read -r id; do
+  gh api --paginate "repos/$slug/pulls/comments/$id/reactions" </dev/null |
+    jq -c --argjson parentId "$id" \
+      '.[] | {parentKind: "review-comment", parentId: $parentId, reaction: .}' \
+      >>"$scratch/reactions.ndjson"
+done < <(
+  jq -r '.[] | select(.id != null and ((.reactions.total_count // 0) > 0)) | .id' \
+    "$scratch/inline.json"
+)
+
+jq -s '.' "$scratch/reactions.ndjson" >"$scratch/reactions.json"
+jq -cn \
+  --slurpfile reviews "$scratch/reviews.json" \
+  --slurpfile issues "$scratch/issues.json" \
+  --slurpfile inline "$scratch/inline.json" \
+  --slurpfile reactions "$scratch/reactions.json" \
+  '{
+    reviews: ($reviews[0].reviews // []),
+    issueComments: ($issues[0] // []),
+    inlineComments: ($inline[0] // []),
+    reactions: ($reactions[0] // [])
+  }'
+`;
+
+// Quote a script so it can ride as one argv word inside another script — the
+// composite bundles below re-run the conversation reader through a nested
+// `bash -c`, because `set -e` inside a shell *function* is silently disabled
+// when the call sits in an `if !` condition, and a partially-read conversation
+// must fail loudly rather than pass as a quiet reviewer.
+const shellQuoted = (script: string): string =>
+  `'${script.replaceAll("'", `'\\''`)}'`;
+
+// The post-answer bookkeeping in one crossing: branch head (API twice, then
+// the git remote — the same two-source read as `headSha`), the round's diff
+// when the head moved, and the conversation when a settle check could still
+// use it. No `set -e`: each part degrades to a named gap in the JSON rather
+// than taking the others down with it.
+const AFTER_ANSWER_SCRIPT = String.raw`
+set -uo pipefail
+
+slug="$1"
+pull_request="$2"
+branch="$3"
+reviewed="$4"
+want_trace="$5"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+sha=""
+for attempt in 1 2; do
+  view="$(gh pr view "$pull_request" --json headRefOid 2>>"$scratch/noise" || true)"
+  sha="$(printf '%s' "$view" | jq -r '.headRefOid // empty' 2>/dev/null || true)"
+  if [ -n "$sha" ]; then break; fi
+done
+if [ -z "$sha" ] && [ -n "$branch" ]; then
+  sha="$(git ls-remote origin "refs/heads/$branch" 2>>"$scratch/noise" | awk 'NR == 1 { print $1 }' || true)"
+fi
+
+diff_status="none"
+: >"$scratch/diff"
+: >"$scratch/diff-err"
+if [ -n "$sha" ] && [ -n "$reviewed" ] && [ "$sha" != "$reviewed" ]; then
+  if git diff "$reviewed..$sha" >"$scratch/diff" 2>"$scratch/diff-err"; then
+    diff_status="ok"
+  else
+    diff_status="error"
+  fi
+fi
+
+conversation_error=""
+printf 'null' >"$scratch/conversation.json"
+if [ "$want_trace" = "1" ] && [ -n "$sha" ] && [ -n "$reviewed" ] && [ "$sha" = "$reviewed" ]; then
+  if bash -c ${shellQuoted(ISOLATED_CONVERSATION_SCRIPT)} vivarium-conversation "$slug" "$pull_request" >"$scratch/conversation.raw" 2>"$scratch/conversation-err"; then
+    tail -n 1 "$scratch/conversation.raw" >"$scratch/conversation.json"
+  else
+    conversation_error="$(tail -c 400 "$scratch/conversation-err" | tr -d '\0')"
+    if [ -z "$conversation_error" ]; then conversation_error="the conversation read failed"; fi
+  fi
+fi
+
+jq -cn \
+  --arg sha "$sha" \
+  --arg diffStatus "$diff_status" \
+  --rawfile diff "$scratch/diff" \
+  --rawfile diffErr "$scratch/diff-err" \
+  --arg conversationError "$conversation_error" \
+  --slurpfile conversation "$scratch/conversation.json" \
+  '{
+    sha: (if $sha == "" then null else $sha end),
+    diff: (if $diffStatus == "ok" then $diff else null end),
+    diffError:
+      (if $diffStatus == "error"
+       then (($diffErr | gsub("\\s+$"; "")) as $trimmed
+             | if $trimmed == "" then "git diff failed" else $trimmed end)
+       else null end),
+    conversation: $conversation[0],
+    conversationError: (if $conversationError == "" then null else $conversationError end)
+  }'
+`;
+
+// The merge tail in one crossing: the merge, the state re-read that decides
+// `merged`, the conversation capture for the record, and the churn refresh.
+// Same shape as above — the merge exit code and every partial result travel in
+// the JSON, so a failed capture can never look like an empty conversation and
+// a failed re-read falls back to the merge command's own exit code.
+const FINALIZE_MERGE_SCRIPT = String.raw`
+set -uo pipefail
+
+slug="$1"
+pull_request="$2"
+fields="$3"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+merge_code=0
+gh pr merge "$pull_request" --merge --delete-branch >"$scratch/merge-out" 2>"$scratch/merge-err" || merge_code=$?
+
+printf 'null' >"$scratch/view.json"
+for attempt in 1 2 3; do
+  if gh pr view "$pull_request" --json state,mergedAt,mergeCommit >"$scratch/view-try" 2>>"$scratch/noise" &&
+    jq -e 'type == "object"' "$scratch/view-try" >/dev/null 2>&1; then
+    cp "$scratch/view-try" "$scratch/view.json"
+    break
+  fi
+done
+
+conversation_error=""
+printf 'null' >"$scratch/conversation.json"
+if bash -c ${shellQuoted(ISOLATED_CONVERSATION_SCRIPT)} vivarium-conversation "$slug" "$pull_request" >"$scratch/conversation.raw" 2>"$scratch/conversation-err"; then
+  tail -n 1 "$scratch/conversation.raw" >"$scratch/conversation.json"
+else
+  conversation_error="$(tail -c 400 "$scratch/conversation-err" | tr -d '\0')"
+  if [ -z "$conversation_error" ]; then conversation_error="the conversation read failed"; fi
+fi
+
+printf 'null' >"$scratch/refreshed.json"
+if gh pr view "$pull_request" --json "$fields" >"$scratch/refreshed-try" 2>>"$scratch/noise" &&
+  jq -e 'type == "object"' "$scratch/refreshed-try" >/dev/null 2>&1; then
+  cp "$scratch/refreshed-try" "$scratch/refreshed.json"
+fi
+
+jq -cn \
+  --argjson mergeCode "$merge_code" \
+  --rawfile mergeOut "$scratch/merge-out" \
+  --rawfile mergeErr "$scratch/merge-err" \
+  --slurpfile view "$scratch/view.json" \
+  --slurpfile conversation "$scratch/conversation.json" \
+  --arg conversationError "$conversation_error" \
+  --slurpfile refreshed "$scratch/refreshed.json" \
+  '{
+    merge: { code: $mergeCode, stdout: $mergeOut, stderr: $mergeErr },
+    view: $view[0],
+    conversation: $conversation[0],
+    conversationError: (if $conversationError == "" then null else $conversationError end),
+    refreshed: $refreshed[0]
+  }'
+`;
+
+// The fields every pull-request snapshot carries, shared by `findPullRequest`
+// and the merge bundle's churn refresh so the two reads cannot drift.
+const PULL_REQUEST_FIELDS =
+  "number,url,title,headRefName,state,statusCheckRollup,additions,deletions,changedFiles";
+
+// A bundle is only trusted with all four collections present: a partial read
+// must fail loudly rather than pass as a conversation with fewer entries.
+function asConversationBundle(value: unknown): ConversationBundle | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const bundle = value as ConversationBundle;
+  return Array.isArray(bundle.reviews) &&
+    Array.isArray(bundle.issueComments) &&
+    Array.isArray(bundle.inlineComments) &&
+    Array.isArray(bundle.reactions)
+    ? bundle
+    : undefined;
+}
+
+// Reviews, issue comments, inline review comments and their reactions, merged
+// into one chronological record. Pure: both the single-crossing bundle reads
+// and the host path (which fetches the same four collections with discrete
+// calls) land here, so the note shape cannot drift between modes.
+function notesFromBundle(bundle: ConversationBundle): ReviewNote[] {
+  const notes: ReviewNote[] = [];
+
+  for (const review of bundle.reviews ?? []) {
+    notes.push({
+      id: `review:${review.id ?? review.submittedAt ?? notes.length}`,
+      kind: "review",
+      author: review.author?.login ?? "unknown",
+      body: review.body ?? "",
+      createdAt: review.submittedAt ?? "",
+      url: review.url,
+      state: review.state,
+    });
+  }
+
+  const addReactions = (
+    comment: GhComment,
+    parentKind: "issue-comment" | "review-comment",
+  ): void => {
+    if (!comment.id) return;
+    for (const entry of bundle.reactions ?? []) {
+      if (
+        entry.parentKind !== parentKind ||
+        entry.parentId !== comment.id ||
+        !entry.reaction
+      ) {
+        continue;
+      }
+      notes.push({
+        id: `reaction:${parentKind}:${entry.reaction.id ?? notes.length}`,
+        kind: "reaction",
+        author: entry.reaction.user?.login ?? "unknown",
+        body: entry.reaction.content ?? "reaction",
+        createdAt: entry.reaction.created_at ?? "",
+        url: comment.html_url,
+        inReplyTo: `${parentKind}:${comment.id}`,
+      });
+    }
+  };
+
+  for (const comment of bundle.issueComments ?? []) {
+    notes.push({
+      id: `issue-comment:${comment.id ?? notes.length}`,
+      kind: "issue-comment",
+      author: comment.user?.login ?? "unknown",
+      body: comment.body ?? "",
+      createdAt: comment.created_at ?? "",
+      updatedAt: comment.updated_at,
+      url: comment.html_url,
+    });
+    addReactions(comment, "issue-comment");
+  }
+
+  for (const comment of bundle.inlineComments ?? []) {
+    notes.push({
+      id: `review-comment:${comment.id ?? notes.length}`,
+      kind: "review-comment",
+      author: comment.user?.login ?? "unknown",
+      body: comment.body ?? "",
+      createdAt: comment.created_at ?? "",
+      updatedAt: comment.updated_at,
+      url: comment.html_url,
+      path: comment.path,
+      line: comment.line ?? undefined,
+      originalLine: comment.original_line ?? undefined,
+      diffHunk: comment.diff_hunk ?? undefined,
+      inReplyTo:
+        comment.in_reply_to_id === undefined
+          ? undefined
+          : `review-comment:${comment.in_reply_to_id}`,
+    });
+    addReactions(comment, "review-comment");
+  }
+
+  return notes.sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
 }
 
 interface GhStatusCheck {
@@ -318,7 +683,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     return result.stdout.trim().replace(/^origin\//, "") || "main";
   };
 
-  return {
+  const api: ArmGitHub = {
     async isGitHubCheckout() {
       if (arm.sandboxName) {
         return slugFromRemote(arm.repo) !== undefined;
@@ -352,7 +717,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             `baseline sync failed in ${checkoutLocation}: ${result.stderr.trim() || result.stdout.trim()}`,
           );
         }
-        const baseline = parseJson<{
+        const baseline = parseLastJsonLine<{
           remote?: string;
           branch?: string;
           sha?: string;
@@ -361,8 +726,10 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           ? slugFromRemote(baseline.remote)
           : undefined;
         if (!baseline?.branch || !baseline.sha || !slug) {
+          const detail =
+            result.stdout.trim() || result.stderr.trim() || "empty output";
           throw new Error(
-            `baseline sync returned invalid state in ${checkoutLocation}`,
+            `baseline sync returned invalid state in ${checkoutLocation}: ${detail}`,
           );
         }
         return { slug, branch: baseline.branch, sha: baseline.sha };
@@ -437,8 +804,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // branch its checkout is sitting on. Both paths, because an arm that
     // forgets to quote its URL still opened a real pull request.
     async findPullRequest(hint) {
-      const fields =
-        "number,url,title,headRefName,state,statusCheckRollup,additions,deletions,changedFiles";
+      const fields = PULL_REQUEST_FIELDS;
       const number = hint.url ? pullRequestNumber(hint.url) : undefined;
 
       if (number !== undefined) {
@@ -598,8 +964,6 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // is retried; a failed capture is recorded as unavailable), but only if
     // they can see it.
     async conversation(pullRequest) {
-      const notes: ReviewNote[] = [];
-
       const api = async (args: string[], what: string): Promise<string> => {
         const result = await gh(args);
         if (result.code !== 0) {
@@ -614,23 +978,49 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         return result.stdout;
       };
 
+      if (arm.sandboxName) {
+        // Isolated deployment validation requires a plain HTTPS GitHub clone
+        // URL, so config already carries the same slug as origin. Reading the
+        // remote again would be an entire extra sbx crossing per poll.
+        const slug = slugFromRemote(arm.repo);
+        if (!slug) {
+          throw new Error(
+            `could not resolve the configured remote for ${checkoutLocation} — conversation unread`,
+          );
+        }
+        const result = await run("bash", [
+          "-ceu",
+          ISOLATED_CONVERSATION_SCRIPT,
+          "vivarium-conversation",
+          slug,
+          String(pullRequest),
+        ]);
+        if (result.code !== 0) {
+          throw new Error(
+            `could not read the conversation of pull request ${pullRequest}: ${
+              result.stderr.trim() ||
+              result.stdout.trim() ||
+              `bash exited ${result.code}`
+            }`,
+          );
+        }
+        const bundle = asConversationBundle(
+          parseLastJsonLine<unknown>(result.stdout),
+        );
+        if (!bundle) {
+          throw new Error(
+            `could not parse the conversation of pull request ${pullRequest}`,
+          );
+        }
+        return notesFromBundle(bundle);
+      }
+
       const view = await api(
         ["pr", "view", String(pullRequest), "--json", "reviews"],
         "the reviews",
       );
-      const parsed = parseJson<GhReviewsResponse>(view);
+      const reviews = parseJson<GhReviewsResponse>(view)?.reviews ?? [];
 
-      for (const review of parsed?.reviews ?? []) {
-        notes.push({
-          id: `review:${review.id ?? review.submittedAt ?? notes.length}`,
-          kind: "review",
-          author: review.author?.login ?? "unknown",
-          body: review.body ?? "",
-          createdAt: review.submittedAt ?? "",
-          url: review.url,
-          state: review.state,
-        });
-      }
       const url = await remote();
       const slug = url ? slugFromRemote(url) : undefined;
       if (!slug) {
@@ -642,86 +1032,68 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           `could not resolve the origin remote in ${checkoutLocation} — comments unread`,
         );
       }
-      {
-        const addReactions = async (
-          comment: GhComment,
-          parentKind: "issue-comment" | "review-comment",
-          endpoint: string,
-        ) => {
-          if (!comment.id || (comment.reactions?.total_count ?? 0) === 0) return;
-          const response = await api(
-            ["api", "--paginate", endpoint],
-            `reactions on comment ${comment.id}`,
-          );
-          for (const reaction of parseJson<GhReaction[]>(response) ?? []) {
-            notes.push({
-              id: `reaction:${parentKind}:${reaction.id ?? notes.length}`,
-              kind: "reaction",
-              author: reaction.user?.login ?? "unknown",
-              body: reaction.content ?? "reaction",
-              createdAt: reaction.created_at ?? "",
-              url: comment.html_url,
-              inReplyTo: `${parentKind}:${comment.id}`,
-            });
+      const issueComments =
+        parseJson<GhComment[]>(
+          await api(
+            [
+              "api",
+              "--paginate",
+              `repos/${slug}/issues/${pullRequest}/comments`,
+            ],
+            "the issue comments",
+          ),
+        ) ?? [];
+      const inlineComments =
+        parseJson<GhReviewComment[]>(
+          await api(
+            [
+              "api",
+              "--paginate",
+              `repos/${slug}/pulls/${pullRequest}/comments`,
+            ],
+            "the inline comments",
+          ),
+        ) ?? [];
+
+      const reactions: BundledReaction[] = [];
+      const collect = async (
+        comments: GhComment[],
+        parentKind: "issue-comment" | "review-comment",
+        endpoint: (id: number) => string,
+      ): Promise<void> => {
+        for (const comment of comments) {
+          if (!comment.id || (comment.reactions?.total_count ?? 0) === 0) {
+            continue;
           }
-        };
-
-        const issueComments = await api(
-          ["api", "--paginate", `repos/${slug}/issues/${pullRequest}/comments`],
-          "the issue comments",
-        );
-        for (const comment of parseJson<GhComment[]>(issueComments) ?? []) {
-          notes.push({
-            id: `issue-comment:${comment.id ?? notes.length}`,
-            kind: "issue-comment",
-            author: comment.user?.login ?? "unknown",
-          body: comment.body ?? "",
-          createdAt: comment.created_at ?? "",
-          updatedAt: comment.updated_at,
-          url: comment.html_url,
-          });
-          await addReactions(
-            comment,
-            "issue-comment",
-            `repos/${slug}/issues/comments/${comment.id}/reactions`,
-          );
+          const list =
+            parseJson<GhReaction[]>(
+              await api(
+                ["api", "--paginate", endpoint(comment.id)],
+                `reactions on comment ${comment.id}`,
+              ),
+            ) ?? [];
+          for (const reaction of list) {
+            reactions.push({ parentKind, parentId: comment.id, reaction });
+          }
         }
-
-        // `--paginate` merges array responses into a single array, so this
-        // stays one `JSON.parse` no matter how long the review gets.
-        const inline = await api(
-          ["api", "--paginate", `repos/${slug}/pulls/${pullRequest}/comments`],
-          "the inline comments",
-        );
-        for (const comment of parseJson<GhReviewComment[]>(inline) ?? []) {
-          notes.push({
-            id: `review-comment:${comment.id ?? notes.length}`,
-            kind: "review-comment",
-            author: comment.user?.login ?? "unknown",
-            body: comment.body ?? "",
-            createdAt: comment.created_at ?? "",
-            updatedAt: comment.updated_at,
-            url: comment.html_url,
-            path: comment.path,
-            line: comment.line ?? undefined,
-            originalLine: comment.original_line ?? undefined,
-            diffHunk: comment.diff_hunk ?? undefined,
-            inReplyTo:
-              comment.in_reply_to_id === undefined
-                ? undefined
-                : `review-comment:${comment.in_reply_to_id}`,
-          });
-          await addReactions(
-            comment,
-            "review-comment",
-            `repos/${slug}/pulls/comments/${comment.id}/reactions`,
-          );
-        }
-      }
-
-      return notes.sort((left, right) =>
-        left.createdAt.localeCompare(right.createdAt),
+      };
+      await collect(
+        issueComments,
+        "issue-comment",
+        (id) => `repos/${slug}/issues/comments/${id}/reactions`,
       );
+      await collect(
+        inlineComments,
+        "review-comment",
+        (id) => `repos/${slug}/pulls/comments/${id}/reactions`,
+      );
+
+      return notesFromBundle({
+        reviews,
+        issueComments,
+        inlineComments,
+        reactions,
+      });
     },
 
     async merge(pullRequest) {
@@ -775,6 +1147,147 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       };
     },
   };
+
+  if (arm.sandboxName) {
+    const requireSlug = (): string => {
+      const slug = slugFromRemote(arm.repo);
+      if (!slug) {
+        throw new Error(
+          `could not resolve the configured remote for ${checkoutLocation}`,
+        );
+      }
+      return slug;
+    };
+
+    api.afterAnswer = async (pullRequest, branch, reviewedSha, wantTrace) => {
+      const result = await run("bash", [
+        "-c",
+        AFTER_ANSWER_SCRIPT,
+        "vivarium-after-answer",
+        requireSlug(),
+        String(pullRequest),
+        branch ?? "",
+        reviewedSha ?? "",
+        wantTrace ? "1" : "0",
+      ]);
+      if (result.code !== 0) {
+        throw new Error(
+          `the post-answer read of pull request ${pullRequest} failed: ${
+            result.stderr.trim() ||
+            result.stdout.trim() ||
+            `bash exited ${result.code}`
+          }`,
+        );
+      }
+      const parsed = parseLastJsonLine<{
+        sha?: unknown;
+        diff?: unknown;
+        diffError?: unknown;
+        conversation?: unknown;
+        conversationError?: unknown;
+      }>(result.stdout);
+      if (!parsed) {
+        throw new Error(
+          `could not parse the post-answer read of pull request ${pullRequest}`,
+        );
+      }
+      const shaText = typeof parsed.sha === "string" ? parsed.sha.trim() : "";
+      const bundle = asConversationBundle(parsed.conversation);
+      return {
+        sha: /^[0-9a-f]{7,40}$/i.test(shaText) ? shaText : undefined,
+        diff: typeof parsed.diff === "string" ? parsed.diff : undefined,
+        diffError:
+          typeof parsed.diffError === "string" ? parsed.diffError : undefined,
+        conversation: bundle ? notesFromBundle(bundle) : undefined,
+        conversationError:
+          typeof parsed.conversationError === "string"
+            ? parsed.conversationError
+            : undefined,
+      };
+    };
+
+    api.finalizeMerge = async (pullRequest) => {
+      const result = await run("bash", [
+        "-c",
+        FINALIZE_MERGE_SCRIPT,
+        "vivarium-finalize-merge",
+        requireSlug(),
+        String(pullRequest),
+        PULL_REQUEST_FIELDS,
+      ]);
+      if (result.code !== 0) {
+        throw new Error(
+          `the merge of pull request ${pullRequest} could not be finalized: ${
+            result.stderr.trim() ||
+            result.stdout.trim() ||
+            `bash exited ${result.code}`
+          }`,
+        );
+      }
+      const parsed = parseLastJsonLine<{
+        merge?: { code?: unknown; stdout?: unknown; stderr?: unknown };
+        view?: {
+          state?: unknown;
+          mergedAt?: unknown;
+          mergeCommit?: { oid?: unknown };
+        } | null;
+        conversation?: unknown;
+        conversationError?: unknown;
+        refreshed?: Record<string, unknown> | null;
+      }>(result.stdout);
+      // The bundle must at least say how the merge command exited: without
+      // that, "merged" cannot be decided at all, and the caller's discrete
+      // fallback re-runs the merge — which is safe, because merging an
+      // already-merged pull request fails while its state still reads MERGED.
+      if (!parsed || typeof parsed.merge?.code !== "number") {
+        throw new Error(
+          `could not parse the merge state of pull request ${pullRequest}`,
+        );
+      }
+      const view =
+        parsed.view && typeof parsed.view === "object" ? parsed.view : undefined;
+      const state = typeof view?.state === "string" ? view.state : undefined;
+      const merged = view ? state === "MERGED" : parsed.merge.code === 0;
+      const mergeStderr =
+        typeof parsed.merge.stderr === "string" ? parsed.merge.stderr : "";
+      const mergeStdout =
+        typeof parsed.merge.stdout === "string" ? parsed.merge.stdout : "";
+      const bundle = asConversationBundle(parsed.conversation);
+      const refreshed =
+        parsed.refreshed &&
+        typeof parsed.refreshed === "object" &&
+        typeof parsed.refreshed.number === "number"
+          ? toRef(parsed.refreshed)
+          : undefined;
+      return {
+        merge: {
+          merged,
+          method: "merge",
+          mergedAt:
+            typeof view?.mergedAt === "string" ? view.mergedAt : undefined,
+          commit:
+            typeof view?.mergeCommit?.oid === "string"
+              ? view.mergeCommit.oid
+              : undefined,
+          error: merged
+            ? view
+              ? undefined
+              : "merge reported success but its state could not be re-read — mergedAt and commit are missing, not absent"
+            : mergeStderr.trim() ||
+              mergeStdout.trim() ||
+              `pull request ${pullRequest} is ${state ?? "not merged"}`,
+        },
+        conversation: bundle ? notesFromBundle(bundle) : undefined,
+        conversationError:
+          typeof parsed.conversationError === "string"
+            ? parsed.conversationError
+            : undefined,
+        refreshed,
+      };
+    };
+  }
+
+  return api;
 }
 
 function toRef(value: Record<string, unknown>): PullRequestRef {

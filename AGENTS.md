@@ -302,13 +302,20 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   **fetch its own review**. The comments are
   deliberately not pasted in — what the arm chooses to read is part of what is
   being observed. The obligation follows **comment shape, not round number**.
-  A new root comment (no `in_reply_to_id`) must always receive an individual
-  answer, whether it arrives in round one or after a later fix. A Greptile
-  reply inside a thread the arm already answered is conversational: the arm
-  may accept it and fix the code, state a final disagreement and stop replying
-  in that thread, answer a new question, or say nothing to a restatement. A
-  settled thread does not close review of the whole pull request; fixes can
-  introduce fresh root findings elsewhere, and those still require answers.
+  A new inline root comment (no `in_reply_to_id`) must always receive an
+  individual answer, whether it arrives in round one or after a later fix.
+  Greptile also edits one PR-level summary in place, and that summary can carry
+  substantive findings that could not attach to a changed line. Each distinct
+  summary-only finding is a root too and must receive an individual PR-level
+  answer; confidence text, review metadata, and a restatement of an inline
+  finding are not additional roots. PR-level comments are flat, so the arm
+  identifies an answered summary root by its own later PR-level response, not
+  by `in_reply_to_id`. A Greptile reply inside a thread the arm already
+  answered is conversational: the arm may accept it and fix the code, state a
+  final disagreement and stop replying in that thread, answer a new question,
+  or say nothing to a restatement. A settled thread does not close review of
+  the whole pull request; fixes can introduce fresh root findings elsewhere,
+  and those still require answers.
   Both rounds also name the **inline** comment API (`gh api
   repos/{owner}/{repo}/pulls/{n}/comments`), because `gh pr view --comments`
   does not print inline comments and a thread reply is where the whole exchange
@@ -317,8 +324,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   asymmetric and load-bearing: an in-diff thread reply must **not** mention
   `@greptileai` (Greptile reads its own threads unpinged, and a mention there
   makes it process the reply twice), while a PR-level comment — general
-  questions not tied to one inline finding — **must** mention it, or Greptile
-  never sees the comment at all. The arm does not
+  questions and answers to summary-only findings not tied to one inline
+  finding — **must** mention it, or Greptile never sees the comment at all. The
+  arm does not
   declare the exchange closed in its answer: termination comes from the
   reviewer's next comment, a timeout with no new comment, or the configured
   round cap.
@@ -358,10 +366,23 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   fetched only for comments with a nonzero count rather than making one extra
   API call per historical comment on every poll. For isolated arms these
   deterministic operations run through `sbx exec` inside that arm's private
-  clone; host smoke tests run them directly. In the VM, Docker's proxy supplies
+  clone; host smoke tests run them directly. Every `sbx exec` crossing pays
+  Docker Sandbox's credential/template upkeep — tens of seconds when its
+  refresh lock is contended — so the landing path's serial GitHub work is
+  batched into single crossings: the conversation poll, the post-answer read
+  (`afterAnswer` — branch head, round diff, settle-check conversation) and the
+  merge tail (`finalizeMerge` — merge, state re-read, conversation capture,
+  churn refresh) are each one fixed argument-only bash program, with each
+  part's failure a named gap in the JSON rather than the whole read failing.
+  The two bundles exist only on isolated arms; `land.ts` falls back to the
+  discrete calls when a bundle is absent (host mode, the test fakes) or its
+  read fails, so they are an optimization, never the only path. In the VM,
+  Docker's proxy supplies
   the per-arm GitHub identity from a sentinel; on the host, a token reaches git
   through a one-shot credential helper. The whole interface is injected in
-  tests — the suite touches neither git nor `gh`.
+  tests — the suite touches neither git nor `gh` (the bundled-script suite in
+  `test/github.test.ts` executes the bash programs against stubbed `gh`/`git`
+  binaries, the same trick `test/mirror-sync.test.ts` uses).
 
 - **`src/harness/land.ts`** — what happens to an arm's work *after* its session says it
   is done, and the piece that makes this an experiment rather than two agents
