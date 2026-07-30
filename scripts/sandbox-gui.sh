@@ -40,7 +40,10 @@ sudo dbus-daemon --system --fork >>"$log_dir/dbus.log" 2>&1 || true
 xsetroot -solid '#202225' >>"$log_dir/xvfb.log" 2>&1 || true
 fluxbox >>"$log_dir/fluxbox.log" 2>&1 &
 fluxbox_pid=$!
-x11vnc -display "$display" -rfbport "$vnc_port" -localhost \
+# Docker Sandboxes exports WAYLAND_DISPLAY for its own host integration.
+# x11vnc 0.9.17 treats that variable as authoritative and exits even though
+# this desktop deliberately runs on the Xvfb display above.
+env -u WAYLAND_DISPLAY x11vnc -display "$display" -rfbport "$vnc_port" -localhost \
   -forever -shared -nopw -noxdamage -quiet >>"$log_dir/x11vnc.log" 2>&1 &
 x11vnc_pid=$!
 websockify --web=/usr/share/novnc "$novnc_port" "localhost:$vnc_port" \

@@ -72,15 +72,23 @@ user_id="${identity##*$'\t'}"
 "${remote[@]}" git -C /workspace config user.email \
   "${user_id}+${login}@users.noreply.github.com"
 
-sbx exec -d -e DISPLAY=:99 "$sandbox" vivarium-gui
+sbx exec -d -e DISPLAY=:99 "$sandbox" vivarium-gui &
+gui_exec_pid=$!
 for _ in $(seq 1 30); do
   sbx exec "$sandbox" test -f /run/vivarium/ready && break
   sleep 1
 done
 sbx exec "$sandbox" test -f /run/vivarium/ready || {
+  kill -KILL "$gui_exec_pid" 2>/dev/null || true
+  wait "$gui_exec_pid" 2>/dev/null || true
   sbx exec "$sandbox" bash -lc 'tail -n 30 /var/log/vivarium/*.log' >&2 || true
   exit 1
 }
+# sbx 0.37.1 keeps its local client attached to a healthy detached exec.
+# The remote detached session survives the local client, and is what keeps the
+# sandbox running between harness commands.
+kill -KILL "$gui_exec_pid" 2>/dev/null || true
+wait "$gui_exec_pid" 2>/dev/null || true
 sbx exec "$sandbox" docker info >/dev/null
 
 echo "started $sandbox ($arm — private Docker, clone, and GUI ready)"

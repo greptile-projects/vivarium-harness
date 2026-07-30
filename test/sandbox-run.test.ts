@@ -73,6 +73,7 @@ if [ "$1 $2" = "secret set" ]; then cat >/dev/null; exit 0; fi
 if [ "$1" = "exec" ]; then
   case "$*" in
     *"gh api user"*) printf 'komodo-viv\\t1234\\n' ;;
+    *"vivarium-gui"*) exec sleep 30 ;;
   esac
   exit 0
 fi
