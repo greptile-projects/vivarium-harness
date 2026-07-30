@@ -455,6 +455,13 @@ cross-layer import is always visible as a `../harness/` in the specifier.
     - **The maximum is reached.** At most `reviewRounds` reviewer comments are
       handed back to the arm, so a disagreement cannot create an unbounded
       comment loop.
+  A wait also has one bounded missed-trigger recovery. After five minutes with
+  no reviewer output, the harness reads GitHub's Greptile status checks. It
+  posts the PR-level comment `@greptileai review` only when no Greptile check is
+  running and none started, completed, or was created during that same
+  five-minute window. The decision is made once per wait, so a long silence
+  cannot spam the pull request; an unreadable or ambiguous status fails closed
+  and posts nothing.
   Every reviewer event first passes through a 30-second quiet-period debounce.
   New entries reset the window, so a review body and the inline comments that
   become visible a few seconds later produce one arm prompt rather than one

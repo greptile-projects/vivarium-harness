@@ -63,6 +63,19 @@ export interface PullRequestRef {
   changedFiles?: number;
 }
 
+// One entry from GitHub's status-check rollup. Both CheckRun and
+// StatusContext entries are normalized into this shape so landing can answer
+// two mechanical questions without parsing display text: is Greptile running,
+// and has it run since this review wait began?
+export interface PullRequestCheck {
+  name: string;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt?: string;
+  detailsUrl?: string;
+}
+
 // One entry in a pull request's conversation: a review body, an inline review
 // comment, an issue comment, or a reaction to either kind of comment. The
 // harness records every one of them — the arm's replies as much as the
@@ -111,6 +124,8 @@ export interface ArmGitHub {
     branch?: string;
   }): Promise<PullRequestRef | undefined>;
   conversation(pullRequest: number): Promise<ReviewNote[]>;
+  checkRuns(pullRequest: number): Promise<PullRequestCheck[]>;
+  postComment(pullRequest: number, body: string): Promise<void>;
   // The commit the branch currently points at. Recorded on both sides of every
   // review round, because an arm that amends or force-pushes to address a
   // comment makes the reviewed commits unreachable from the branch and GitHub
@@ -238,6 +253,18 @@ interface GhReaction {
   user?: { login?: string };
   content?: string;
   created_at?: string;
+}
+
+interface GhStatusCheck {
+  name?: string;
+  context?: string;
+  status?: string;
+  state?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt?: string;
+  detailsUrl?: string;
+  targetUrl?: string;
 }
 
 export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
@@ -471,6 +498,60 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         );
       }
       return result.stdout;
+    },
+
+    async checkRuns(pullRequest) {
+      const result = await gh([
+        "pr",
+        "view",
+        String(pullRequest),
+        "--json",
+        "statusCheckRollup",
+      ]);
+      if (result.code !== 0) {
+        throw new Error(
+          `could not read checks for pull request ${pullRequest}: ${
+            result.stderr.trim() ||
+            result.stdout.trim() ||
+            `gh exited ${result.code}`
+          }`,
+        );
+      }
+      const parsed = parseJson<{ statusCheckRollup?: GhStatusCheck[] }>(
+        result.stdout,
+      );
+      if (!parsed || !Array.isArray(parsed.statusCheckRollup)) {
+        throw new Error(
+          `could not parse checks for pull request ${pullRequest}`,
+        );
+      }
+      return parsed.statusCheckRollup.map((check) => ({
+        name: check.name ?? check.context ?? "unknown",
+        status: check.status ?? check.state ?? "UNKNOWN",
+        startedAt: check.startedAt,
+        completedAt: check.completedAt,
+        createdAt: check.createdAt,
+        detailsUrl: check.detailsUrl ?? check.targetUrl,
+      }));
+    },
+
+    async postComment(pullRequest, body) {
+      const result = await gh([
+        "pr",
+        "comment",
+        String(pullRequest),
+        "--body",
+        body,
+      ]);
+      if (result.code !== 0) {
+        throw new Error(
+          `could not comment on pull request ${pullRequest}: ${
+            result.stderr.trim() ||
+            result.stdout.trim() ||
+            `gh exited ${result.code}`
+          }`,
+        );
+      }
     },
 
     // Reviews, issue comments, inline review comments and their reactions,

@@ -3,12 +3,14 @@ import type { ArmConfig, HarnessConfig } from "../src/harness/config.js";
 import type {
   ArmGitHub,
   MergeOutcome,
+  PullRequestCheck,
   PullRequestRef,
   ReviewNote,
 } from "../src/harness/github.js";
 import { pullRequestUrl, slugFromRemote } from "../src/harness/github.js";
 import {
   blockArm,
+  GREPTILE_REVIEW_REQUEST,
   landingError,
   mergeArm,
   prepareArm,
@@ -70,6 +72,9 @@ function fakeGitHub(options: {
   // Successive branch heads, so a test can model an arm that pushes a fix
   // (the sha moves) or one that only argues (it does not).
   heads?: string[];
+  checks?: PullRequestCheck[];
+  checkError?: string;
+  commentError?: string;
 }): ArmGitHub & { calls: string[] } {
   const conversations = options.conversations ?? [[]];
   const heads = options.heads ?? [];
@@ -107,6 +112,15 @@ function fakeGitHub(options: {
       const current = conversations[Math.min(index, conversations.length - 1)]!;
       index += 1;
       return current;
+    },
+    async checkRuns() {
+      calls.push("checkRuns");
+      if (options.checkError) throw new Error(options.checkError);
+      return options.checks ?? [];
+    },
+    async postComment(_pullRequest, body) {
+      calls.push(`postComment:${body}`);
+      if (options.commentError) throw new Error(options.commentError);
     },
     async merge() {
       calls.push("merge");
@@ -1135,6 +1149,84 @@ describe("the rounds after the first", () => {
     expect(record.reviewRounds[2]?.found.map((entry) => entry.id)).toEqual(["c5"]);
     expect(record.reviewRounds.some((round) => round.timedOut)).toBe(false);
     expect(record.status).toBe("merged");
+  });
+});
+
+describe("requesting a missing Greptile review", () => {
+  const nudgeConfig: HarnessConfig = {
+    ...config,
+    reviewTimeoutMs: 10 * 60 * 1000,
+    reviewPollMs: 60 * 1000,
+    reviewDebounceMs: 0,
+    reviewRounds: 1,
+  };
+
+  const delayedReview = (): ReviewNote[][] => [
+    ...Array.from({ length: 6 }, () => [] as ReviewNote[]),
+    [note(REVIEWER, "late-review", "one delayed finding")],
+  ];
+
+  it("posts one review request after five minutes with no Greptile check", async () => {
+    const github = fakeGitHub({ conversations: delayedReview(), checks: [] });
+
+    const record = await reviewArm(
+      reviewed,
+      nudgeConfig,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(record.status).toBe("ready");
+    expect(github.calls.filter((call) => call === "checkRuns")).toHaveLength(1);
+    expect(
+      github.calls.filter(
+        (call) => call === `postComment:${GREPTILE_REVIEW_REQUEST}`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not post while the Greptile check is running", async () => {
+    const github = fakeGitHub({
+      conversations: delayedReview(),
+      checks: [{ name: "Greptile Review", status: "IN_PROGRESS" }],
+    });
+
+    await reviewArm(
+      reviewed,
+      nudgeConfig,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(github.calls.filter((call) => call === "checkRuns")).toHaveLength(1);
+    expect(github.calls.some((call) => call.startsWith("postComment:"))).toBe(
+      false,
+    );
+  });
+
+  it("does not post when the Greptile check ran during the five-minute window", async () => {
+    const github = fakeGitHub({
+      conversations: delayedReview(),
+      checks: [
+        {
+          name: "Greptile Review",
+          status: "COMPLETED",
+          completedAt: new Date(4 * 60 * 1000).toISOString(),
+        },
+      ],
+    });
+
+    await reviewArm(
+      reviewed,
+      nudgeConfig,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(github.calls.filter((call) => call === "checkRuns")).toHaveLength(1);
+    expect(github.calls.some((call) => call.startsWith("postComment:"))).toBe(
+      false,
+    );
   });
 });
 
