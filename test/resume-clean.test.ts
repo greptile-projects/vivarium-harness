@@ -57,6 +57,9 @@ if [ "$1" = "ls" ]; then
   exit 0
 fi
 if [ "$1" = "exec" ]; then
+  # Model an sbx client that inspects stdin. Cleanup must give it /dev/null,
+  # not the while-read stream containing the remaining sandbox names.
+  cat >/dev/null
   case "$*" in
     *"git rev-parse"*) echo main ;;
   esac

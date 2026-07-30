@@ -65,14 +65,18 @@ while IFS= read -r sandbox; do
   log "$arm: $sandbox"
   remote=(sbx exec -w /workspace \
     -e GH_TOKEN=proxy-managed -e GITHUB_TOKEN=proxy-managed "$sandbox")
-  if [[ "$arm" != greg ]] && "${remote[@]}" test -d /workspace/.git 2>/dev/null; then
-    branch="$("${remote[@]}" git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-    dirty="$("${remote[@]}" git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  # Every nested sbx command must be detached from this loop's stdin. The
+  # sandbox names themselves arrive there; a client that probes or forwards
+  # stdin can otherwise consume the next name and make --apply clean one arm
+  # per invocation.
+  if [[ "$arm" != greg ]] && "${remote[@]}" test -d /workspace/.git </dev/null 2>/dev/null; then
+    branch="$("${remote[@]}" git rev-parse --abbrev-ref HEAD </dev/null 2>/dev/null || echo unknown)"
+    dirty="$("${remote[@]}" git status --porcelain </dev/null 2>/dev/null | wc -l | tr -d ' ')"
     log "  branch: $branch; changed paths: $dirty"
     if [[ "$branch" != main && "$branch" != master && "$branch" != unknown ]]; then
       open_pr="$("${remote[@]}" gh pr list \
         --head "$branch" --state open --limit 1 --json number,title \
-        --jq '.[0] | select(.) | "#\(.number) \(.title)"' 2>/dev/null || true)"
+        --jq '.[0] | select(.) | "#\(.number) \(.title)"' </dev/null 2>/dev/null || true)"
       [[ -n "$open_pr" ]] && log "  open PR: $open_pr"
     fi
   elif [[ "$arm" != greg ]]; then
@@ -89,11 +93,11 @@ while IFS= read -r sandbox; do
     pr_number="${pr_number#\#}"
     "${remote[@]}" gh pr close "$pr_number" \
       --comment "Closed by resume-clean.sh: the ephemeral Vivarium run was interrupted and this subticket will restart from a fresh clone." \
-      >/dev/null 2>&1 || log "  could not close $open_pr; close it manually"
+      </dev/null >/dev/null 2>&1 || log "  could not close $open_pr; close it manually"
   fi
 
-  sbx secret rm "$sandbox" github --force >/dev/null 2>&1 || true
-  sbx rm --force "$sandbox" >/dev/null 2>&1 || true
+  sbx secret rm "$sandbox" github --force </dev/null >/dev/null 2>&1 || true
+  sbx rm --force "$sandbox" </dev/null >/dev/null 2>&1 || true
   scratch="/tmp/$sandbox-host"
   rm -rf "$scratch"
   log "  removed"
