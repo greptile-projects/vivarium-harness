@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start one fresh Vivarium arm microVM from .env, attach only controlled
-# read-only host inputs, install its proxy-managed GitHub identity, clone into
-# private VM storage, and start the headed browser service.
+# read-only host inputs, then hand all in-VM setup to the template's single
+# bootstrap entrypoint.
 set -euo pipefail
 
 arm="${1:?arm to start: komodo or tuatara}"
@@ -59,37 +59,49 @@ sbx create \
   codex "$scratch" "$ladder_mount:ro"
 
 # The proxy replaces this sentinel only on requests to GitHub. The arm never
-# receives the real token as an environment variable or file.
-remote=(sbx exec -e GH_TOKEN=proxy-managed -e GITHUB_TOKEN=proxy-managed "$sandbox")
-"${remote[@]}" sudo install -d -o agent -g agent /workspace
-"${remote[@]}" git clone --origin origin "$repo" /workspace
-"${remote[@]}" ln -s "$ladder_mount/LADDER.md" /workspace/LADDER.md
-
-identity="$("${remote[@]}" gh api user --jq '[.login, .id] | @tsv')"
-login="${identity%%$'\t'*}"
-user_id="${identity##*$'\t'}"
-"${remote[@]}" git -C /workspace config user.name "$login"
-"${remote[@]}" git -C /workspace config user.email \
-  "${user_id}+${login}@users.noreply.github.com"
-
-sbx exec -d -e DISPLAY=:99 "$sandbox" vivarium-gui &
-gui_exec_pid=$!
-for _ in $(seq 1 30); do
-  sbx exec "$sandbox" test -f /run/vivarium/ready && break
+# receives the real token as an environment variable, file, remote URL, or
+# argv. vivarium-init clones, configures identity, waits for private Docker,
+# and finally becomes the long-lived GUI supervisor.
+sbx exec -d \
+  -e GH_TOKEN=proxy-managed \
+  -e GITHUB_TOKEN=proxy-managed \
+  -e DISPLAY=:99 \
+  "$sandbox" vivarium-init "$repo" "$ladder_mount/LADDER.md" &
+init_client_pid=$!
+init_client_done=false
+init_client_rc=0
+ready=false
+for _ in $(seq 1 120); do
+  if curl -fsS --max-time 1 \
+    "http://127.0.0.1:$host_port/vnc.html" >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  if [[ "$init_client_done" == false ]] &&
+    ! kill -0 "$init_client_pid" 2>/dev/null; then
+    if wait "$init_client_pid"; then
+      init_client_rc=0
+    else
+      init_client_rc=$?
+    fi
+    init_client_done=true
+    if [[ "$init_client_rc" -ne 0 ]]; then
+      break
+    fi
+  fi
   sleep 1
 done
-sbx exec "$sandbox" test -f /run/vivarium/ready || {
-  kill -KILL "$gui_exec_pid" 2>/dev/null || true
-  wait "$gui_exec_pid" 2>/dev/null || true
+if [[ "$ready" != true ]]; then
+  kill -KILL "$init_client_pid" 2>/dev/null || true
+  wait "$init_client_pid" 2>/dev/null || true
   sbx exec "$sandbox" bash -lc 'tail -n 30 /var/log/vivarium/*.log' >&2 || true
   exit 1
-}
+fi
 # sbx 0.37.1 keeps its local client attached to a healthy detached exec.
 # The remote detached session survives the local client, and is what keeps the
 # sandbox running between harness commands.
-kill -KILL "$gui_exec_pid" 2>/dev/null || true
-wait "$gui_exec_pid" 2>/dev/null || true
-sbx exec "$sandbox" docker info >/dev/null
+kill -KILL "$init_client_pid" 2>/dev/null || true
+wait "$init_client_pid" 2>/dev/null || true
 
 echo "started $sandbox ($arm — private Docker, clone, and GUI ready)"
 echo "  screen: http://127.0.0.1:$host_port/vnc.html"

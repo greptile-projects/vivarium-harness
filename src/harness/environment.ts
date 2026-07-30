@@ -164,36 +164,33 @@ export async function provisionArmEnvironment(
     // ports through special aliases. Add explicit per-run denies before
     // either Codex session starts. A policy error is an isolation failure, not
     // a warning.
-    await Promise.all(
-      runtimes.map(async (runtime) => {
-        const peer = runtimes.find(
-          (candidate) => candidate.sandboxName !== runtime.sandboxName,
-        )!;
-        for (const target of [
-          peer.sandboxName,
-          "host.docker.internal",
-          "gateway.docker.internal",
-          "localhost",
-          "127.0.0.1",
-          "::1",
-        ]) {
-          const result = await exec("sbx", [
-            "policy",
-            "deny",
-            "network",
-            "--sandbox",
-            runtime.sandboxName,
-            target,
-          ]);
-          if (result.code !== 0) {
-            throw commandError(
-              `could not isolate ${runtime.sandboxName} from ${target}`,
-              result,
-            );
-          }
-        }
-      }),
-    );
+    for (const runtime of runtimes) {
+      const peer = runtimes.find(
+        (candidate) => candidate.sandboxName !== runtime.sandboxName,
+      )!;
+      const targets = [
+        peer.sandboxName,
+        "host.docker.internal",
+        "gateway.docker.internal",
+        "localhost",
+        "127.0.0.1",
+        "::1",
+      ];
+      const result = await exec("sbx", [
+        "policy",
+        "deny",
+        "network",
+        "--sandbox",
+        runtime.sandboxName,
+        targets.join(","),
+      ]);
+      if (result.code !== 0) {
+        throw commandError(
+          `could not isolate ${runtime.sandboxName} from ${targets.join(", ")}`,
+          result,
+        );
+      }
+    }
   } catch (error) {
     await cleanupRuntime(runtimes, ladderMount, exec).catch(() => {});
     throw error;

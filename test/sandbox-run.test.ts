@@ -72,15 +72,16 @@ printf '%s\\n' "$*" >> "$VIVARIUM_TEST_SBX_LOG"
 if [ "$1 $2" = "secret set" ]; then cat >/dev/null; exit 0; fi
 if [ "$1" = "exec" ]; then
   case "$*" in
-    *"gh api user"*) printf 'komodo-viv\\t1234\\n' ;;
-    *"vivarium-gui"*) exec sleep 30 ;;
+    *"vivarium-init"*) exec sleep 30 ;;
   esac
   exit 0
 fi
 exit 0
 `,
     );
+    await writeFile(join(bin, "curl"), "#!/bin/sh\nexit 0\n");
     await chmod(join(bin, "sbx"), 0o755);
+    await chmod(join(bin, "curl"), 0o755);
 
     const result = await run(
       resolve("scripts/sandbox-run.sh"),
@@ -115,8 +116,11 @@ exit 0
     expect(create).not.toContain("1x1x1");
     expect(commands).toContain("secret set runtime-komodo github");
     expect(commands).toContain(
-      "exec -e GH_TOKEN=proxy-managed -e GITHUB_TOKEN=proxy-managed runtime-komodo git clone --origin origin https://github.com/org/komodo.git /workspace",
+      `exec -d -e GH_TOKEN=proxy-managed -e GITHUB_TOKEN=proxy-managed -e DISPLAY=:99 runtime-komodo vivarium-init https://github.com/org/komodo.git ${ladderMount}/LADDER.md`,
     );
+    expect(
+      commands.split("\n").filter((line) => line.startsWith("exec ")),
+    ).toHaveLength(1);
     expect(commands).not.toContain("fake-token");
     expect(commands).not.toContain(".codex/auth.json");
     expect(commands).not.toContain("/results");

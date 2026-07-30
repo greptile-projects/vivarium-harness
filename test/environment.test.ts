@@ -99,11 +99,17 @@ describe("ephemeral arm environments", () => {
         call.command === "sbx" &&
         call.args.slice(0, 3).join(" ") === "policy deny network",
     );
-    expect(denies).toHaveLength(12);
-    expect(denies.some((call) => call.args.at(-1) === names[0])).toBe(true);
-    expect(denies.some((call) => call.args.at(-1) === names[1])).toBe(true);
+    expect(denies).toHaveLength(2);
+    expect(denies.some((call) => call.args.at(-1)?.includes(names[0]!))).toBe(
+      true,
+    );
+    expect(denies.some((call) => call.args.at(-1)?.includes(names[1]!))).toBe(
+      true,
+    );
     expect(
-      denies.filter((call) => call.args.at(-1) === "host.docker.internal"),
+      denies.filter((call) =>
+        call.args.at(-1)?.includes("host.docker.internal"),
+      ),
     ).toHaveLength(2);
 
     await environment.cleanup();

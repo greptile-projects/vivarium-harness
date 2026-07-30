@@ -170,9 +170,11 @@ execution.
 Each `runHarness` call owns two fresh Firecracker microVMs.
 `environment.ts` derives unique names from the configured `<ARM>_SANDBOX`
 prefixes, launches both with `--no-share-skills`, applies explicit network
-denies, and removes both in `finally`. `sandbox-run.sh` clones the arm's HTTPS
-remote into private `/workspace`, mounts only an empty host scratch directory
-plus `LADDER.md` read-only, and publishes noVNC on loopback ports 6080/6081.
+denies, and removes both in `finally`. `sandbox-run.sh` makes one remote
+`vivarium-init` call that clones the arm's HTTPS remote into private
+`/workspace`, configures its proxy-backed identity, waits for private Docker,
+and starts the GUI. It mounts only an empty host scratch directory plus
+`LADDER.md` read-only, and publishes noVNC on loopback ports 6080/6081.
 No checkout, browser profile, Docker cache, dependency directory, or Codex
 session survives the subticket. Retries and review rounds intentionally reuse
 the same VM, checkout, MCP client, and thread within that subticket.
