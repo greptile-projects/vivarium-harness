@@ -250,7 +250,7 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
   // The one-ticket escape hatch is gone: the ladder is the only run mode.
   // Refuse the old flag rather than silently climbing the ladder under a
   // caller who asked for something else.
-  if (args.includes("--ticket")) {
+  if (args.some((arg) => arg === "--ticket" || arg.startsWith("--ticket="))) {
     throw new Error(
       "--ticket has been removed; bun start always climbs the ladder",
     );
