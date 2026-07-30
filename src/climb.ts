@@ -99,9 +99,6 @@ export async function runGregLive(
   // belong, which is also what keeps a run that dies during setup from
   // leaving an empty directory behind.
   let armLog: ((arm: string) => string | undefined) | undefined;
-  // The subticket in flight, for the quit notice — the one directory a human
-  // who just stopped a run wants named.
-  let currentRunDirectory: string | undefined;
 
   const sinks = attachLive(model.live, {
     ...options,
@@ -161,7 +158,6 @@ export async function runGregLive(
       // coordinates; the feed follows them into the same directory rather than
       // into a parallel tree keyed by when the process happened to start.
       const directory = config.destination?.directory;
-      currentRunDirectory = directory;
       armLog = directory ? (arm) => armLogPath(directory, arm) : undefined;
       await refreshLadder();
       const building = model
@@ -197,7 +193,11 @@ export async function runGregLive(
         resultsDir: base.resultsDir,
         onExit: () =>
           onViewClosed(model, controller, {
-            runDirectory: currentRunDirectory,
+            // Ask the same live target that writes the feed, so the quit
+            // notice cannot drift from planning to a stale subticket path.
+            // Harness feeds retain the arm placeholder; Greg's target ignores
+            // it and returns the exact rung plan/progress.log path.
+            feedPath: armLog?.("<arm>"),
           }),
         onStopAfterRung: () => {
           if (stopAfterMilestone !== undefined || currentMilestone === undefined) {

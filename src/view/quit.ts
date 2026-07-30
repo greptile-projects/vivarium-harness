@@ -55,22 +55,24 @@ export function confirmQuitPrompt(
 // everything worth saying and a second message would only be noise.
 export function quitNotice(
   arms: ArmState[],
-  options: { runDirectory?: string },
+  options: { feedPath?: string },
 ): string | null {
   const running = stillRunning(arms);
   if (running.length === 0) return null;
 
   const { count, names } = describe(running);
-  // Name the directory of the subticket that was in flight when known: that
-  // is where the interrupted feed actually is, and it is the one thing a
-  // human wants to open next. Without one — stopped while planning, or before
-  // the first rung — the tree root is the honest answer.
-  const where = options.runDirectory ?? "results/rung-<NN>/run/<N.M>";
+  // Name the feed that was active when the view closed. The caller supplies
+  // the same target used by the writer, so planner output can be named exactly
+  // while a harness target keeps its per-arm placeholder. Before any phase
+  // begins, the generic run shape is the honest answer.
+  const path =
+    options.feedPath ??
+    "results/rung-<NN>/run/<N.M>/<arm>/progress.log";
   return [
     "",
     `quit · stopping ${count} (${names})`,
     "what they wrote before the stop is under",
-    `  ${where}/<arm>/progress.log`,
+    `  ${path}`,
     "",
   ].join("\n");
 }
@@ -82,10 +84,10 @@ export function quitNotice(
 export function onViewClosed(
   model: LiveModel,
   controller: AbortController,
-  options: { runDirectory?: string },
+  options: { feedPath?: string },
 ): void {
   const notice = quitNotice(model.live.snapshot(), {
-    runDirectory: options.runDirectory,
+    feedPath: options.feedPath,
   });
   if (!notice) return;
 

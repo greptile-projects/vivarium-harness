@@ -57,7 +57,7 @@ describe("quitNotice", () => {
   it("names what it is stopping and where its feed went", () => {
     const notice = quitNotice(
       [arm("tuatara", "working"), arm("komodo", "done")],
-      { runDirectory: "results/rung-02/run/2.3" },
+      { feedPath: "results/rung-02/run/2.3/<arm>/progress.log" },
     );
 
     expect(notice).toContain("stopping 1 session");
@@ -68,10 +68,18 @@ describe("quitNotice", () => {
     expect(notice).toContain("results/rung-02/run/2.3/<arm>/progress.log");
   });
 
-  // Stopped while planning, or before the first rung: there is no subticket
-  // directory to name, so the notice points at the shape rather than
-  // inventing a path that does not exist.
-  it("falls back to the tree shape when no subticket is in flight", () => {
+  it("names the planner feed without appending an arm path", () => {
+    const notice = quitNotice([arm("greg", "working")], {
+      feedPath: "results/rung-02/plan/progress.log",
+    });
+
+    expect(notice).toContain("results/rung-02/plan/progress.log");
+    expect(notice).not.toContain("<arm>");
+  });
+
+  // Before the first phase there is no active target, so the notice points at
+  // the generic run shape rather than inventing a path that does not exist.
+  it("falls back to the tree shape before any feed is active", () => {
     const notice = quitNotice([arm("greg", "working")], {});
 
     expect(notice).toContain("stopping 1 session");
@@ -140,7 +148,7 @@ describe("onViewClosed", () => {
 
     try {
       onViewClosed(modelMidRun(), controller, {
-        runDirectory: "results/rung-01/run/1.1",
+        feedPath: "results/rung-01/run/1.1/<arm>/progress.log",
       });
     } finally {
       write.mockRestore();
