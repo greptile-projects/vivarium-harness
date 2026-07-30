@@ -21,7 +21,7 @@ import {
 } from "../harness/state.js";
 import { planNextMilestone } from "./planner.js";
 
-// The one shared ladder, mounted into both arm containers (or symlinked into
+// The one shared ladder, mounted into both arm microVMs (or symlinked into
 // local checkouts on the host-only smoke path).
 export const LADDER_PATH = resolve("LADDER.md");
 
@@ -72,7 +72,7 @@ async function setupLadder(
 ): Promise<void> {
   await initLadder(ladderPath, NORTH_STAR);
   const repos = base.arms
-    .filter((arm) => arm.container === undefined)
+    .filter((arm) => arm.sandboxName === undefined)
     .map((arm) => arm.repo);
   for (const link of await ensureLadderLinks(ladderPath, repos)) {
     log(link.message);
@@ -239,7 +239,7 @@ export async function runGreg(
     await completeSubticket(ladderPath, pending.number);
     // The ladder gets the box and nothing else. The durable record of what the
     // rung landed is the run's own artifact directory (rung-NN/run/N.M), which
-    // the harness already wrote and which never crosses into a container or a
+    // the harness already wrote and which never crosses into a microVM or a
     // prompt — there is no separate bookkeeping write to fail.
     log(`  ${pending.number}: ${runOutcome(run)}`);
     milestonesTouched.add(pending.milestone);

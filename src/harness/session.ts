@@ -20,8 +20,8 @@ export type EventSink = (msg: CodexMsg, meta: CodexEventMeta) => void;
 export interface StreamParams {
   arm: string;
   prompt: string;
-  // The cwd Codex runs in — a host path locally, or the in-container workspace
-  // (e.g. /workspace) when exec wraps the launch in `docker exec`.
+  // The cwd Codex runs in — a host path locally, or the microVM workspace
+  // (e.g. /workspace) when exec wraps the launch in `sbx exec`.
   cwd: string;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   // Select Codex's fast service tier for a fresh thread. Continued turns keep
@@ -29,8 +29,8 @@ export interface StreamParams {
   fastMode?: boolean;
   codexHome?: string;
   // Command prefix that launches `codex mcp-server` somewhere other than the
-  // host — e.g. ["docker", "exec", "-i", "<container>"] for per-arm container
-  // isolation. Empty/undefined runs codex directly on the host.
+  // host — e.g. ["sbx", "exec", "-i", "<sandbox>"] for per-arm microVM
+  // isolation. Empty/undefined runs Codex directly on the host.
   exec?: string[];
   // Hard ceiling on a single arm's run (default 24h).
   timeoutMs?: number;
@@ -63,9 +63,9 @@ export interface ArmSession {
 // account connectors nor plugins:
 //
 //   apps    — the `codex_apps` connectors (Linear, GitHub, …) are **account**-
-//             scoped: they ride in on `$CODEX_HOME/auth.json` alone, not on
-//             anything in config.toml. arm-run.sh mounts the host's auth.json
-//             into every arm container, so without this an "isolated" arm can
+//             scoped: they ride in with the Codex OAuth identity, not on
+//             anything in config.toml. Docker Sandboxes injects that identity,
+//             so without this an isolated arm can
 //             still read the experiment's own Linear board and reach the
 //             account's GitHub — around its per-arm GH_TOKEN. Neither a bare
 //             CODEX_HOME nor a second auth file for the same account withholds
@@ -74,9 +74,8 @@ export interface ArmSession {
 //             github@openai-curated, the bundled sites/browser/computer-use
 //             set) would otherwise be an uncontrolled variable in the
 //             experiment, and would hand Greg tools the plan is supposed to be
-//             blind to. Containerized arms have no config.toml and so no
-//             plugins anyway; this closes the host-mode path and Greg's, which
-//             always runs on the host against the operator's real CODEX_HOME.
+//             blind to. `--no-share-skills` with this override closes both the
+//             microVM and host paths.
 //
 // `mcp_servers` from config.toml are deliberately **left alone** — they are
 // explicit deployment configuration, not ambient account state.
@@ -123,7 +122,7 @@ export function codexToolArguments(
 // of it meant one `env | grep REPO` told a host-mode arm it was one of two and
 // where the other one lived — and handed it the other arm's token, which
 // reaches the other arm's repository around its own token's scope. Container
-// mode never had the problem (`docker exec` forwards no host environment); this
+// mode never had the problem (`sbx exec` forwards no host environment); this
 // closes the host path, which `validateConfig` now also makes hard to enter by
 // accident.
 const ENV_ALLOWLIST = [
@@ -192,8 +191,8 @@ export async function createArmSession(
     command,
     args: [...prefixArgs, ...(exec.length > 0 ? ["codex"] : []), "mcp-server"],
     env: cleanEnv(params.codexHome),
-    // Only anchor the host spawn dir when running locally; under `docker exec`
-    // params.cwd is an in-container path that need not exist on the host.
+    // Only anchor the host spawn dir when running locally; under `sbx exec`
+    // params.cwd is a microVM path that need not exist on the host.
     cwd: exec.length > 0 ? undefined : params.cwd,
   });
   const client = new Client({

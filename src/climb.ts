@@ -52,7 +52,7 @@ export async function runGregLive(
   const model = new LiveModel("greg tile", "starting…");
 
   // Everything the experiment has landed before this process started. The
-  // ladder deliberately carries none of it (it crosses into both containers),
+  // ladder deliberately carries none of it (it crosses into both arm microVMs),
   // so the rung directories under results/ are the only place a climb's
   // history survives — and without this the arm tabs would open blank on every
   // restart of a run that is meant to span weeks.

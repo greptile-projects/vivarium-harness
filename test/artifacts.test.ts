@@ -246,7 +246,7 @@ describe("run artifacts", () => {
     await active.release();
   });
 
-  it("accepts a transcript copied out of an ephemeral container", async () => {
+  it("accepts a transcript copied out of an ephemeral microVM", async () => {
     const root = await mkdtemp(join(tmpdir(), "vivarium-artifacts-"));
     temporaryDirectories.push(root);
 
@@ -262,7 +262,7 @@ describe("run artifacts", () => {
         {
           name: "komodo",
           repo: "https://github.com/org/komodo.git",
-          container: "vivarium-komodo",
+          sandboxName: "vivarium-komodo",
         },
         { name: "tuatara", repo: "/tmp/tuatara" },
       ],

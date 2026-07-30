@@ -81,21 +81,32 @@ export interface HarnessRunResult {
   landings: LandingRecord[];
 }
 
-// Where and how this arm's Codex runs: in its container via `docker exec`, or
-// directly on the host against the checkout. Shared by the build attempts and
-// the review rounds so the two cannot drift apart.
+// Where and how this arm's Codex runs: in its Firecracker microVM via `sbx
+// exec`, or directly on the host against the checkout. Shared by the build
+// attempts and review rounds so the two cannot drift apart.
 export function armExecution(
   arm: ArmConfig,
   config: HarnessConfig,
 ): { workspace: string; exec?: string[]; sandbox: SandboxMode } {
-  const containerized = arm.container !== undefined;
-  // Not configurable: arm-run.sh always clones the arm's remote into
+  const isolated = arm.sandboxName !== undefined;
+  // Not configurable: sandbox-run.sh always clones the arm's remote into
   // /workspace, so a different cwd here would point outside the checkout.
-  const workspace = containerized ? "/workspace" : arm.repo;
+  const workspace = isolated ? "/workspace" : arm.repo;
   return {
     workspace,
-    exec: containerized
-      ? ["docker", "exec", "-i", "-w", workspace, arm.container as string]
+    exec: isolated
+      ? [
+          "sbx",
+          "exec",
+          "-i",
+          "-w",
+          workspace,
+          "-e",
+          "GH_TOKEN=proxy-managed",
+          "-e",
+          "GITHUB_TOKEN=proxy-managed",
+          arm.sandboxName as string,
+        ]
       : undefined,
     sandbox: arm.sandbox ?? config.sandbox,
   };
@@ -118,9 +129,8 @@ export async function runArm(
   let previousError = "The previous attempt did not complete.";
   let finalResult: ArmResult | undefined;
 
-  // In container mode the arm's codex runs via `docker exec` and sees its
-  // checkout at the in-container workspace path; otherwise it runs on the host
-  // against the checkout directly.
+  // In sandbox mode the arm's Codex runs via `sbx exec` and sees its checkout
+  // at the microVM path; otherwise it runs on the host directly.
   const { workspace, exec, sandbox } = armExecution(arm, config);
 
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
@@ -150,7 +160,7 @@ export async function runArm(
       ? { tool: "codex-reply", threadId, prompt: attemptPrompt }
       : {
           tool: "codex",
-          ...(arm.container ? { container: arm.container } : {}),
+          ...(arm.sandboxName ? { sandboxName: arm.sandboxName } : {}),
           ...codexToolArguments({
             prompt: attemptPrompt,
             cwd: workspace,

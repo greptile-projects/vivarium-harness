@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!scripts/
+!scripts/sandbox-setup.sh
+!scripts/sandbox-gui.sh
+!scripts/sandbox-browser.sh

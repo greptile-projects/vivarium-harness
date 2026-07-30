@@ -58,20 +58,20 @@ describe("parseArgs", () => {
     expect(config).not.toHaveProperty("containerImage");
   });
 
-  it("gives a containerized arm full access and a host arm a sandbox", () => {
-    const containerized = parseArgs([], {
+  it("gives a microVM arm full access and a host arm a sandbox", () => {
+    const isolated = parseArgs([], {
       ...env,
-      KOMODO_CONTAINER: "vivarium-komodo",
+      KOMODO_SANDBOX: "vivarium-komodo",
     });
-    // The container is the isolation boundary; inside it the arm needs the
+    // The microVM is the isolation boundary; inside it the arm needs the
     // network to push a branch and answer a review.
-    expect(containerized.arms[0].sandbox).toBe("danger-full-access");
-    expect(containerized.arms[1].sandbox).toBe("workspace-write");
+    expect(isolated.arms[0].sandbox).toBe("danger-full-access");
+    expect(isolated.arms[1].sandbox).toBe("workspace-write");
 
     // An explicit setting still wins for both arms.
     const explicit = parseArgs([], {
       ...env,
-      KOMODO_CONTAINER: "vivarium-komodo",
+      KOMODO_SANDBOX: "vivarium-komodo",
       CODEX_SANDBOX: "workspace-write",
     });
     expect(explicit.arms.map((arm) => arm.sandbox)).toEqual([
@@ -210,13 +210,13 @@ describe("worker fan-out", () => {
   });
 });
 
-// Isolation has to be all-or-nothing. Each arm derives `container` — and so its
-// sandbox — from its own `<ARM>_CONTAINER`, so one unset variable leaves that
-// arm running Codex on the host at workspace-write while the other runs in a
-// container at danger-full-access: different sandbox, different tool reach, and
+// Isolation has to be all-or-nothing. Each arm derives `sandboxName` — and so
+// its Codex permission mode — from `<ARM>_SANDBOX`, so one unset variable
+// leaves that arm on the host while the other runs in a microVM: different
+// sandbox, different tool reach, and
 // the host-mode arm can read the other arm's checkout and .env directly. The
 // manifest would record it as a perfectly normal run.
-describe("validateConfig containerization", () => {
+describe("validateConfig isolation", () => {
   const twoRepos = async () => {
     const root = await mkdtemp(join(tmpdir(), "vivarium-cfg-"));
     temporaryDirectories.push(root);
@@ -230,13 +230,13 @@ describe("validateConfig containerization", () => {
   const config = (
     komodo: string,
     tuatara: string,
-    containers: { komodo?: string; tuatara?: string },
+    sandboxes: { komodo?: string; tuatara?: string },
   ) =>
     ({
       ticket: "t",
       arms: [
-        { name: "komodo", repo: komodo, container: containers.komodo },
-        { name: "tuatara", repo: tuatara, container: containers.tuatara },
+        { name: "komodo", repo: komodo, sandboxName: sandboxes.komodo },
+        { name: "tuatara", repo: tuatara, sandboxName: sandboxes.tuatara },
       ],
       sandbox: "workspace-write",
       resultsDir: "results",
@@ -249,14 +249,14 @@ describe("validateConfig containerization", () => {
       reviewRounds: 1,
     }) as unknown as HarnessConfig;
 
-  it("rejects one arm containerized and the other on the host", async () => {
+  it("rejects one arm isolated and the other on the host", async () => {
     const { komodo, tuatara } = await twoRepos();
     await expect(
       validateConfig(config(komodo, tuatara, { komodo: "vivarium-komodo" })),
-    ).rejects.toThrow(/TUATARA_CONTAINER/);
+    ).rejects.toThrow(/TUATARA_SANDBOX/);
   });
 
-  it("accepts both containerized", async () => {
+  it("accepts both isolated", async () => {
     const resolved = await validateConfig(
       config(
         "https://github.com/example/vivarium-komodo.git",
@@ -267,14 +267,14 @@ describe("validateConfig containerization", () => {
         },
       ),
     );
-    expect(resolved.arms.every((arm) => arm.container)).toBe(true);
+    expect(resolved.arms.every((arm) => arm.sandboxName)).toBe(true);
     expect(resolved.arms.map((arm) => arm.repo)).toEqual([
       "https://github.com/example/vivarium-komodo.git",
       "https://github.com/example/vivarium-tuatara.git",
     ]);
   });
 
-  it("rejects local checkout paths in container mode", async () => {
+  it("rejects local checkout paths in sandbox mode", async () => {
     const { komodo, tuatara } = await twoRepos();
     await expect(
       validateConfig(
@@ -286,7 +286,7 @@ describe("validateConfig containerization", () => {
     ).rejects.toThrow(/HTTPS GitHub clone URL/);
   });
 
-  it("rejects the same container remote in both arms", async () => {
+  it("rejects the same sandbox remote in both arms", async () => {
     await expect(
       validateConfig(
         config(
@@ -301,7 +301,7 @@ describe("validateConfig containerization", () => {
     ).rejects.toThrow(/different GitHub repositories/);
   });
 
-  it("rejects credentials embedded in a container remote", async () => {
+  it("rejects credentials embedded in a sandbox remote", async () => {
     await expect(
       validateConfig(
         config(
@@ -316,7 +316,7 @@ describe("validateConfig containerization", () => {
     ).rejects.toThrow(/must not contain credentials/);
   });
 
-  it("rejects duplicate ephemeral container name prefixes", async () => {
+  it("rejects duplicate ephemeral sandbox name prefixes", async () => {
     await expect(
       validateConfig(
         config(
@@ -331,9 +331,9 @@ describe("validateConfig containerization", () => {
     ).rejects.toThrow(/different name prefixes/);
   });
 
-  it("accepts neither containerized — the no-isolation smoke path", async () => {
+  it("accepts neither isolated — the no-isolation smoke path", async () => {
     const { komodo, tuatara } = await twoRepos();
     const resolved = await validateConfig(config(komodo, tuatara, {}));
-    expect(resolved.arms.some((arm) => arm.container)).toBe(false);
+    expect(resolved.arms.some((arm) => arm.sandboxName)).toBe(false);
   });
 });

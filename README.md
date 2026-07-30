@@ -25,9 +25,9 @@ feedback.
 
 1. **greg tile plans** the next rung onto `LADDER.md` and splits it into
    PR-sized subtickets. In real runs each planning attempt gets a fresh
-   container containing only a writable scratch copy of the ladder.
+   Firecracker microVM containing only a writable scratch copy of the ladder.
 2. **both arms build** each subticket at once — one codex session each, in its
-   own docker container, driven over MCP. a failing arm gets 3 tries.
+   own Docker Sandbox microVM, driven over MCP. a failing arm gets 3 tries.
 3. **the work lands.** each arm opens a pull request. tuatara is sent back with
    the PR url and nothing else, to fetch greptile's review and answer every
    comment; then the harness merges. komodo merges straight away. that
@@ -42,30 +42,36 @@ recorded as what happened.
 
 ## setup
 
-needs [bun](https://bun.sh), docker, and an authenticated codex CLI
-(`~/.codex/auth.json`, mounted read-only into each container).
+needs [bun](https://bun.sh), Docker Engine (to build the reusable template),
+and [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`) with KVM
+access and Codex OAuth configured.
 
 ```bash
 bun install
 cp .env.example .env    # set two HTTPS remotes and the matching arm tokens
-docker build -t vivarium-arm .
+sbx login
+sbx secret set -g openai
+bun run sandbox-build
 ```
 
-`.env` is the one place deployment config lives — repository URLs, container
+`.env` is the one place deployment config lives — repository URLs, sandbox
 name prefixes, each arm's github token, and run-wide Codex settings such as
 `CODEX_FAST_MODE=true`. the image, services, screen, noVNC ports, and reviewer
 identity are fixed experiment constants. for every subticket the harness
-creates two fresh containers from that image,
-`arm-run.sh` clones one remote into each private `/workspace`, and the token
-stays in `GH_TOKEN`, never in the remote URL. after build, retries, review, and
-merge, transcripts are copied into the run artifacts and the containers,
-nested-docker volumes, browser profiles, and networks are destroyed.
+creates two fresh microVMs from that template. `sandbox-run.sh` clones one
+remote into each private `/workspace`; Docker's credential proxy supplies that
+arm's GitHub identity without putting the real token in the VM, remote URL, or
+argv. after build, retries, review, and merge, transcripts are copied into the
+run artifacts and the microVMs, Docker state, browser profiles, and private
+filesystems are destroyed.
 
-each fresh arm container brings its own **docker daemon** (nested, not the host's
-socket — that would let either arm reach the other's checkout and this file)
-and its own **screen**: an X display with chromium on it, so an arm can
+each fresh arm microVM brings its own **docker daemon** (inside the VM, never
+the host's socket) and its own **screen**: an X display with chromium on it, so an arm can
 actually look at the page it built. the harness reports a
-`http://127.0.0.1:6080/vnc.html` link per arm if you want to watch.
+`http://127.0.0.1:6080/vnc.html` or `:6081` link if you want to watch. Explicit
+network denies keep each arm from reaching its peer or host-published ports,
+and `--no-share-skills` prevents Docker Sandboxes' normal shared skills mount
+from becoming a cross-arm channel.
 
 ## run
 

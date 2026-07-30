@@ -42,34 +42,21 @@ function run(
 }
 
 describe("resume-clean.sh", () => {
-  it("removes every container without letting docker exec consume the list", async () => {
+  it("removes every sandbox without letting sbx exec consume the list", async () => {
     const root = await mkdtemp(join(tmpdir(), "vivarium-resume-clean-"));
     temporaryDirectories.push(root);
     const bin = join(root, "bin");
-    const log = join(root, "docker.log");
+    const log = join(root, "sbx.log");
     await mkdir(bin);
     await writeFile(
-      join(bin, "docker"),
+      join(bin, "sbx"),
       `#!/bin/sh
-printf '%s\\n' "$*" >> "$VIVARIUM_TEST_DOCKER_LOG"
-if [ "$1" = "ps" ]; then
-  printf '%s\\n' vivarium-test-komodo vivarium-test-tuatara
-  exit 0
-fi
-if [ "$1" = "inspect" ]; then
-  case "$3" in
-    *vivarium.arm*) case "$*" in *komodo) echo komodo ;; *) echo tuatara ;; esac ;;
-    *vivarium.run*) echo run-123 ;;
-    *State.Running*) echo true ;;
-  esac
+printf '%s\\n' "$*" >> "$VIVARIUM_TEST_SBX_LOG"
+if [ "$1" = "ls" ]; then
+  printf '%s\\n' vivarium-test-komodo-run123 vivarium-test-tuatara-run123
   exit 0
 fi
 if [ "$1" = "exec" ]; then
-  for argument in "$@"; do
-    if [ "$argument" = "-i" ]; then
-      cat >/dev/null
-    fi
-  done
   case "$*" in
     *"git rev-parse"*) echo main ;;
   esac
@@ -78,7 +65,7 @@ fi
 exit 0
 `,
     );
-    await chmod(join(bin, "docker"), 0o755);
+    await chmod(join(bin, "sbx"), 0o755);
 
     const result = await run(
       resolve("scripts/resume-clean.sh"),
@@ -86,17 +73,20 @@ exit 0
       {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
-        VIVARIUM_TEST_DOCKER_LOG: log,
+        VIVARIUM_TEST_SBX_LOG: log,
       },
     );
 
     expect(result.code).toBe(0);
     expect(result.stderr).toContain(
-      "removed 2 leftover ephemeral arm environment(s)",
+      "removed 2 leftover ephemeral environment(s)",
     );
     const commands = await readFile(log, "utf8");
-    expect(commands).toContain("rm -f -v vivarium-test-komodo");
-    expect(commands).toContain("rm -f -v vivarium-test-tuatara");
+    expect(commands).toContain(
+      "secret rm vivarium-test-komodo-run123 github --force",
+    );
+    expect(commands).toContain("rm --force vivarium-test-komodo-run123");
+    expect(commands).toContain("rm --force vivarium-test-tuatara-run123");
     expect(commands).not.toMatch(/^exec .* -i(?: |$)/m);
   });
 });

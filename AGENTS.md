@@ -14,13 +14,14 @@ and `komodo` are the identifiers everywhere — env vars (`TUATARA_*`,
 `KOMODO_*`), artifact directories, and the code — with no second vocabulary to
 translate through. There is no per-run input at all: the tickets come from the
 ladder, and which two checkouts run, and whether they're isolated in
-containers, is deployment configuration set once in `.env`, never per ticket.
+microVMs, is deployment configuration set once in `.env`, never per ticket.
 
 Each arm drives a real Codex session over MCP (`codex mcp-server`, stdio
-transport). For real runs each arm's Codex runs inside its own Docker container
-so it cannot see the other arm's checkout. Greg's fresh planning attempts run
-in ephemeral containers containing only a scratch ladder. The harness itself
-always runs on the host and orchestrates them.
+transport). For real runs each arm's Codex runs inside its own Docker Sandbox
+Firecracker microVM so it cannot see the other arm's checkout or host. Greg's
+fresh planning attempts run in separate ephemeral microVMs containing only a
+scratch ladder. The harness itself always runs on the host and orchestrates
+them.
 
 **Greg Tile** is the layer above, and what `bun start` runs: a stateless
 planner loop that supplies the tickets itself. Greg plans the next milestone
@@ -103,17 +104,17 @@ bun run build                  # emit dist/ via tsconfig.build.json
 ### Shell scripts
 
 ```bash
-docker build -t vivarium-arm .   # build the arm image once
+bun run sandbox-build            # build/import the Docker Sandbox template once
 scripts/mirror_sync.sh           # replay Komodo's main-states into the review mirror
 bun run mirror-snapshot          # file the mirror's reviews under results/mirror/
 scripts/resume-clean.sh          # report what an interrupted climb left behind
 scripts/resume-clean.sh --apply  # …and destroy those leftover environments
 ```
 
-`arm-run.sh` is the harness-internal per-arm container launcher (details below);
-`arm-init.sh`
-and `arm-browser.sh` run *inside* that container — the first is its entrypoint
-payload (dockerd + the GUI), the second is installed as `browser`.
+`sandbox-run.sh` is the harness-internal per-arm microVM launcher (details
+below); `sandbox-gui.sh` and `sandbox-browser.sh` run inside that VM, with the
+latter installed as `browser`. `sandbox-build.sh` builds the Dockerfile and
+imports its OCI archive into the sandbox runtime's separate template store.
 `mirror_sync.sh` is the review-mirror pipeline — it materializes each successive
 `vivarium-komodo` main-state as its own PR in a private mirror so Greptile reviews it
 before merge, strictly one open PR at a time. It normally runs from
@@ -140,125 +141,80 @@ in ESM TypeScript/TSX but imports use `.js` specifiers (NodeNext resolution),
 so keep writing `./foo.js` in imports even though the file is `foo.ts`. Bun
 auto-loads `.env`, which is how arm config reaches every command above.
 
-## Container setup (standard path for real runs)
+## Docker Sandbox setup (standard path for real runs)
 
-All arm configuration lives in `.env` (`<ARM>_REPO`, `<ARM>_CONTAINER`,
-`<ARM>_GH_TOKEN`). Both the
-harness and `scripts/arm-run.sh` read it — nothing is passed on the command line.
-Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives a containerized
-arm `danger-full-access` — it has to push, open a PR and answer a review, and
-the container is the boundary — and a host arm `workspace-write`),
-`CODEX_FAST_MODE` (default `false`; selects the same Codex fast service tier
-for Greg and both arms), `REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review
-phase, `CODEX_HOME`, and `IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0`
-disables). The image,
-nested Docker, GUI, screen geometry, noVNC ports, and reviewer identity are
-fixed experiment constants rather than deployment knobs. See `.env.example`
-for the annotated list.
+All arm configuration lives in `.env` (`<ARM>_REPO`, `<ARM>_SANDBOX`,
+`<ARM>_GH_TOKEN`). Both the harness and `scripts/sandbox-run.sh` read it.
+Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives an isolated arm
+`danger-full-access`, because the microVM is the boundary, and a host arm
+`workspace-write`), `CODEX_FAST_MODE`, review limits, `CODEX_HOME`, and the
+watchdog. The template, VM sizing, private Docker daemon, GUI, fixed noVNC
+ports, and reviewer identity are experiment constants. Legacy
+`*_CONTAINER` variables fail loudly rather than silently selecting host mode.
+
+The host needs `sbx`, KVM access, Docker login, and global OpenAI OAuth:
 
 ```bash
-docker build -t vivarium-arm .
-bun start                     # the harness creates the arm environments
+sbx login
+sbx secret set -g openai
+bun run sandbox-build
+bun start
 ```
 
-Each `runHarness` call is one subticket and owns two fresh environments.
-`environment.ts` derives unique runtime names from the configured
-`<ARM>_CONTAINER` prefixes, calls `arm-run.sh` for both arms, and destroys their
-containers, nested-Docker volumes, and networks in a `finally` block after
-landing. `arm-run.sh` sources `.env`, starts one detached container, clones that
-arm's HTTPS `<ARM>_REPO` URL into its private `/workspace`, mounts only
-`~/.codex/auth.json` and the ladder read-only, and passes `<ARM>_GH_TOKEN` as
-`GH_TOKEN`/`GITHUB_TOKEN`. The URL never contains credentials; the image's
-GitHub CLI credential helper reads the token from the container environment.
+`sandbox-build.sh` extends Docker's `codex-docker` template with the pinned Bun
+and Codex versions plus Chrome/Xvfb/noVNC. It builds through the host Docker
+daemon, saves the OCI image, and imports it into the sandbox runtime's separate
+template store as `vivarium-arm:latest`. The build daemon is never used for arm
+execution.
+
+Each `runHarness` call owns two fresh Firecracker microVMs.
+`environment.ts` derives unique names from the configured `<ARM>_SANDBOX`
+prefixes, launches both with `--no-share-skills`, applies explicit network
+denies, and removes both in `finally`. `sandbox-run.sh` clones the arm's HTTPS
+remote into private `/workspace`, mounts only an empty host scratch directory
+plus `LADDER.md` read-only, and publishes noVNC on loopback ports 6080/6081.
 No checkout, browser profile, Docker cache, dependency directory, or Codex
-session survives into the next subticket. The container remains alive only
-within one subticket so retries and review rounds keep the same checkout and
-Codex thread, as `retryPrompt` promises. Leaving both container prefixes unset
-runs both arms directly on the host with **no isolation** — only acceptable for
-a throwaway smoke test.
+session survives the subticket. Retries and review rounds intentionally reuse
+the same VM, checkout, MCP client, and thread within that subticket.
 
-When both arms are containerized, Greg also uses the fixed `vivarium-arm`
-image but gets a new `docker run --rm` container per planning
-attempt—not either arm's subticket container. It mounts only the temporary
-ladder workspace, Codex auth read-only, and a fresh empty session sink; the
-harness copies that attempt's transcript into the host Codex home only after
-the container exits. Nested Docker and the GUI are disabled. With both arm
-containers unset, Greg retains the host `workspace-write` smoke-test path.
+Docker Sandboxes normally exposes a shared host skills directory and permits
+named sandbox/host reachability even under Balanced network policy. Both are
+unavailable here: every create uses the currently hidden but supported
+`--no-share-skills`, and before Codex starts the harness denies the peer name,
+`host.docker.internal`, `gateway.docker.internal`, localhost and loopback for
+each VM. Policy failure aborts provisioning. The arm has its own Docker Engine
+inside the microVM; its privileged inner engine is separated from the host by
+Firecracker and never sees `/var/run/docker.sock`, host block devices, the peer
+VM, `.env`, or `results/`.
 
-It also starts the two services the arm's *own* work needs, both of which live
-in `scripts/arm-init.sh`, the image's entrypoint payload. Neither is per-arm
-configuration — they are fixed parts of the controlled environment, identical
-in both arms. Only Greg's internal planner launch disables them, because its
-scratch ladder needs neither:
+GitHub tokens are stored per runtime sandbox with `sbx secret set` through
+stdin. Commands receive only `GH_TOKEN=proxy-managed`; Docker's credential
+proxy substitutes the real token on matching GitHub requests, so the secret
+never enters VM memory, files, remote URLs, or argv. The launcher asks GitHub
+for that identity and configures commits as
+`<id>+<login>@users.noreply.github.com`. Codex OAuth is likewise injected by
+the sandbox runtime. Account connectors/plugins remain disabled in the MCP
+tool-call config, and `--no-share-skills` removes ambient plugin files.
 
-- **A Docker engine of the arm's own** (`dockerd`, nested), so `docker build`,
-  `docker run` and container-based tests work inside the arm. It is emphatically
-  **not** the host's `/var/run/docker.sock` bind-mounted in, which is the usual
-  shortcut and is unavailable here: that socket *is* the host daemon, so an arm
-  holding it needs one `docker run -v /:/host` to read the other arm's checkout,
-  `.env` with both arms' tokens, and every transcript under `results/` — the
-  isolation the experiment rests on, gone, with the manifest still recording a
-  normal run. It would also put both arms' containers in one namespace where
-  each can see the other exists. The price is `--privileged` and a few seconds
-  of startup. `/var/lib/docker` must be a volume — the container's rootfs is
-  overlayfs and overlay2 will not stack on it — so `environment.ts` names one
-  fresh volume per arm and subticket (`<runtime-container>-docker`) and removes
-  it at teardown. There is deliberately no warm image cache to leak work from
-  one subticket into the next.
-- **A screen with a browser on it.** Xvfb on `:99` (the image sets `DISPLAY`),
-  fluxbox to place and focus windows, chromium, and x11vnc + noVNC putting that
-  screen on a port. The arms build a web application, and until now anything
-  that had to be *looked at* could only be reasoned about and handed to CI.
-  `arm-run.sh` publishes noVNC on the fixed host ports
-  `127.0.0.1:6080/6081` (Komodo/Tuatara) —
-  loopback only, because x11vnc runs with no password and the port is a live
-  view of a root browser session. The host ports differ per arm because two
-  containers cannot share one; inside the container both are `:99` on 6080, so
-  nothing an arm can observe differs. `scripts/arm-browser.sh` is installed as
-  `browser`: it keeps **one** chromium on **one** profile for that subticket and prints
-  the DevTools endpoint (`http://127.0.0.1:9222`), which is the part a script
-  can act on — a bare `chromium <url>` returns nothing usable and a second
-  invocation on a different profile dir starts an unrelated second browser.
-  `prompts.ts` tells the arm all of this, and that text is the only way it finds
-  out: `docker` on PATH says nothing about whose daemon it is, and an X server
-  nobody mentions is one the arm never draws on.
+Xvfb runs on `:99`; fluxbox places windows; x11vnc and noVNC expose the screen.
+`browser <url>` keeps one Chrome profile per subticket and prints the DevTools
+endpoint on `127.0.0.1:9222`. `sandbox-run.sh` waits for both the GUI ready file
+and the sandbox's private Docker daemon before declaring an arm ready.
 
-`arm-run.sh` blocks until both services report ready (`/run/vivarium/ready`)
-before it prints success, and dumps `/var/log/vivarium/*.log` and exits 1 if
-they do not. A container that comes up degraded stays up rather than dying, so
-`--rm` does not delete the evidence — but the harness must never exec a
-subticket into it, because an arm discovers a missing engine halfway through,
-after the work is done.
+When both arms are isolated, Greg gets a new `vivarium-greg-*` microVM per
+planning attempt from the same template. Its only host workspace is the
+temporary directory containing a ladder copy; it gets no GitHub identity, arm
+checkout, GUI process, `.env`, or results. The harness copies its transcript
+out before removing the VM. With both sandbox prefixes unset, Greg and the arms
+retain the explicit host `workspace-write` smoke-test path with **no
+isolation**.
 
-Two more things it sets up, both of which the arm only discovers it needs
-halfway through a subticket, after the work is done:
-
-- **A git identity.** It asks GitHub who `<ARM>_GH_TOKEN` belongs to and commits
-  as that account (`<id>+<login>@users.noreply.github.com`), so every line on
-  main is attributed to the arm that wrote it rather than to nobody. With no
-  network it falls back to the arm's display name, which still tells
-  the two apart locally. The image carries a last-resort identity too, because
-  `git commit` will not guess one. It also sets `safe.directory` defensively and
-  a credential helper that resolves `GH_TOKEN` at clone/fetch/push time, so the
-  token never reaches a remote URL or argv.
-- **The ladder.** `arm-run.sh` gives the private clone a read-only view of the
-  real file: the launcher pre-creates it when necessary, bind-mounts it at
-  `/vivarium/LADDER.md`, and after cloning
-  the launcher symlinks it into `/workspace/LADDER.md`. Greg writes the ladder
-  in place rather than through a rename, so the mount keeps showing current
-  text instead of pinning the inode it started on.
-
-The container's `CODEX_HOME` is `/codex`, so Codex writes transcripts to
-`/codex/sessions` in the ephemeral writable layer. Nothing mounts that
-directory. `environment.ts` finds the current thread by id and uses `docker cp`
-to export it into the attempt artifact after the build and again after review;
-only then does teardown remove the container. Export is evidence collection,
-not arm execution: a failed find/copy is recorded as `copy-failed` (or
-`partial` when the earlier build-time copy survives) and never retries
-successful work or prevents a ready pull request from landing. Refreshes copy
-to a sibling staging file and atomically rename it into place only on success,
-so a partial `docker cp` cannot corrupt the earlier durable copy. Thus
-transcripts are outputs, not historical input visible to a later arm.
+Codex writes arm transcripts under `/home/agent/.codex/sessions` in the VM's
+private filesystem. `environment.ts` finds the requested thread and exports it
+with `sbx cp` after build and again after review. A failed export is recorded
+as `copy-failed` (or `partial`) and never retries successful work or blocks a
+ready pull request. Refreshes still stage and atomically rename on success, so
+an incomplete copy cannot corrupt earlier evidence.
 
 ## Architecture
 
@@ -282,21 +238,21 @@ own modules are siblings, so they refer to each other by bare `./name.js`; a
 cross-layer import is always visible as a `../harness/` in the specifier.
 
 - **`src/harness/config.ts`** — turns env into a validated `HarnessConfig`.
-  `parseArgs` reads env (repos, containers, sandbox, fast mode, timeout) and
+  `parseArgs` reads env (repos, microVM names, sandbox, fast mode, timeout) and
   leaves the ticket blank — the ladder loop fills it per subticket, and
   `runHarness` refuses to run on the placeholder;
-  for container deployments `validateConfig` requires two distinct plain HTTPS
+  for isolated deployments `validateConfig` requires two distinct plain HTTPS
   GitHub clone URLs, while the host smoke path canonicalizes local repo paths
-  with `realpath` and rejects two paths resolving to the same directory. An arm gains `container`
-  when its `*_CONTAINER` var is set; its value is a stable name prefix and that
-  flag is what flips host vs. container
+  with `realpath` and rejects two paths resolving to the same directory. An arm
+  gains `sandboxName` when its `*_SANDBOX` var is set; its value is a stable
+  name prefix and that flag flips host vs. microVM
   execution downstream — and `validateConfig` **rejects a mixed configuration**,
   because one unset variable would otherwise leave one arm on the host at
-  `workspace-write` while the other runs in a container at
+  `workspace-write` while the other runs in a microVM at
   `danger-full-access`: different sandbox, different tool reach, and the
   host-mode arm able to read the other arm's checkout and `.env` directly, all
-  recorded as a perfectly normal run. The in-container workspace is the fixed
-  `/workspace`, not config: `arm-run.sh` clones there, so a configurable cwd
+  recorded as a perfectly normal run. The in-VM workspace is the fixed
+  `/workspace`, not config: `sandbox-run.sh` clones there, so a configurable cwd
   could only ever name a path that isn't the checkout.
 
 - **`src/harness/prompts.ts`** — **every string a model ever sees**, and nothing else:
@@ -390,12 +346,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   unhooked from every ref), and
   `merge`. Comment list responses expose reaction counts, so identities are
   fetched only for comments with a nonzero count rather than making one extra
-  API call per historical comment on every poll. For containerized arms these
-  deterministic operations run through `docker exec` inside that arm's private
-  clone; host smoke tests run them directly in the local checkout. A
-  token, when present, reaches git through a one-shot credential helper so it
-  never lands in a remote URL. The whole interface is injected in tests — the
-  suite touches neither git nor `gh`.
+  API call per historical comment on every poll. For isolated arms these
+  deterministic operations run through `sbx exec` inside that arm's private
+  clone; host smoke tests run them directly. In the VM, Docker's proxy supplies
+  the per-arm GitHub identity from a sentinel; on the host, a token reaches git
+  through a one-shot credential helper. The whole interface is injected in
+  tests — the suite touches neither git nor `gh`.
 
 - **`src/harness/land.ts`** — what happens to an arm's work *after* its session says it
   is done, and the piece that makes this an experiment rather than two agents
@@ -535,14 +491,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   outside world in `HarnessDeps` (`runner`, `github`, `environment`, `wait`,
   `now`) — the
   landing phase is testable without git, `gh`, or a clock. `armExecution` is the
-  single place host-vs-container execution and the arm's sandbox are decided, so
+  single place host-vs-microVM execution and Codex's permission mode are decided, so
   the build attempts and the review rounds cannot drift apart. `runArm` owns the
   **retry loop**
   (`maxAttempts`, default 3): on failure it re-invokes with a `retryPrompt`,
   continuing the *same Codex thread* via `codex-reply` when a `threadId` exists,
   otherwise restarting fresh with the recovery context prepended to the original
-  task. In container mode it prepends `["docker","exec","-i","-w",workspace,
-  container]` as the exec prefix and points Codex's cwd at the in-container
+  task. In isolated mode it prepends `["sbx","exec","-i","-w",workspace,…,
+  sandboxName]` as the exec prefix and points Codex's cwd at the in-VM
   workspace. `runner` (the arm launcher) and the two event sinks are injected —
   tests pass a fake runner instead of spawning real Codex. An optional
   `AbortSignal` (from quitting the live view) is checked **between attempts** as well
@@ -553,11 +509,11 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   client's `close()` kills the codex subprocess instead of orphaning it.
 
 - **`src/harness/environment.ts`** — the amnesic machine boundary. For every
-  `runHarness` call it provisions a fresh runtime container, nested-Docker
-  volume, isolated network, clone, browser profile, and `/codex` writable layer
-  per arm. It returns a runtime config carrying the generated container names,
-  exports only the requested thread transcript with `docker cp`, and destroys
-  all runtime resources after landing or failure. Tests inject the entire
+  `runHarness` call it provisions a fresh runtime microVM, private Docker
+  storage, network policy, clone, browser profile, and Codex writable layer per
+  arm. It returns a runtime config carrying generated sandbox names, exports
+  only the requested thread transcript with `sbx cp`, and destroys all runtime
+  resources after landing or failure. Tests inject the entire
   interface, so lifecycle and teardown are covered without Docker. Teardown
   happens after the run has settled and is diagnostic-only: a failure writes
   `cleanup-error.txt` and `run.json`'s `cleanupError`, but cannot turn merged work
@@ -582,9 +538,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   matching `CODEX_FAST_MODE` value, and disables `features.apps` and
   `features.plugins` — no ambient service-tier choice or account tooling, in
   either arm or in Greg. `codex_apps` connectors (Linear, GitHub) are
-  *account*-scoped and arrive via `$CODEX_HOME/auth.json` alone, which
-  `arm-run.sh` mounts into every container, so an arm would otherwise read the
-  experiment's own Linear board and reach the account's GitHub from inside its
+  *account*-scoped and arrive with the sandbox-injected OAuth identity, so an
+  arm would otherwise read the experiment's own Linear board and reach the
+  account's GitHub from inside its
   "isolated" checkout, around its per-arm `GH_TOKEN`; neither a bare
   `CODEX_HOME` nor a second auth file for the same account withholds them.
   Plugins are whatever the operator has installed (greptile,
@@ -600,8 +556,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   `--disable apps` and `-c features.apps=false` on the argv are silently
   ignored (they work for `codex exec` — that is the trap). When an `exec`
   prefix is present it spawns
-  `docker exec … codex mcp-server` and does **not** anchor the host spawn cwd
-  (the cwd is an in-container path).
+  `sbx exec … codex mcp-server` and does **not** anchor the host spawn cwd
+  (the cwd is an in-VM path).
 
 - **`src/harness/artifacts.ts`** — `RunArtifacts` owns the on-disk record of
   one run. The climb hands it a **destination** — `config.destination`, filled
@@ -619,8 +575,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   per-attempt files); there is no separate manifest, baselines or landing file
   to drift from it. `run.json` writes are **serialized through a promise
   chain** (`recordWrite`) that swallows its own errors so one failed write
-  can't poison later ones. In container mode the environment exporter copies
-  the matching `threadId` out of the ephemeral `/codex/sessions`; host smoke
+  can't poison later ones. In isolated mode the environment exporter copies
+  the matching `threadId` out of ephemeral `/home/agent/.codex/sessions`; host smoke
   mode still searches `config.codexHome`. `transcriptStatus` records copied /
   partial / not-found / copy-failed / no-thread-id; `transcriptError` preserves
   the exporter failure without changing the arm's result.
@@ -796,8 +752,8 @@ cross-layer import is always visible as a `../harness/` in the specifier.
 - **`src/greg-tile/`** — the planner loop that sits *above* the harness.
   `ladder.ts` owns `LADDER.md`: parsing `### [ ] 1.2 Title — ENG-12` checkbox
   headings into subtickets, flipping a box to `[x]` — **and writing nothing
-  else**, which is load-bearing. The ladder is bind-mounted read-only into both
-  arms' containers *and* is Greg's entire prompt, so it is the one file that
+  else**, which is load-bearing. The ladder is mounted read-only into both
+  arms' microVMs *and* is Greg's entire prompt, so it is the one file that
   crosses every isolation boundary in the experiment. It used to also record
   each run: its id, its artifact dir, and both merged pull request URLs. Those
   URLs name both repositories and a failure line named the arms, so any arm that
@@ -806,14 +762,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   documented as blind to. The box is all the loop needs to resume and all Greg
   needs to plan forward; what a run actually landed goes to `src/harness/state.ts`.
   `ladder.ts` also handles symlinking the ladder into local checkouts on the
-  host-only smoke path (the local stand-in for the container bind mount).
+  host-only smoke path (the local stand-in for the sandbox mount).
   `planner.ts` runs the stateless planner session — a fresh one, never a
   continued thread, with `PLANNER_ATTEMPTS` retries for transient session
   failures — and checks that Greg actually appended the milestone it asked for.
   The prompt text itself lives in `src/harness/prompts.ts`. The ladder is the *only*
   context Greg gets, and that is **enforced, not just asserted**: real runs
   mount a scratch directory holding only a ladder copy into a fresh ephemeral
-  container, then copy his edit back. Host-mode smoke tests use the same scratch
+  microVM, then copy his edit back. Host-mode smoke tests use the same scratch
   directory without Docker. He used to run with
   cwd = the harness repo root, because that is where `LADDER.md` lives — and
   Codex loads `AGENTS.md` from its working directory as instructions, so *this
@@ -858,8 +814,8 @@ one PR-sized step, which is what makes that affordable.
 
 Normal failures are already clean: `runHarness` destroys both ephemeral
 environments in `finally`, and the retry starts both arms from new clones. A
-host crash can strand containers after the harness process is gone; they are
-labelled `vivarium.ephemeral=true` so recovery can find exactly those resources:
+host crash can strand named sandboxes after the harness process is gone;
+recovery matches the configured arm prefixes plus `vivarium-greg-*`:
 
 ```bash
 scripts/resume-clean.sh                     # report only; changes nothing
@@ -867,10 +823,10 @@ scripts/resume-clean.sh --apply             # close visible PRs and destroy them
 ```
 
 The report names each leftover arm, branch, dirty-path count, and discoverable
-open PR. `--apply` closes that PR when the container is still inspectable, then
-removes the container, its nested-Docker volume, and its network. It never
+open PR. `--apply` closes that PR when the sandbox is still inspectable, then
+removes the microVM and its private state. It never
 touches either remote default branch. Do not run `--apply` while a climb is
-active: labelled containers are precisely the active run's environments too.
+active: prefix-matched sandboxes are precisely the active run's environments too.
 On a clean shutdown the command is a no-op.
 
 ## Artifact layout
@@ -911,7 +867,7 @@ not an analysis one: for a run that finished cleanly, that arm's
 `transcript.jsonl` is a strict superset. What they uniquely hold is resolution
 *inside* an attempt (the record has only a start and an end snapshot), the
 landing phase (which emits no `codex/event` at all), and whatever a process
-killed mid-attempt never got to copy out of the container. Analysis reads
+killed mid-attempt never got to copy out of the microVM. Analysis reads
 `run.json`.
 
 The landing inside `run.json` is the close-reading input the experiment is
@@ -928,8 +884,8 @@ outcome), symlinked into both checkouts so the builders can see it.
 ## Testing notes
 
 Tests inject a fake `AttemptRunner` into `runArm`/`runHarness` — no real Codex
-process or container is spawned, so the suite runs offline. The one subprocess
-integration suite, `test/mirror-sync.test.ts`, runs the real `mirror_sync.sh`
+process or microVM is spawned, so the suite runs offline. Script tests use
+stubs; `test/mirror-sync.test.ts` runs the real `mirror_sync.sh`
 and local Git against throwaway bare repos, with `gh` stubbed; it still needs no
 network. When changing the retry/threading logic in `harness.ts` or the artifact
 schema in `artifacts.ts`, update `test/harness.test.ts` /

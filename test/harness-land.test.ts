@@ -308,13 +308,13 @@ describe("runHarness landing", () => {
 });
 
 describe("runHarness environment lifecycle", () => {
-  it("uses runtime container names and destroys the environment after landing", async () => {
+  it("uses runtime sandbox names and destroys the environment after landing", async () => {
     const config = await makeConfig();
     const runtime: HarnessConfig = {
       ...config,
       arms: config.arms.map((arm) => ({
         ...arm,
-        container: `runtime-${arm.name}`,
+        sandboxName: `runtime-${arm.name}`,
       })) as [ArmConfig, ArmConfig],
     };
     const state = { synced: [] as string[], merged: [] as string[] };
@@ -343,19 +343,27 @@ describe("runHarness environment lifecycle", () => {
     });
 
     expect(execPrefixes).toContainEqual([
-      "docker",
+      "sbx",
       "exec",
       "-i",
       "-w",
       "/workspace",
+      "-e",
+      "GH_TOKEN=proxy-managed",
+      "-e",
+      "GITHUB_TOKEN=proxy-managed",
       "runtime-komodo",
     ]);
     expect(execPrefixes).toContainEqual([
-      "docker",
+      "sbx",
       "exec",
       "-i",
       "-w",
       "/workspace",
+      "-e",
+      "GH_TOKEN=proxy-managed",
+      "-e",
+      "GITHUB_TOKEN=proxy-managed",
       "runtime-tuatara",
     ]);
     expect(cleaned).toBe(1);

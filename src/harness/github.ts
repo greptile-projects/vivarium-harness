@@ -6,7 +6,7 @@ import type { ArmConfig } from "./config.js";
 // request the arm opened, reading the review conversation, and merging it.
 //
 // The arm's own Codex session pushes and opens the PR itself (with `gh`, inside
-// its container, under its own token). This module is the orchestrator's half:
+// its microVM, under its own identity). This module is the orchestrator's half:
 // mechanical, deterministic, identical for both arms except for the one thing
 // the experiment varies — whether an arm has a reviewer to answer to.
 
@@ -140,7 +140,7 @@ export interface ArmGitHub {
   // archive each review round's fix (reviewedSha → respondedSha) while the
   // commits are still cheap to reach: after squash-merge and branch deletion
   // they are only reachable on GitHub for a while, and the arm's checkout —
-  // which made them — is destroyed with the subticket's container. Throws when
+  // which made them — is destroyed with the subticket's microVM. Throws when
   // git cannot produce it; the caller records the gap rather than guessing.
   diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
@@ -268,11 +268,11 @@ interface GhStatusCheck {
 }
 
 export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
-  // Containerized checkouts live only inside their arm. Run the harness's
-  // deterministic git/GitHub operations through docker exec as well as Codex,
+  // Isolated checkouts live only inside their arm microVM. Run the harness's
+  // deterministic git/GitHub operations through `sbx exec` as well as Codex,
   // so moving the clone off the host does not move landing responsibility into
-  // the model. The container already owns GH_TOKEN; do not repeat it in
-  // docker-exec argv via `-e`.
+  // the model. Docker's credential proxy replaces the sentinel value only on
+  // GitHub requests; neither the VM nor argv receives the real token.
   const hostEnv = arm.ghToken
     ? {
         GH_TOKEN: arm.ghToken,
@@ -281,21 +281,24 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       }
     : undefined;
   const run = (command: string, args: string[]) =>
-    arm.container
-      ? exec("docker", [
+    arm.sandboxName
+      ? exec("sbx", [
           "exec",
-          "-i",
           "-w",
           "/workspace",
-          arm.container,
+          "-e",
+          "GH_TOKEN=proxy-managed",
+          "-e",
+          "GITHUB_TOKEN=proxy-managed",
+          arm.sandboxName,
           command,
           ...args,
         ])
       : exec(command, args, { cwd: arm.repo, env: hostEnv });
   const git = (args: string[]) => run("git", args);
   const gh = (args: string[]) => run("gh", args);
-  const checkoutLocation = arm.container
-    ? `${arm.container}:/workspace`
+  const checkoutLocation = arm.sandboxName
+    ? `${arm.sandboxName}:/workspace`
     : arm.repo;
 
   const remote = async (): Promise<string | undefined> => {
@@ -335,14 +338,14 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     //
     // Two things must survive it, and neither is the arm's work to throw away:
     // `node_modules` (reinstalling per subticket, for days) and `LADDER.md`
-    // (a symlink on the host, a bind mount in the container — deleting it
+    // (a symlink on the host, a read-only mount in the microVM — deleting it
     // blinds the arm to the ladder). The `-x` on the clean below is deliberate;
     // see its comment.
     async syncToBaseline() {
       const url = await remote();
       const slug = url ? slugFromRemote(url) : undefined;
       const branch = await defaultBranch();
-      const credentials = credentialArgs(arm.ghToken);
+      const credentials = arm.sandboxName ? [] : credentialArgs(arm.ghToken);
 
       const fetched = await git([
         ...credentials,
@@ -476,7 +479,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
 
       if (!branch) return undefined;
       const remoteRef = await git([
-        ...credentialArgs(arm.ghToken),
+        ...(arm.sandboxName ? [] : credentialArgs(arm.ghToken)),
         "ls-remote",
         "origin",
         `refs/heads/${branch}`,
