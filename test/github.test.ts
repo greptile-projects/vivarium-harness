@@ -9,6 +9,10 @@ import {
 } from "../src/harness/github.js";
 import type { ArmConfig } from "../src/harness/config.js";
 import type { CommandResult, CommandRunner } from "../src/harness/github.js";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const TOKEN = "ghp_thisisthesecretvalue";
 
@@ -163,6 +167,29 @@ describe("credential handling", () => {
     expect(calls[0]?.args.at(-1)).toBe("vivarium-sync");
     expect(JSON.stringify(calls)).not.toContain(TOKEN);
   });
+
+  test("isolated baseline sync tolerates output before its final JSON line", async () => {
+    const { exec } = recorder({
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara vivarium-sync": ok(
+        'Removing generated.tmp\n{"remote":"https://github.com/org/repo.git","branch":"main","sha":"abc123"}\n',
+      ),
+    });
+
+    const github = armGitHub(
+      arm({
+        repo: "https://github.com/org/repo.git",
+        sandboxName: "vivarium-tuatara",
+        ghToken: TOKEN,
+      }),
+      exec,
+    );
+
+    expect(await github.syncToBaseline()).toEqual({
+      slug: "org/repo",
+      branch: "main",
+      sha: "abc123",
+    });
+  });
 });
 
 describe("syncToBaseline", () => {
@@ -250,6 +277,110 @@ describe("syncToBaseline", () => {
 });
 
 describe("conversation", () => {
+  test("reads an isolated conversation with reactions in one sbx crossing", async () => {
+    const bundle = {
+      reviews: [
+        {
+          id: 1,
+          author: { login: "greptile-apps" },
+          body: "review body",
+          submittedAt: "2026-07-25T01:00:00Z",
+          state: "COMMENTED",
+        },
+      ],
+      issueComments: [
+        {
+          id: 2,
+          user: { login: "vivarium-tuatara-bot" },
+          body: "fixed",
+          created_at: "2026-07-25T02:00:00Z",
+          html_url: "https://github.com/org/repo/pull/7#issuecomment-2",
+          reactions: { total_count: 1 },
+        },
+      ],
+      inlineComments: [
+        {
+          id: 3,
+          user: { login: "greptile-apps[bot]" },
+          body: "inline finding",
+          created_at: "2026-07-25T03:00:00Z",
+          path: "src/github.ts",
+          line: 7,
+        },
+      ],
+      reactions: [
+        {
+          parentKind: "issue-comment",
+          parentId: 2,
+          reaction: {
+            id: 90,
+            user: { login: "greptile-apps[bot]" },
+            content: "+1",
+            created_at: "2026-07-25T02:01:00Z",
+          },
+        },
+      ],
+    };
+    const { calls, exec } = recorder({
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash": ok(
+        `${JSON.stringify(bundle)}\n`,
+      ),
+    });
+    const github = armGitHub(
+      arm({
+        repo: "https://github.com/org/repo.git",
+        sandboxName: "vivarium-tuatara",
+        ghToken: TOKEN,
+      }),
+      exec,
+    );
+
+    const notes = await github.conversation(7);
+
+    expect(notes.map((entry) => [entry.kind, entry.body])).toEqual([
+      ["review", "review body"],
+      ["issue-comment", "fixed"],
+      ["reaction", "+1"],
+      ["review-comment", "inline finding"],
+    ]);
+    expect(notes[2]).toMatchObject({
+      author: "greptile-apps[bot]",
+      inReplyTo: "issue-comment:2",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toContain("bash");
+    expect(calls[0]?.args).toContain("org/repo");
+    expect(calls[0]?.args.at(-1)).toBe("7");
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+
+    const scriptIndex = calls[0]?.args.indexOf("-ceu") ?? -1;
+    const script = calls[0]?.args[scriptIndex + 1] ?? "";
+    const syntax = spawnSync("bash", ["-n", "-c", script]);
+    expect(syntax.status).toBe(0);
+  });
+
+  test("an isolated conversation command failure remains a failed poll", async () => {
+    const { exec } = recorder({
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash": {
+        code: 1,
+        stdout: "",
+        stderr: "GitHub API unavailable",
+      },
+    });
+    const github = armGitHub(
+      arm({
+        repo: "https://github.com/org/repo.git",
+        sandboxName: "vivarium-tuatara",
+        ghToken: TOKEN,
+      }),
+      exec,
+    );
+
+    await expect(github.conversation(7)).rejects.toThrow(
+      /GitHub API unavailable/,
+    );
+  });
+
   // `gh api --paginate` merges array responses into a single JSON array, so a
   // review long enough to paginate still parses as one document. This pins
   // that expectation: the inline comments must survive.
@@ -704,5 +835,311 @@ describe("pure helpers", () => {
     expect(sameLogin("greptile-apps", "other-bot")).toBe(false);
     // Only a trailing suffix is a bot marker.
     expect(sameLogin("a[bot]b", "ab")).toBe(false);
+  });
+});
+
+// The two bundled reads: each is one sbx crossing carrying every part of a
+// landing step that used to be its own crossing. The parts fail independently,
+// so the assertions here are about which gaps survive parsing, not prose.
+describe("the bundled landing reads", () => {
+  const isolated = () =>
+    arm({
+      repo: "https://github.com/org/repo.git",
+      sandboxName: "vivarium-tuatara",
+      ghToken: TOKEN,
+    });
+  const bashReply = (payload: unknown) => ({
+    "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash":
+      ok(`${JSON.stringify(payload)}\n`),
+  });
+  const scriptOf = (call: { args: string[] } | undefined) => {
+    const scriptIndex = call?.args.indexOf("-c") ?? -1;
+    return call?.args[scriptIndex + 1] ?? "";
+  };
+
+  test("host mode does not define the bundled reads", () => {
+    const github = armGitHub(arm(), recorder().exec);
+    expect(github.afterAnswer).toBeUndefined();
+    expect(github.finalizeMerge).toBeUndefined();
+  });
+
+  test("afterAnswer reads head, diff and conversation in one crossing", async () => {
+    const { calls, exec } = recorder(
+      bashReply({
+        sha: "abc1234def5678",
+        diff: "diff --git a/fix.ts b/fix.ts\n",
+        diffError: null,
+        conversation: {
+          reviews: [],
+          issueComments: [],
+          inlineComments: [
+            {
+              id: 3,
+              user: { login: "greptile-apps[bot]" },
+              body: "inline finding",
+              created_at: "2026-07-25T03:00:00Z",
+            },
+          ],
+          reactions: [],
+        },
+        conversationError: null,
+      }),
+    );
+    const github = armGitHub(isolated(), exec);
+
+    const trace = await github.afterAnswer!(7, "subticket-1-1", "beef1234", true);
+
+    expect(trace.sha).toBe("abc1234def5678");
+    expect(trace.diff).toContain("diff --git");
+    expect(trace.diffError).toBeUndefined();
+    expect(trace.conversation?.map((entry) => entry.body)).toEqual([
+      "inline finding",
+    ]);
+    expect(trace.conversationError).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    // The script receives the pull request, branch, reviewed sha and the
+    // want-trace flag as plain arguments.
+    expect(calls[0]?.args.slice(-4)).toEqual([
+      "7",
+      "subticket-1-1",
+      "beef1234",
+      "1",
+    ]);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+
+    const syntax = spawnSync("bash", ["-n", "-c", scriptOf(calls[0])]);
+    expect(syntax.status).toBe(0);
+  });
+
+  test("afterAnswer keeps each part's gap independent", async () => {
+    const { exec } = recorder(
+      bashReply({
+        sha: "not-a-sha",
+        diff: null,
+        diffError: "git diff failed",
+        conversation: null,
+        conversationError: "rate limited",
+      }),
+    );
+    const github = armGitHub(isolated(), exec);
+
+    const trace = await github.afterAnswer!(7, "subticket-1-1", "beef1234", true);
+
+    expect(trace.sha).toBeUndefined();
+    expect(trace.diff).toBeUndefined();
+    expect(trace.diffError).toBe("git diff failed");
+    expect(trace.conversation).toBeUndefined();
+    expect(trace.conversationError).toBe("rate limited");
+  });
+
+  test("a failed bundle read throws so the caller can fall back", async () => {
+    const { exec } = recorder({
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash":
+        { code: 1, stdout: "", stderr: "control plane down" },
+    });
+    const github = armGitHub(isolated(), exec);
+
+    await expect(
+      github.afterAnswer!(7, "subticket-1-1", "beef1234", false),
+    ).rejects.toThrow(/control plane down/);
+    await expect(github.finalizeMerge!(7)).rejects.toThrow(
+      /control plane down/,
+    );
+  });
+
+  test("finalizeMerge decides merged from the re-read state, not the exit code", async () => {
+    const { calls, exec } = recorder(
+      bashReply({
+        merge: { code: 1, stdout: "", stderr: "already merged" },
+        view: {
+          state: "MERGED",
+          mergedAt: "2026-07-30T14:46:02Z",
+          mergeCommit: { oid: "deadbeef" },
+        },
+        conversation: {
+          reviews: [],
+          issueComments: [
+            {
+              id: 2,
+              user: { login: "greptile-apps[bot]" },
+              body: "summary",
+              created_at: "2026-07-25T02:00:00Z",
+            },
+          ],
+          inlineComments: [],
+          reactions: [],
+        },
+        conversationError: null,
+        refreshed: {
+          number: 7,
+          url: "https://github.com/org/repo/pull/7",
+          title: "1.1 Do the thing",
+          headRefName: "subticket-1-1",
+          state: "MERGED",
+          additions: 10,
+          deletions: 2,
+          changedFiles: 3,
+        },
+      }),
+    );
+    const github = armGitHub(isolated(), exec);
+
+    const result = await github.finalizeMerge!(7);
+
+    expect(result.merge.merged).toBe(true);
+    expect(result.merge.mergedAt).toBe("2026-07-30T14:46:02Z");
+    expect(result.merge.commit).toBe("deadbeef");
+    expect(result.conversation?.map((entry) => entry.body)).toEqual([
+      "summary",
+    ]);
+    expect(result.refreshed?.changedFiles).toBe(3);
+    expect(calls).toHaveLength(1);
+    // The churn refresh reads the same fields as findPullRequest.
+    expect(calls[0]?.args.at(-1)).toContain("changedFiles");
+
+    const syntax = spawnSync("bash", ["-n", "-c", scriptOf(calls[0])]);
+    expect(syntax.status).toBe(0);
+  });
+
+  test("finalizeMerge without a state re-read falls back to the exit code", async () => {
+    const { exec } = recorder(
+      bashReply({
+        merge: { code: 0, stdout: "", stderr: "" },
+        view: null,
+        conversation: null,
+        conversationError: "boom",
+        refreshed: null,
+      }),
+    );
+    const github = armGitHub(isolated(), exec);
+
+    const result = await github.finalizeMerge!(7);
+
+    expect(result.merge.merged).toBe(true);
+    // Missing, not absent: the record must say the state could not be re-read.
+    expect(result.merge.error).toMatch(/could not be re-read/);
+    expect(result.conversation).toBeUndefined();
+    expect(result.conversationError).toBe("boom");
+    expect(result.refreshed).toBeUndefined();
+  });
+});
+
+// Execute the bundled scripts for real — bash, jq and all — against stubbed
+// `gh`/`git` binaries, the way the mirror-sync suite runs its script. `bash
+// -n` above proves the syntax; this proves the jq assembly and the argument
+// plumbing produce the JSON contract the TypeScript side parses.
+describe("the bundled scripts, executed", () => {
+  const captureScript = async (
+    invoke: (github: ReturnType<typeof armGitHub>) => Promise<unknown>,
+  ): Promise<string[]> => {
+    const { calls, exec } = recorder({
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash":
+        ok(
+          '{"sha":null,"diff":null,"diffError":null,"conversation":null,"conversationError":null,"merge":{"code":0,"stdout":"","stderr":""},"view":null,"refreshed":null}\n',
+        ),
+    });
+    const github = armGitHub(
+      arm({
+        repo: "https://github.com/org/repo.git",
+        sandboxName: "vivarium-tuatara",
+        ghToken: TOKEN,
+      }),
+      exec,
+    );
+    await invoke(github);
+    const args = calls[0]?.args ?? [];
+    const scriptIndex = args.indexOf("-c");
+    // The script plus everything after it: [script, $0, $1, …].
+    return args.slice(scriptIndex + 1);
+  };
+
+  const stubDir = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "vivarium-gh-stub-"));
+    writeFileSync(
+      join(dir, "gh"),
+      `#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  "pr view 7 --json headRefOid") printf '{"headRefOid":"%s"}\\n' "$GH_STUB_SHA" ;;
+  "pr view 7 --json reviews") echo '{"reviews":[]}' ;;
+  "pr merge 7 --merge --delete-branch") exit 0 ;;
+  "pr view 7 --json state,mergedAt,mergeCommit") echo '{"state":"MERGED","mergedAt":"2026-07-30T00:00:00Z","mergeCommit":{"oid":"deadbeef"}}' ;;
+  "pr view 7 --json number,url,title,headRefName,state,statusCheckRollup,additions,deletions,changedFiles") echo '{"number":7,"url":"https://github.com/org/repo/pull/7","title":"t","headRefName":"b","state":"MERGED","additions":1,"deletions":2,"changedFiles":3}' ;;
+  "api --paginate repos/org/repo/issues/7/comments") echo '[]' ;;
+  "api --paginate repos/org/repo/pulls/7/comments") echo '[{"id":3,"user":{"login":"greptile-apps[bot]"},"body":"finding","created_at":"2026-07-25T03:00:00Z","reactions":{"total_count":0}}]' ;;
+  *) echo "unexpected gh $args" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(dir, "git"),
+      `#!/usr/bin/env bash
+case "$1" in
+  diff) printf 'STUBDIFF %s\\n' "$2" ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    return dir;
+  };
+
+  const runScript = (
+    scriptAndArgs: string[],
+    sha: string,
+  ): Record<string, any> => {
+    const dir = stubDir();
+    const result = spawnSync("bash", ["-c", ...scriptAndArgs], {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        GH_STUB_SHA: sha,
+      },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trim().split("\n");
+    return JSON.parse(lines[lines.length - 1]!);
+  };
+
+  test("afterAnswer settles: equal shas read the conversation, take no diff", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.afterAnswer!(7, "subticket-1-1", "aaaaaaa1", true),
+    );
+    const parsed = runScript(scriptAndArgs, "aaaaaaa1");
+
+    expect(parsed.sha).toBe("aaaaaaa1");
+    expect(parsed.diff).toBeNull();
+    expect(parsed.diffError).toBeNull();
+    expect(parsed.conversationError).toBeNull();
+    expect(parsed.conversation?.inlineComments?.[0]?.body).toBe("finding");
+  });
+
+  test("afterAnswer pushed: differing shas take the diff, skip the conversation", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.afterAnswer!(7, "subticket-1-1", "aaaaaaa1", true),
+    );
+    const parsed = runScript(scriptAndArgs, "bbbbbb22");
+
+    expect(parsed.sha).toBe("bbbbbb22");
+    expect(parsed.diff).toContain("STUBDIFF aaaaaaa1..bbbbbb22");
+    expect(parsed.diffError).toBeNull();
+    expect(parsed.conversation).toBeNull();
+    expect(parsed.conversationError).toBeNull();
+  });
+
+  test("finalizeMerge merges, re-reads, captures and refreshes in one pass", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.finalizeMerge!(7),
+    );
+    const parsed = runScript(scriptAndArgs, "unused");
+
+    expect(parsed.merge?.code).toBe(0);
+    expect(parsed.view?.state).toBe("MERGED");
+    expect(parsed.view?.mergeCommit?.oid).toBe("deadbeef");
+    expect(parsed.conversation?.inlineComments?.[0]?.body).toBe("finding");
+    expect(parsed.conversationError).toBeNull();
+    expect(parsed.refreshed?.changedFiles).toBe(3);
   });
 });

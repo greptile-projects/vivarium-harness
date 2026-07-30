@@ -65,11 +65,13 @@ const fetchInstructions = (
   pullRequestUrl: string,
 ): string => `To fetch review comments on GitHub - where the review took place - you will need to use the \`gh\` CLI, which is already authenticated.
 
-- \`gh pr view ${pullRequestUrl} --comments\` provides Greptile review summaries and top-level comments.
+- \`gh pr view ${pullRequestUrl} --comments\` provides Greptile review summaries and top-level comments. Greptile edits its existing \`<h3>Greptile Summary</h3>\` comment after each pass, so reread its current body every round.
 - \`gh api repos/{owner}/{repo}/pulls/{number}/comments\` provides inline comments, which the command above does NOT show. Replies under a top-level comment, by the agent or Greptile, will show up here; each reply contains an \`in_reply_to_id\` field.
 - Use \`gh api user --jq .login\` to identify your own GitHub login. Treat an inline root as unanswered when its thread contains no reply authored by that login. Before finishing the round, scan the complete conversation—not only the latest entries—and ensure every substantive Greptile root has one of your replies. Reactions need no reply; a thumbs-up reaction on one of your comments is Greptile acknowledging that comment, nothing more.
+- Build one finding inventory from both surfaces. The Greptile Summary may contain substantive findings that could not be attached to a changed line (often presented as comments "outside the diff"). A distinct summary-only finding is a root finding and requires an individual PR-level response. Do not mistake the summary's confidence score, review metadata, or restatement of an inline finding for another finding; when the same issue appears inline, answer it only in its inline thread.
+- PR-level comments are flat and have no \`in_reply_to_id\`. Treat a summary-only finding as answered only when a later PR-level comment authored by your login clearly says what you changed or why you disagree. A pushed fix without that comment is still unanswered.
 - \`gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body=...\` lets your reply sit *under* an existing comment rather than adjacent to it. Do **not** mention \`@greptileai\` in these in-diff thread replies — Greptile reads its own threads without a ping, and a mention there makes it process the reply twice.
-- \`gh pr comment\` provides a method of creating PR-level comments. Use it for general questions or discussion about the PR that is not tied to one inline finding, and you MUST mention \`@greptileai\` in these PR-level comments — without the mention, Greptile never sees them.
+- \`gh pr comment\` provides a method of creating PR-level comments. Use it for each summary-only finding and for general questions or discussion not tied to one inline finding. You MUST mention \`@greptileai\` in these PR-level comments — without the mention, Greptile never sees them.
 
 **DO NOT** request that Greptile review the PR again; it will do so when you push to GitHub.`;
 
@@ -86,7 +88,7 @@ ${TOOLCHAIN}
 Your PR has been reviewed by Greptile, an autonomous code review agent. This is review round ${round} of at most ${rounds} on this PR. URL: ${pullRequestUrl}
 
 - Review the complete Greptile conversation, drawing relevant context from the PR description and codebase to form an opinion on each flagged issue. Use your own replies in the fetched thread data to distinguish roots you already answered from roots still awaiting an answer.
-- A comment without an \`in_reply_to_id\` is a new root comment. You must address every substantive new root comment individually, regardless of which review round it appears in, saying what you changed or why you disagree.
+- An inline comment without an \`in_reply_to_id\` is a new inline root. A distinct substantive finding present only in Greptile's editable PR-level summary is a summary root. You must address every new root of either shape individually, regardless of which review round it appears in, saying what you changed or why you disagree.
 - A Greptile comment inside a thread after one of your replies is a follow-up. Replying to that follow-up is your choice:
   - It convinced you: push the fix and say so on the thread.
   - You still disagree: state your final position. You may treat that thread as settled and stop replying to restatements; re-engage only for a new argument, evidence, or question.

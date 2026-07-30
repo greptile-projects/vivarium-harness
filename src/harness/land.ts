@@ -1,8 +1,10 @@
 import type { ArmPhase } from "./arms.js";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
 import type {
+  AnswerTrace,
   ArmGitHub,
   Baseline,
+  FinalizedMerge,
   MergeOutcome,
   PullRequestCheck,
   PullRequestRef,
@@ -497,15 +499,31 @@ async function answerLeftTrace(
   seen: Set<string>,
   observed: Map<string, ReviewNote>,
 ): Promise<boolean> {
-  let after: ReviewNote[];
+  let after: ReviewNote[] | undefined;
   try {
     after = await deps.github.conversation(pullRequest);
-    rememberConversation(observed, after);
   } catch {
+    after = undefined;
+  }
+  return conversationLeavesTrace(after, reviewer, seen, observed);
+}
+
+// The pure half of the trace check, shared with the bundled post-answer read:
+// given the conversation as it stands after the arm's answer (or `undefined`
+// when it could not be read), did the answer leave anything on the pull
+// request?
+function conversationLeavesTrace(
+  after: ReviewNote[] | undefined,
+  reviewer: string,
+  seen: Set<string>,
+  observed: Map<string, ReviewNote>,
+): boolean {
+  if (!after) {
     // Unreadable is unknown, and unknown must not end the exchange early —
     // the next round's poll loop absorbs transient failures already.
     return true;
   }
+  rememberConversation(observed, after);
   return after.some(
     (entry) =>
       !seen.has(reviewRevision(entry)) &&
@@ -723,11 +741,30 @@ export async function reviewArm(
         };
       }
       // And after: the pair is what says whether the arm pushed a fix or only
-      // replied. Equal shas mean it argued and changed nothing.
-      const respondedSha = await deps.github.headSha(
-        pullRequest.number,
-        pullRequest.headRefName,
-      );
+      // replied. Equal shas mean it argued and changed nothing. For isolated
+      // arms the whole post-answer read — head, diff, trace conversation —
+      // rides one bundled control-plane crossing instead of paying Docker
+      // Sandbox's per-`sbx exec` upkeep for each call; a failed bundle falls
+      // back to the discrete calls below, which are also the host path.
+      let trace: AnswerTrace | undefined;
+      if (deps.github.afterAnswer) {
+        try {
+          trace = await deps.github.afterAnswer(
+            pullRequest.number,
+            pullRequest.headRefName,
+            reviewedSha,
+            round < config.reviewRounds,
+          );
+        } catch {
+          trace = undefined;
+        }
+      }
+      const respondedSha = trace
+        ? trace.sha
+        : await deps.github.headSha(
+            pullRequest.number,
+            pullRequest.headRefName,
+          );
 
       // A missing sha is recorded as a missing sha, never left to be inferred.
       // The round still counts — the arm did answer, and failing it over a
@@ -796,14 +833,26 @@ export async function reviewArm(
       // open — the round is already recorded, and losing the diff must not
       // cost the rung — but the gap is recorded as a gap.
       if (reviewedSha && respondedSha && reviewedSha !== respondedSha) {
-        try {
-          answered.diff = await deps.github.diff(reviewedSha, respondedSha);
-        } catch (error) {
-          answered.diffError =
-            error instanceof Error ? error.message : String(error);
-          note(
-            `could not archive round ${round}'s diff (${answered.diffError}) — recompute it from ${reviewedSha}..${respondedSha} while GitHub still serves them`,
-          );
+        if (trace) {
+          if (trace.diff !== undefined) {
+            answered.diff = trace.diff;
+          } else {
+            answered.diffError =
+              trace.diffError ?? "the bundled post-answer read carried no diff";
+            note(
+              `could not archive round ${round}'s diff (${answered.diffError}) — recompute it from ${reviewedSha}..${respondedSha} while GitHub still serves them`,
+            );
+          }
+        } else {
+          try {
+            answered.diff = await deps.github.diff(reviewedSha, respondedSha);
+          } catch (error) {
+            answered.diffError =
+              error instanceof Error ? error.message : String(error);
+            note(
+              `could not archive round ${round}'s diff (${answered.diffError}) — recompute it from ${reviewedSha}..${respondedSha} while GitHub still serves them`,
+            );
+          }
         }
       }
 
@@ -817,15 +866,21 @@ export async function reviewArm(
       // answer looked like. On the last allowed round there is no next wait to
       // spare, so the check is skipped rather than spent on a read nobody uses.
       if (round < config.reviewRounds && !reReviewPending) {
-        if (
-          !(await answerLeftTrace(
-            deps,
-            pullRequest.number,
-            arm.reviewer,
-            seen,
-            observedRevisions,
-          ))
-        ) {
+        const leftTrace = trace
+          ? conversationLeavesTrace(
+              trace.conversation,
+              arm.reviewer,
+              seen,
+              observedRevisions,
+            )
+          : await answerLeftTrace(
+              deps,
+              pullRequest.number,
+              arm.reviewer,
+              seen,
+              observedRevisions,
+            );
+        if (!leftTrace) {
           answered.settled = true;
           note(
             `the answer pushed nothing and posted nothing on #${pullRequest.number} — nothing for ${arm.reviewer} to respond to, so the review is settled`,
@@ -861,13 +916,49 @@ export async function mergeArm(
     deps.note(text);
   };
 
-  const merge = await deps.github.merge(originalPullRequest.number);
+  // For isolated arms the whole irreversible tail — merge, state re-read,
+  // conversation capture, churn refresh — rides one bundled control-plane
+  // crossing. The discrete sequence below is the host path, the test path, and
+  // the fallback when the bundle read fails — which is safe to re-run, because
+  // merging an already-merged pull request fails while its state still reads
+  // MERGED.
+  let finalized: FinalizedMerge | undefined;
+  if (deps.github.finalizeMerge) {
+    try {
+      finalized = await deps.github.finalizeMerge(originalPullRequest.number);
+    } catch {
+      finalized = undefined;
+    }
+  }
+
+  const merge = finalized
+    ? finalized.merge
+    : await deps.github.merge(originalPullRequest.number);
   // An empty conversation and an unreadable one must not look alike in the
   // record: the comments stay re-fetchable from GitHub, but only if the run record
   // says they are missing rather than absent.
   let conversation: ReviewNote[] = [];
-  try {
-    conversation = await captureConversation(deps, originalPullRequest.number);
+  let conversationFailure: string | undefined;
+  if (finalized) {
+    if (finalized.conversation) {
+      conversation = finalized.conversation;
+    } else {
+      conversationFailure =
+        finalized.conversationError ??
+        "the bundled merge read carried no conversation";
+    }
+  } else {
+    try {
+      conversation = await captureConversation(
+        deps,
+        originalPullRequest.number,
+      );
+    } catch (error) {
+      conversationFailure =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+  if (conversationFailure === undefined) {
     const observed = new Map(
       (record.conversationRevisions ?? []).map((note) => [
         reviewRevision(note),
@@ -876,11 +967,9 @@ export async function mergeArm(
     );
     rememberConversation(observed, conversation);
     record = { ...record, conversationRevisions: [...observed.values()] };
-  } catch (error) {
+  } else {
     note(
-      `conversation unavailable at merge time (${
-        error instanceof Error ? error.message : String(error)
-      }) — an empty list here is a gap, re-fetch it from GitHub`,
+      `conversation unavailable at merge time (${conversationFailure}) — an empty list here is a gap, re-fetch it from GitHub`,
     );
   }
 
@@ -903,13 +992,18 @@ export async function mergeArm(
   // the record is asked for (findings per changed line). Fails open — the
   // merge already happened, and the pre-review snapshot beats none.
   let pullRequest = originalPullRequest;
-  try {
-    const refreshed = await deps.github.findPullRequest({
-      url: originalPullRequest.url,
-    });
-    if (refreshed) pullRequest = refreshed;
-  } catch {
-    // Keep the earlier snapshot.
+  if (finalized) {
+    // Keep the earlier snapshot when the bundled refresh came back empty.
+    if (finalized.refreshed) pullRequest = finalized.refreshed;
+  } else {
+    try {
+      const refreshed = await deps.github.findPullRequest({
+        url: originalPullRequest.url,
+      });
+      if (refreshed) pullRequest = refreshed;
+    } catch {
+      // Keep the earlier snapshot.
+    }
   }
 
   return {
