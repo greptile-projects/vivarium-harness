@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
   appendFile,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -12,6 +13,7 @@ import { basename, dirname, join } from "node:path";
 import { findTranscript } from "../src/harness/artifacts.js";
 import type { HarnessConfig } from "../src/harness/config.js";
 import type { AttemptRunner } from "../src/harness/harness.js";
+import type { CommandRunner } from "../src/harness/github.js";
 import { initLadder, readLadder } from "../src/greg-tile/ladder.js";
 import { planNextMilestone } from "../src/greg-tile/planner.js";
 
@@ -141,7 +143,7 @@ describe("planNextMilestone", () => {
     expect(await readdir(cwd).then(() => true).catch(() => false)).toBe(false);
   });
 
-  it("uses an ephemeral container when both arms are containerized", async () => {
+  it("uses an ephemeral microVM when both arms are isolated", async () => {
     const ladderPath = await scratchLadder();
     const codexHome = join(dirname(ladderPath), "codex");
     const isolated = {
@@ -150,51 +152,25 @@ describe("planNextMilestone", () => {
         {
           name: "komodo",
           repo: "/tmp/komodo",
-          container: "vivarium-komodo",
+          sandboxName: "vivarium-komodo",
         },
         {
           name: "tuatara",
           repo: "/tmp/tuatara",
-          container: "vivarium-tuatara",
+          sandboxName: "vivarium-tuatara",
         },
       ],
       codexHome,
     } as HarnessConfig;
     let launch: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
 
     const runner: AttemptRunner = async (spec) => {
-      expect(spec.cwd).toBe("/workspace");
       expect(spec.sandbox).toBe("danger-full-access");
       launch = spec.exec ?? [];
-
-      const workspaceMount = launch.find(
-        (argument) =>
-          argument.startsWith("type=bind,source=") &&
-          argument.endsWith(",target=/workspace"),
-      );
-      expect(workspaceMount).toBeDefined();
-      const workspace = workspaceMount
-        ?.slice("type=bind,source=".length)
-        .replace(/,target=\/workspace$/, "");
-      expect(workspace).toBeDefined();
-      expect(await readdir(workspace as string)).toEqual(["LADDER.md"]);
-      const sessionMount = launch.find(
-        (argument) =>
-          argument.startsWith("type=bind,source=") &&
-          argument.endsWith(",target=/codex/sessions"),
-      );
-      expect(sessionMount).toBeDefined();
-      const sessionDirectory = sessionMount
-        ?.slice("type=bind,source=".length)
-        .replace(/,target=\/codex\/sessions$/, "");
-      expect(await readdir(sessionDirectory as string)).toEqual([]);
+      expect(await readdir(spec.cwd)).toEqual(["LADDER.md"]);
       await appendFile(
-        join(sessionDirectory as string, "rollout-isolated-thread.jsonl"),
-        '{"thread":"isolated-thread"}\n',
-        "utf8",
-      );
-      await appendFile(
-        join(workspace as string, "LADDER.md"),
+        join(spec.cwd, "LADDER.md"),
         "\n## Milestone 1: Isolated\n\n### [ ] 1.1 A\n\ndo A\n",
         "utf8",
       );
@@ -205,6 +181,18 @@ describe("planNextMilestone", () => {
         threadId: "isolated-thread",
       };
     };
+    const command: CommandRunner = async (program, args) => {
+      commands.push({ command: program, args });
+      if (program === "sbx" && args[0] === "cp") {
+        const destination = args[2]!;
+        await mkdir(destination, { recursive: true });
+        await writeFile(
+          join(destination, "rollout-isolated-thread.jsonl"),
+          '{"thread":"isolated-thread"}\n',
+        );
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
 
     await planNextMilestone(
       isolated,
@@ -212,19 +200,33 @@ describe("planNextMilestone", () => {
       await readLadder(ladderPath),
       1,
       runner,
+      command,
     );
 
-    expect(launch.slice(0, 5)).toEqual(["docker", "run", "--rm", "-i", "--env"]);
-    expect(launch).toContain("VIVARIUM_DOCKER=0");
-    expect(launch).toContain("VIVARIUM_GUI=0");
-    expect(launch).toContain(
-      `type=bind,source=${join(codexHome, "auth.json")},target=/codex/auth.json,readonly`,
-    );
-    expect(launch).not.toContain(
-      `type=bind,source=${join(codexHome, "sessions")},target=/codex/sessions`,
-    );
-    expect(launch.at(-1)).toBe("vivarium-arm");
+    expect(launch.slice(0, 6)).toEqual(["sbx", "exec", "-i", "-w", launch[4], launch[5]]);
+    expect(launch[4]).toMatch(/^\/tmp\/vivarium-planner-/);
+    expect(launch[5]).toMatch(/^vivarium-greg-/);
     expect(launch.join(" ")).not.toContain(ladderPath);
+    const create = commands.find(
+      (entry) => entry.command === "sbx" && entry.args[0] === "create",
+    );
+    expect(create?.args).toContain("vivarium-arm:latest");
+    expect(create?.args).toContain("--no-share-skills");
+    expect(create?.args.at(-1)).toBe(launch[4]);
+    expect(
+      commands.filter(
+        (entry) =>
+          entry.command === "sbx" &&
+          entry.args.slice(0, 3).join(" ") === "policy deny network",
+      ),
+    ).toHaveLength(5);
+    expect(
+      commands.some(
+        (entry) =>
+          entry.command === "sbx" &&
+          entry.args.join(" ") === `rm --force ${launch[5]}`,
+      ),
+    ).toBe(true);
     expect(
       await findTranscript(join(codexHome, "sessions"), "isolated-thread"),
     ).toBeDefined();

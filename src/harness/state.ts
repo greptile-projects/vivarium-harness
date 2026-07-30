@@ -6,7 +6,7 @@ import type { LandingRecord, LandingStatus } from "./land.js";
 // The climb's durable record, and the deliberate counterpart to `LADDER.md`.
 //
 // The ladder crosses the isolation boundary — it is bind-mounted read-only into
-// both containers and it is Greg's entire prompt — so it must never carry a
+// both arm microVMs and it is Greg's entire prompt — so it must never carry a
 // pull request URL (which names both repositories), an arm name, or a harness
 // path. `results/` is the opposite: never mounted, never in a prompt, so it can
 // hold everything worth combing through later. The ladder answers "where are

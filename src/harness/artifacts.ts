@@ -529,7 +529,7 @@ export class RunArtifacts {
       if (!captureTranscript) await copyFile(source, staging);
       // A landing-time refresh must not write over the only durable copy until
       // the replacement is complete. `rename` is atomic within this artifact
-      // directory, so a failed docker cp leaves the earlier transcript intact.
+      // directory, so a failed sbx cp leaves the earlier transcript intact.
       await rename(staging, destination);
       persisted.transcript = destination;
       persisted.transcriptSource = source;

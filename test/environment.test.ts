@@ -12,24 +12,24 @@ const ok = (stdout = ""): CommandResult => ({
   stderr: "",
 });
 
-function config(containerized = true): HarnessConfig {
+function config(isolated = true): HarnessConfig {
   return {
     ticket: "1.1 Build it",
     arms: [
       {
         name: "komodo",
-        repo: containerized
+        repo: isolated
           ? "https://github.com/org/komodo.git"
           : "/tmp/komodo",
-        container: containerized ? "vivarium-komodo" : undefined,
+        sandboxName: isolated ? "vivarium-komodo" : undefined,
         ghToken: "komodo-token",
       },
       {
         name: "tuatara",
-        repo: containerized
+        repo: isolated
           ? "https://github.com/org/tuatara.git"
           : "/tmp/tuatara",
-        container: containerized ? "vivarium-tuatara" : undefined,
+        sandboxName: isolated ? "vivarium-tuatara" : undefined,
         ghToken: "tuatara-token",
       },
     ],
@@ -64,7 +64,7 @@ function recorder(
 }
 
 describe("ephemeral arm environments", () => {
-  it("creates unique per-subticket containers, volumes, and networks", async () => {
+  it("creates unique per-subticket sandboxes and isolates their networks", async () => {
     const { calls, exec } = recorder();
     const environment = await provisionArmEnvironment(
       config(),
@@ -73,45 +73,54 @@ describe("ephemeral arm environments", () => {
       exec,
     );
 
-    const names = environment.config.arms.map((arm) => arm.container);
+    const names = environment.config.arms.map((arm) => arm.sandboxName);
     expect(names).toEqual([
       "vivarium-komodo-abcdefghijkl",
       "vivarium-tuatara-abcdefghijkl",
     ]);
     const launches = calls.filter((call) =>
-      call.command.endsWith("scripts/arm-run.sh"),
+      call.command.endsWith("scripts/sandbox-run.sh"),
     );
     expect(launches).toHaveLength(2);
     for (const launch of launches) {
-      const container = launch.env?.VIVARIUM_CONTAINER_NAME;
-      expect(container).toMatch(/^vivarium-(komodo|tuatara)-abcdefghijkl$/);
-      expect(launch.env?.VIVARIUM_DOCKER_VOLUME).toBe(`${container}-docker`);
-      expect(launch.env?.VIVARIUM_NETWORK_NAME).toBe(`${container}-net`);
+      const sandbox = launch.env?.VIVARIUM_SANDBOX_NAME;
+      expect(sandbox).toMatch(/^vivarium-(komodo|tuatara)-abcdefghijkl$/);
+      expect(launch.env?.VIVARIUM_WORKSPACE_MOUNT).toBe(
+        `/tmp/${sandbox}-host`,
+      );
+      expect(launch.env?.VIVARIUM_LADDER_MOUNT).toBe(
+        "/tmp/vivarium-ladder-abcdefghijkl",
+      );
       expect(launch.env?.VIVARIUM_RUN_ID).toBe("run-abcdefghijkl");
       expect(JSON.stringify(launch)).not.toContain("CODEX_HOME");
     }
+    const denies = calls.filter(
+      (call) =>
+        call.command === "sbx" &&
+        call.args.slice(0, 3).join(" ") === "policy deny network",
+    );
+    expect(denies).toHaveLength(12);
+    expect(denies.some((call) => call.args.at(-1) === names[0])).toBe(true);
+    expect(denies.some((call) => call.args.at(-1) === names[1])).toBe(true);
+    expect(
+      denies.filter((call) => call.args.at(-1) === "host.docker.internal"),
+    ).toHaveLength(2);
 
     await environment.cleanup();
-    for (const container of names) {
+    for (const sandbox of names) {
       expect(
         calls.some(
           (call) =>
-            call.command === "docker" &&
-            call.args.join(" ") === `rm -f -v ${container}`,
+            call.command === "sbx" &&
+            call.args.join(" ") ===
+              `secret rm ${sandbox} github --force`,
         ),
       ).toBe(true);
       expect(
         calls.some(
           (call) =>
-            call.command === "docker" &&
-            call.args.join(" ") === `volume rm -f ${container}-docker`,
-        ),
-      ).toBe(true);
-      expect(
-        calls.some(
-          (call) =>
-            call.command === "docker" &&
-            call.args.join(" ") === `network rm ${container}-net`,
+            call.command === "sbx" &&
+            call.args.join(" ") === `rm --force ${sandbox}`,
         ),
       ).toBe(true);
     }
@@ -119,9 +128,9 @@ describe("ephemeral arm environments", () => {
 
   it("finds and copies only the current thread transcript", async () => {
     const { calls, exec } = recorder((command, args) => {
-      if (command === "docker" && args[0] === "exec") {
+      if (command === "sbx" && args.includes("find")) {
         return ok(
-          "/codex/sessions/2026/07/27/rollout-current-thread.jsonl\n",
+          "/home/agent/.codex/sessions/2026/07/27/rollout-current-thread.jsonl\n",
         );
       }
       return undefined;
@@ -140,18 +149,18 @@ describe("ephemeral arm environments", () => {
     );
 
     expect(source).toBe(
-      `${arm.container}:/codex/sessions/2026/07/27/rollout-current-thread.jsonl`,
+      `${arm.sandboxName}:/home/agent/.codex/sessions/2026/07/27/rollout-current-thread.jsonl`,
     );
     const find = calls.find(
-      (call) => call.command === "docker" && call.args.includes("find"),
+      (call) => call.command === "sbx" && call.args.includes("find"),
     );
     expect(find?.args).toContain("*-current-thread.jsonl");
     const copy = calls.find(
-      (call) => call.command === "docker" && call.args[0] === "cp",
+      (call) => call.command === "sbx" && call.args[0] === "cp",
     );
     expect(copy?.args).toEqual([
       "cp",
-      `${arm.container}:/codex/sessions/2026/07/27/rollout-current-thread.jsonl`,
+      `${arm.sandboxName}:/home/agent/.codex/sessions/2026/07/27/rollout-current-thread.jsonl`,
       "/tmp/transcript.jsonl",
     ]);
   });
@@ -159,7 +168,7 @@ describe("ephemeral arm environments", () => {
   it("cleans up every runtime when provisioning one arm fails", async () => {
     const { calls, exec } = recorder((command, args) => {
       if (
-        command.endsWith("scripts/arm-run.sh") &&
+        command.endsWith("scripts/sandbox-run.sh") &&
         args[0] === "tuatara"
       ) {
         return { code: 1, stdout: "", stderr: "clone failed" };
@@ -172,7 +181,7 @@ describe("ephemeral arm environments", () => {
     ).rejects.toThrow(/clone failed/);
     expect(
       calls.filter(
-        (call) => call.command === "docker" && call.args[0] === "rm",
+        (call) => call.command === "sbx" && call.args[0] === "rm",
       ),
     ).toHaveLength(2);
   });

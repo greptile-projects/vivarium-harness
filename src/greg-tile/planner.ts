@@ -1,11 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CONTAINER_IMAGE,
+  SANDBOX_TEMPLATE,
   type HarnessConfig,
   type SandboxMode,
 } from "../harness/config.js";
+import {
+  runCommand,
+  type CommandResult,
+  type CommandRunner,
+} from "../harness/github.js";
 import type { AttemptRunner } from "../harness/harness.js";
 import { plannerPrompt } from "../harness/prompts.js";
 import { runArmStreaming } from "../harness/session.js";
@@ -26,47 +32,31 @@ interface PlannerExecution {
   exec?: string[];
 }
 
-// Greg follows the arms' isolation mode. Real runs use a fresh container with
-// only the scratch ladder and transcript/auth mounts; host smoke tests keep the
+// Greg follows the arms' isolation mode. Real runs use a fresh Firecracker
+// microVM with only the scratch ladder workspace; host smoke tests keep the
 // existing workspace-write path.
 export function plannerExecution(
   base: HarnessConfig,
   workspace: string,
-  sessionDirectory: string,
+  sandboxName?: string,
 ): PlannerExecution {
-  const containerized =
-    base.arms?.every((arm) => arm.container !== undefined) ?? false;
-  if (!containerized) {
+  const isolated =
+    base.arms?.every((arm) => arm.sandboxName !== undefined) ?? false;
+  if (!isolated) {
     return { cwd: workspace, sandbox: "workspace-write" };
   }
 
-  const codexHome = resolve(base.codexHome);
+  if (!sandboxName) {
+    throw new Error("planner sandbox name is required in isolated mode");
+  }
   return {
-    cwd: "/workspace",
+    cwd: workspace,
     sandbox: "danger-full-access",
-    exec: [
-      "docker",
-      "run",
-      "--rm",
-      "-i",
-      "--env",
-      "VIVARIUM_DOCKER=0",
-      "--env",
-      "VIVARIUM_GUI=0",
-      "--mount",
-      `type=bind,source=${workspace},target=/workspace`,
-      "--mount",
-      `type=bind,source=${join(codexHome, "auth.json")},target=/codex/auth.json,readonly`,
-      "--mount",
-      `type=bind,source=${sessionDirectory},target=/codex/sessions`,
-      "--workdir",
-      "/workspace",
-      CONTAINER_IMAGE,
-    ],
+    exec: ["sbx", "exec", "-i", "-w", workspace, sandboxName],
   };
 }
 
-async function preserveContainerSessions(
+async function preservePlannerSessions(
   source: string,
   codexHome: string,
 ): Promise<void> {
@@ -78,6 +68,12 @@ async function preserveContainerSessions(
   );
   await mkdir(dirname(destination), { recursive: true });
   await cp(source, destination, { recursive: true });
+}
+
+function commandError(label: string, result: CommandResult): Error {
+  return new Error(
+    `${label}: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`,
+  );
 }
 
 // Run one fresh, stateless Greg session to plan the next milestone by editing
@@ -105,6 +101,7 @@ export async function planNextMilestone(
   ladder: string,
   milestoneNumber: number,
   runner: AttemptRunner = runArmStreaming,
+  command: CommandRunner = runCommand,
 ): Promise<string | undefined> {
   let lastError = "unknown error";
 
@@ -131,12 +128,58 @@ export async function planNextMilestone(
       join(tmpdir(), "vivarium-planner-sessions-"),
     );
     const scratchLadder = join(workspace, basename(ladderPath));
-    const execution = plannerExecution(base, workspace, sessionDirectory);
+    const isolated =
+      base.arms?.every((arm) => arm.sandboxName !== undefined) ?? false;
+    const plannerSandbox = isolated
+      ? `vivarium-greg-${randomUUID().replace(/-/g, "").slice(0, 12)}`
+      : undefined;
+    const execution = plannerExecution(base, workspace, plannerSandbox);
 
     let result;
     let planned: string | undefined;
     try {
       await writeFile(scratchLadder, currentLadder, "utf8");
+      if (plannerSandbox) {
+        const created = await command("sbx", [
+          "create",
+          "--no-share-skills",
+          "--name",
+          plannerSandbox,
+          "--cpus",
+          "2",
+          "--memory",
+          "4g",
+          "--template",
+          SANDBOX_TEMPLATE,
+          "codex",
+          workspace,
+        ]);
+        if (created.code !== 0) {
+          throw commandError("could not provision Greg's sandbox", created);
+        }
+        for (const target of [
+          "host.docker.internal",
+          "gateway.docker.internal",
+          "localhost",
+          "127.0.0.1",
+          "::1",
+        ]) {
+          const denied = await command("sbx", [
+            "policy",
+            "deny",
+            "network",
+            "--sandbox",
+            plannerSandbox,
+            target,
+          ]);
+          if (denied.code !== 0) {
+            throw commandError(
+              `could not isolate Greg's sandbox from ${target}`,
+              denied,
+            );
+          }
+        }
+      }
       result = await runner(
         {
           arm: "greg",
@@ -167,14 +210,23 @@ export async function planNextMilestone(
       lastError = error instanceof Error ? error.message : String(error);
       continue;
     } finally {
-      // Sessions are preserved in the finally, before the scratch dirs go: a
+      // Sessions are preserved in the finally, before the microVM and scratch
+      // dirs go: a
       // failed attempt (a watchdog abort, a thrown runner) still produced a
       // transcript, and deleting it with the scratch dir would lose the record
       // of exactly the planning turns worth reading. Best-effort — a failed
       // copy must not turn into a planning retry.
-      if (execution.exec) {
-        await preserveContainerSessions(sessionDirectory, base.codexHome).catch(
+      if (plannerSandbox) {
+        await command("sbx", [
+          "cp",
+          `${plannerSandbox}:/home/agent/.codex/sessions`,
+          sessionDirectory,
+        ]).catch(() => undefined);
+        await preservePlannerSessions(sessionDirectory, base.codexHome).catch(
           () => {},
+        );
+        await command("sbx", ["rm", "--force", plannerSandbox]).catch(
+          () => undefined,
         );
       }
       await Promise.all([

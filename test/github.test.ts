@@ -97,9 +97,9 @@ describe("credential handling", () => {
     expect(fetch?.env?.[GIT_TOKEN_ENV]).toBeUndefined();
   });
 
-  test("containerized harness operations run inside the arm without forwarding the token", async () => {
+  test("isolated harness operations run inside the arm without forwarding the token", async () => {
     const { calls, exec } = recorder({
-      "docker exec /workspace vivarium-tuatara git rev-parse": ok(
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara git rev-parse": ok(
         "feature-branch\n",
       ),
     });
@@ -107,7 +107,7 @@ describe("credential handling", () => {
     const branch = await armGitHub(
       arm({
         repo: "https://github.com/org/repo.git",
-        container: "vivarium-tuatara",
+        sandboxName: "vivarium-tuatara",
         ghToken: TOKEN,
       }),
       exec,
@@ -116,12 +116,15 @@ describe("credential handling", () => {
     expect(branch).toBe("feature-branch");
     expect(calls).toEqual([
       {
-        command: "docker",
+        command: "sbx",
         args: [
           "exec",
-          "-i",
           "-w",
           "/workspace",
+          "-e",
+          "GH_TOKEN=proxy-managed",
+          "-e",
+          "GITHUB_TOKEN=proxy-managed",
           "vivarium-tuatara",
           "git",
           "rev-parse",

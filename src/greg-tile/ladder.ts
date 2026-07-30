@@ -13,7 +13,7 @@ import type { HarnessRunResult } from "../harness/harness.js";
 // every milestone, and every subticket live here and nowhere else. Greg edits it
 // directly (he appends milestones); the loop only flips a subticket's checkbox
 // once the harness has built it, and writes nothing else — this file is
-// bind-mounted into both containers and is Greg's whole prompt, so what a run
+// mounted read-only into both arm microVMs and is Greg's whole prompt, so what a run
 // actually landed goes to `results/rung-NN/` instead. See `completeSubticket`.
 //
 // A subticket is one PR-sized step, written as a checkbox heading:
@@ -183,7 +183,7 @@ export function malformedSubticketHeadings(text: string): string[] {
 // unchecked, so a failed run must leave it unchecked for a re-run to retry.
 // Flip a built subticket's box, and write *nothing else*.
 //
-// The ladder is bind-mounted read-only into both arms' containers and is also
+// The ladder is mounted read-only into both arms' microVMs and is also
 // Greg's entire prompt, so it is the one file that crosses every isolation
 // boundary in the experiment. It used to also record the run: its id, its
 // artifact directory, and both merged pull request URLs. Those URLs name both

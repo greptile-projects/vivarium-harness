@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Report or remove ephemeral arm environments left behind by an interrupted
-# harness process.
+# Report or remove arm/Planner sandboxes left by an interrupted harness.
 #
 # Usage:  scripts/resume-clean.sh [--apply]
 #
-#   (no flags)  list leftover containers and their checkout/PR state
-#   --apply     close discoverable open PRs, then remove the containers,
-#               nested-Docker volumes, and isolated networks
+#   (no flags)  list leftover sandboxes and their checkout/PR state
+#   --apply     close discoverable open PRs, then remove the sandboxes
 #
-# A normal run removes these resources in runHarness's finally block. Use this
-# only when no climb is currently running: --apply intentionally tears down
-# every container labelled as a Vivarium ephemeral arm.
+# A normal run removes these resources in finally blocks. Use --apply only
+# when no climb is active: names matching the configured arm prefixes are the
+# ownership boundary.
 set -euo pipefail
 
 apply=false
@@ -28,64 +26,81 @@ for argument in "$@"; do
   esac
 done
 
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+set -a
+# shellcheck disable=SC1091
+. "$root/.env"
+set +a
+: "${KOMODO_SANDBOX:?KOMODO_SANDBOX must be set in .env}"
+: "${TUATARA_SANDBOX:?TUATARA_SANDBOX must be set in .env}"
+
 log() { printf '[resume-clean] %s\n' "$*" >&2; }
 
-containers="$(docker ps -a \
-  --filter label=vivarium.ephemeral=true \
-  --format '{{.Names}}' 2>/dev/null || true)"
+sandboxes=""
+while IFS= read -r candidate; do
+  case "$candidate" in
+    "$KOMODO_SANDBOX"-* | "$TUATARA_SANDBOX"-* | vivarium-greg-*)
+      sandboxes+="${sandboxes:+$'\n'}$candidate"
+      ;;
+  esac
+done < <(sbx ls -q 2>/dev/null || true)
 
-if [[ -z "$containers" ]]; then
-  log "no leftover ephemeral arm environments"
+if [[ -z "$sandboxes" ]]; then
+  log "no leftover ephemeral environments"
   exit 0
 fi
 
 count=0
-while IFS= read -r container; do
-  [[ -n "$container" ]] || continue
+while IFS= read -r sandbox; do
+  [[ -n "$sandbox" ]] || continue
   count=$((count + 1))
-  arm="$(docker inspect -f '{{index .Config.Labels "vivarium.arm"}}' "$container" 2>/dev/null || echo unknown)"
-  run_id="$(docker inspect -f '{{index .Config.Labels "vivarium.run"}}' "$container" 2>/dev/null || echo unknown)"
-  running="$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo false)"
-  volume="$container-docker"
-  network="$container-net"
   open_pr=""
+  case "$sandbox" in
+    "$KOMODO_SANDBOX"-*) arm=komodo ;;
+    "$TUATARA_SANDBOX"-*) arm=tuatara ;;
+    vivarium-greg-*) arm=greg ;;
+    *) continue ;;
+  esac
 
-  log "$arm: $container (run: $run_id; running: $running)"
-  if [[ "$running" == true ]] && docker exec "$container" test -d /workspace/.git 2>/dev/null; then
-    branch="$(docker exec -w /workspace "$container" git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-    dirty="$(docker exec -w /workspace "$container" git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  log "$arm: $sandbox"
+  remote=(sbx exec -w /workspace \
+    -e GH_TOKEN=proxy-managed -e GITHUB_TOKEN=proxy-managed "$sandbox")
+  if [[ "$arm" != greg ]] && "${remote[@]}" test -d /workspace/.git 2>/dev/null; then
+    branch="$("${remote[@]}" git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    dirty="$("${remote[@]}" git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
     log "  branch: $branch; changed paths: $dirty"
     if [[ "$branch" != main && "$branch" != master && "$branch" != unknown ]]; then
-      open_pr="$(docker exec -w /workspace "$container" gh pr list \
+      open_pr="$("${remote[@]}" gh pr list \
         --head "$branch" --state open --limit 1 --json number,title \
         --jq '.[0] | select(.) | "#\(.number) \(.title)"' 2>/dev/null || true)"
       [[ -n "$open_pr" ]] && log "  open PR: $open_pr"
     fi
-  else
+  elif [[ "$arm" != greg ]]; then
     log "  checkout unavailable; PR state could not be inspected"
   fi
 
   if [[ "$apply" != true ]]; then
-    log "  would remove container, volume, and network"
+    log "  would remove sandbox"
     continue
   fi
 
-  if [[ -n "${open_pr:-}" ]]; then
+  if [[ -n "$open_pr" ]]; then
     pr_number="${open_pr%% *}"
     pr_number="${pr_number#\#}"
-    docker exec -w /workspace "$container" gh pr close "$pr_number" \
+    "${remote[@]}" gh pr close "$pr_number" \
       --comment "Closed by resume-clean.sh: the ephemeral Vivarium run was interrupted and this subticket will restart from a fresh clone." \
       >/dev/null 2>&1 || log "  could not close $open_pr; close it manually"
   fi
 
-  docker rm -f -v "$container" >/dev/null 2>&1 || true
-  docker volume rm -f "$volume" >/dev/null 2>&1 || true
-  docker network rm "$network" >/dev/null 2>&1 || true
+  sbx secret rm "$sandbox" github --force >/dev/null 2>&1 || true
+  sbx rm --force "$sandbox" >/dev/null 2>&1 || true
+  scratch="/tmp/$sandbox-host"
+  rm -rf "$scratch"
   log "  removed"
-done <<< "$containers"
+done <<< "$sandboxes"
 
 if [[ "$apply" == true ]]; then
-  log "removed $count leftover ephemeral arm environment(s)"
+  log "removed $count leftover ephemeral environment(s)"
 else
   log "found $count leftover environment(s); re-run with --apply to remove them"
 fi

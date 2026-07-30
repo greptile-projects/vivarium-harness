@@ -6,7 +6,7 @@ import { realpath, stat } from "node:fs/promises";
 // ./results and each arm gets three autonomous attempts.
 export const RESULTS_DIR = "results";
 export const MAX_ATTEMPTS = 3;
-export const CONTAINER_IMAGE = "vivarium-arm";
+export const SANDBOX_TEMPLATE = "vivarium-arm:latest";
 // Runaway guard for the ladder loop: pause once this many milestones (rungs)
 // have been built (or planned, under --plan-only) so a human reconfirms the
 // direction before more Codex runs are spent. The run always finishes the
@@ -58,22 +58,20 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 
 export interface ArmConfig {
   name: ArmName;
-  // Container mode: the Git remote cloned into /workspace by arm-run.sh.
+  // Sandbox mode: the Git remote cloned into /workspace by sandbox-run.sh.
   // Host smoke-test mode: the local checkout path. The deployment mode makes
   // the interpretation unambiguous, while keeping one configuration key.
   repo: string;
-  // When set, the arm's codex runs via `docker exec` in this container instead
-  // of on the host. In real runs this is a stable name prefix; runHarness adds
-  // a unique suffix and creates a fresh container for each subticket.
-  container?: string;
+  // When set, the arm's Codex runs inside a Docker Sandbox microVM instead of
+  // on the host. In real runs this is a stable name prefix; runHarness adds a
+  // unique suffix and creates a fresh microVM for each subticket.
+  sandboxName?: string;
   // GitHub token the *harness* acts with on this arm's behalf (finding the pull
-  // request, reading the review, merging). The same token the container gets,
-  // so the record shows one identity per arm rather than the operator's.
+  // request, reading the review, merging). The sandbox receives the same
+  // identity through Docker's credential proxy without receiving the token.
   ghToken?: string;
-  // Sandbox for this arm's Codex session. A containerized arm gets
-  // danger-full-access by default: it needs the network to push a branch and
-  // open a pull request, and the container — not the sandbox — is what keeps
-  // it away from the host and the other arm.
+  // Codex's own permission mode. A microVM arm gets danger-full-access by
+  // default: the Firecracker VM is the security boundary.
   sandbox?: SandboxMode;
   // The reviewer login this arm has to answer to. Set on exactly one arm; that
   // asymmetry *is* the experiment. An arm without it merges as soon as its
@@ -128,16 +126,16 @@ function sandboxFromEnv(value: string | undefined): SandboxMode | undefined {
   return sandbox;
 }
 
-// A containerized arm has to reach the network — it pushes a branch, opens a
-// pull request and answers a review with `gh` — and the container is already
-// the isolation boundary, so the sandbox inside it only gets in the way. A
-// host-mode arm shares the operator's filesystem and stays fenced in.
+// A microVM arm has to reach the network — it pushes a branch, opens a pull
+// request and answers a review with `gh` — and the VM is already the isolation
+// boundary, so Codex's own sandbox only gets in the way. A host-mode arm
+// shares the operator's filesystem and stays fenced in.
 export function armSandbox(
   explicit: SandboxMode | undefined,
-  container: string | undefined,
+  sandboxName: string | undefined,
 ): SandboxMode {
   if (explicit) return explicit;
-  return container ? "danger-full-access" : "workspace-write";
+  return sandboxName ? "danger-full-access" : "workspace-write";
 }
 
 function positiveFromEnv(
@@ -176,6 +174,11 @@ export function parseArgs(
   if (!env.KOMODO_REPO || !env.TUATARA_REPO) {
     throw new Error("KOMODO_REPO and TUATARA_REPO must be configured");
   }
+  if (env.KOMODO_CONTAINER || env.TUATARA_CONTAINER) {
+    throw new Error(
+      "KOMODO_CONTAINER/TUATARA_CONTAINER were replaced by KOMODO_SANDBOX/TUATARA_SANDBOX",
+    );
+  }
 
   const sandbox = sandboxFromEnv(env.CODEX_SANDBOX);
 
@@ -188,16 +191,16 @@ export function parseArgs(
       {
         name: "komodo",
         repo: env.KOMODO_REPO,
-        container: env.KOMODO_CONTAINER,
+        sandboxName: env.KOMODO_SANDBOX,
         ghToken: env.KOMODO_GH_TOKEN,
-        sandbox: armSandbox(sandbox, env.KOMODO_CONTAINER),
+        sandbox: armSandbox(sandbox, env.KOMODO_SANDBOX),
       },
       {
         name: "tuatara",
         repo: env.TUATARA_REPO,
-        container: env.TUATARA_CONTAINER,
+        sandboxName: env.TUATARA_SANDBOX,
         ghToken: env.TUATARA_GH_TOKEN,
-        sandbox: armSandbox(sandbox, env.TUATARA_CONTAINER),
+        sandbox: armSandbox(sandbox, env.TUATARA_SANDBOX),
         // The one asymmetry between the arms: this one has a reviewer whose
         // comments it has to answer on the record before its work lands.
         reviewer: REVIEWER_LOGIN,
@@ -269,36 +272,38 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
 export async function validateConfig(
   config: HarnessConfig,
 ): Promise<HarnessConfig> {
-  // Isolation has to be all-or-nothing. Each arm derives `container` — and
-  // therefore its sandbox — from its own `<ARM>_CONTAINER`, so one unset or
-  // typo'd variable (or a container that failed to start) would leave that arm
-  // running Codex on the *host* at `workspace-write` while the other runs in a
-  // container at `danger-full-access`. Different sandbox, different tool
+  // Isolation has to be all-or-nothing. Each arm derives `sandboxName` — and
+  // therefore its Codex permission mode — from its own `<ARM>_SANDBOX`, so one
+  // unset or typo'd variable would leave that arm running Codex on the *host*
+  // at `workspace-write` while the other runs in a microVM at
+  // `danger-full-access`. Different sandbox, different tool
   // reach, and the host-mode arm can read the other arm's checkout, `results/`
   // and `.env` directly — an asymmetry between the arms that the manifest would
   // record as a perfectly normal run. Refuse it here instead.
-  const containerized = config.arms.filter((arm) => arm.container);
-  if (containerized.length !== 0 && containerized.length !== config.arms.length) {
+  const isolated = config.arms.filter((arm) => arm.sandboxName);
+  if (isolated.length !== 0 && isolated.length !== config.arms.length) {
     const missing = config.arms
-      .filter((arm) => !arm.container)
-      .map((arm) => `${arm.name.toUpperCase()}_CONTAINER`);
+      .filter((arm) => !arm.sandboxName)
+      .map((arm) => `${arm.name.toUpperCase()}_SANDBOX`);
     throw new Error(
-      `every arm must be containerized or none may be — set ${missing.join(" and ")}, or unset the others to run both on the host`,
+      `every arm must use a sandbox or none may — set ${missing.join(" and ")}, or unset the others to run both on the host`,
     );
   }
 
-  if (containerized.length === config.arms.length) {
-    const containerPrefixes = config.arms.map((arm) => arm.container as string);
-    for (const [index, prefix] of containerPrefixes.entries()) {
+  if (isolated.length === config.arms.length) {
+    const sandboxPrefixes = config.arms.map(
+      (arm) => arm.sandboxName as string,
+    );
+    for (const [index, prefix] of sandboxPrefixes.entries()) {
       if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(prefix)) {
         throw new Error(
-          `${config.arms[index]!.name.toUpperCase()}_CONTAINER must be a valid Docker name prefix`,
+          `${config.arms[index]!.name.toUpperCase()}_SANDBOX must be a valid name prefix`,
         );
       }
     }
-    if (containerPrefixes[0] === containerPrefixes[1]) {
+    if (sandboxPrefixes[0] === sandboxPrefixes[1]) {
       throw new Error(
-        "KOMODO_CONTAINER and TUATARA_CONTAINER must use different name prefixes",
+        "KOMODO_SANDBOX and TUATARA_SANDBOX must use different name prefixes",
       );
     }
 
@@ -311,7 +316,7 @@ export async function validateConfig(
       }
       if (!/^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/.test(remote)) {
         throw new Error(
-          `${config.arms[index]!.name.toUpperCase()}_REPO must be an HTTPS GitHub clone URL in container mode`,
+          `${config.arms[index]!.name.toUpperCase()}_REPO must be an HTTPS GitHub clone URL in sandbox mode`,
         );
       }
     }
@@ -387,25 +392,25 @@ Required environment:
   TUATARA_REPO=<url>      HTTPS GitHub clone URL for Tuatara
 
 Optional environment:
-  KOMODO_CONTAINER=<name>     Run Komodo's codex via docker exec in that
-                          container. arm-run.sh clones KOMODO_REPO into its
+  KOMODO_SANDBOX=<name>   Run Komodo's Codex in a fresh Docker Sandbox
+                          microVM. sandbox-run.sh clones KOMODO_REPO into its
                           private /workspace. Unset uses KOMODO_REPO as a
                           local checkout path, for smoke tests only.
-  TUATARA_CONTAINER=<name>    Same, for Tuatara.
-  KOMODO_GH_TOKEN=<token>     GitHub token per arm: the container pushes and
+  TUATARA_SANDBOX=<name>  Same, for Tuatara.
+  KOMODO_GH_TOKEN=<token> GitHub token per arm: the sandbox pushes and
   TUATARA_GH_TOKEN=<token>    opens its pull request with it, and the harness
                           merges with it, so each arm lands under its own
-                          identity. Required by arm-run.sh; host smoke tests
+                          identity. Required by sandbox-run.sh; host smoke tests
                           may omit it and fall back to the host's gh auth.
-  CODEX_SANDBOX=<mode>    Overrides both arms. Unset, a containerized arm runs
+  CODEX_SANDBOX=<mode>    Overrides both arms. Unset, an isolated arm runs
                           danger-full-access (it needs the network to push and
-                          to answer a review; the container is the boundary)
+                          to answer a review; the microVM is the boundary)
                           and a host arm runs workspace-write.
   CODEX_FAST_MODE=<bool>  Use Codex's fast service tier for Greg and both
                           arms. Defaults to false. Fast mode consumes credits
                           faster and only applies to supported models.
   CODEX_HOME=<path>       Defaults to ~/.codex; used by Greg and host smoke
-                          sessions. Arm transcripts are copied from containers.
+                          sessions. Arm transcripts are copied from microVMs.
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
                           Defaults to 240000 (4m); 0 disables the watchdog.
   REVIEW_TIMEOUT_MS=<ms>  How long to wait for that review before merging

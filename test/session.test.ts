@@ -23,8 +23,8 @@ describe("codexToolArguments", () => {
   });
 
   // The isolation guarantee, stated as a test. codex_apps connectors (Linear,
-  // GitHub) are account-scoped and arrive with the auth.json that arm-run.sh
-  // mounts into every container, so no config.toml — and no second auth file
+  // GitHub) are account-scoped and arrive with the OAuth identity Docker
+  // Sandboxes injects, so no config.toml — and no second auth file
   // for the same account — can withhold them. Plugins are whatever the operator
   // happens to have installed, which is an uncontrolled variable in an A/B
   // experiment. Only this override withholds either, and only here: on the

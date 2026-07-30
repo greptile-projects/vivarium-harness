@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { copyFile, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { ArmConfig, ArmName, HarnessConfig } from "./config.js";
 import {
   runCommand,
@@ -14,7 +16,7 @@ export type TranscriptCapture = (
 ) => Promise<string | undefined>;
 
 export interface ArmEnvironment {
-  // Container names are generated per subticket. Every downstream operation
+  // Sandbox names are generated per subticket. Every downstream operation
   // must use this runtime config rather than the configured name prefixes.
   config: HarnessConfig;
   captureTranscript?: TranscriptCapture;
@@ -29,27 +31,31 @@ export type EnvironmentFactory = (
 
 interface RuntimeArm {
   arm: ArmConfig;
-  container: string;
-  volume: string;
-  network: string;
+  sandboxName: string;
+  scratch: string;
 }
 
 function safeName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^-+/, "");
 }
 
-function runtimeArms(config: HarnessConfig, runId: string): RuntimeArm[] {
+function runtimeEnvironment(
+  config: HarnessConfig,
+  runId: string,
+): { runtimes: RuntimeArm[]; ladderMount: string } {
   const suffix = safeName(runId.slice(-12) || randomUUID().slice(0, 12));
-  return config.arms.map((arm) => {
-    const base = safeName(arm.container as string);
-    const container = `${base}-${suffix}`;
-    return {
-      arm: { ...arm, container },
-      container,
-      volume: `${container}-docker`,
-      network: `${container}-net`,
-    };
-  });
+  return {
+    runtimes: config.arms.map((arm) => {
+      const base = safeName(arm.sandboxName as string);
+      const sandboxName = `${base}-${suffix}`;
+      return {
+        arm: { ...arm, sandboxName },
+        sandboxName,
+        scratch: join(tmpdir(), `${sandboxName}-host`),
+      };
+    }),
+    ladderMount: join(tmpdir(), `vivarium-ladder-${suffix}`),
+  };
 }
 
 function commandError(label: string, result: CommandResult): Error {
@@ -60,50 +66,49 @@ function commandError(label: string, result: CommandResult): Error {
 
 async function cleanupRuntime(
   runtimes: RuntimeArm[],
+  ladderMount: string,
   exec: CommandRunner,
 ): Promise<void> {
   const errors: string[] = [];
   for (const runtime of runtimes) {
-    const container = await exec("docker", [
+    const secret = await exec("sbx", [
+      "secret",
       "rm",
-      "-f",
-      "-v",
-      runtime.container,
+      runtime.sandboxName,
+      "github",
+      "--force",
     ]);
     if (
-      container.code !== 0 &&
-      !/no such container/i.test(`${container.stdout}\n${container.stderr}`)
-    ) {
-      errors.push(
-        commandError(`remove container ${runtime.container}`, container).message,
-      );
-    }
-
-    const volume = await exec("docker", [
-      "volume",
-      "rm",
-      "-f",
-      runtime.volume,
-    ]);
-    if (
-      volume.code !== 0 &&
-      !/no such volume/i.test(`${volume.stdout}\n${volume.stderr}`)
-    ) {
-      errors.push(commandError(`remove volume ${runtime.volume}`, volume).message);
-    }
-
-    const network = await exec("docker", ["network", "rm", runtime.network]);
-    if (
-      network.code !== 0 &&
-      !/not found|no such network/i.test(
-        `${network.stdout}\n${network.stderr}`,
+      secret.code !== 0 &&
+      !/not found|does not exist|no secret/i.test(
+        `${secret.stdout}\n${secret.stderr}`,
       )
     ) {
       errors.push(
-        commandError(`remove network ${runtime.network}`, network).message,
+        commandError(
+          `remove credential for ${runtime.sandboxName}`,
+          secret,
+        ).message,
       );
     }
+    const sandbox = await exec("sbx", ["rm", "--force", runtime.sandboxName]);
+    if (
+      sandbox.code !== 0 &&
+      !/not found|does not exist|no sandbox/i.test(
+        `${sandbox.stdout}\n${sandbox.stderr}`,
+      )
+    ) {
+      errors.push(
+        commandError(`remove sandbox ${runtime.sandboxName}`, sandbox).message,
+      );
+    }
+    await rm(runtime.scratch, { recursive: true, force: true }).catch((error) => {
+      errors.push(`remove scratch ${runtime.scratch}: ${String(error)}`);
+    });
   }
+  await rm(ladderMount, { recursive: true, force: true }).catch((error) => {
+    errors.push(`remove ladder snapshot ${ladderMount}: ${String(error)}`);
+  });
   if (errors.length > 0) {
     throw new Error(`ephemeral arm cleanup failed:\n${errors.join("\n")}`);
   }
@@ -115,26 +120,35 @@ export async function provisionArmEnvironment(
   note: (arm: ArmName, text: string) => void,
   exec: CommandRunner = runCommand,
 ): Promise<ArmEnvironment> {
-  const containerized = config.arms.every((arm) => arm.container !== undefined);
-  if (!containerized) {
+  const isolated = config.arms.every((arm) => arm.sandboxName !== undefined);
+  if (!isolated) {
     return { config, async cleanup() {} };
   }
 
-  const runtimes = runtimeArms(config, runId);
+  const { runtimes, ladderMount } = runtimeEnvironment(config, runId);
   try {
+    await mkdir(ladderMount, { recursive: true, mode: 0o755 });
+    const ladderSnapshot = join(ladderMount, "LADDER.md");
+    await copyFile(resolve("LADDER.md"), ladderSnapshot);
+
     await Promise.all(
       runtimes.map(async (runtime) => {
-        note(runtime.arm.name, `starting fresh environment ${runtime.container}`);
-        const result = await exec(resolve("scripts/arm-run.sh"), [
+        note(
           runtime.arm.name,
-        ], {
-          env: {
-            VIVARIUM_CONTAINER_NAME: runtime.container,
-            VIVARIUM_DOCKER_VOLUME: runtime.volume,
-            VIVARIUM_NETWORK_NAME: runtime.network,
-            VIVARIUM_RUN_ID: runId,
+          `starting fresh environment ${runtime.sandboxName}`,
+        );
+        const result = await exec(
+          resolve("scripts/sandbox-run.sh"),
+          [runtime.arm.name],
+          {
+            env: {
+              VIVARIUM_SANDBOX_NAME: runtime.sandboxName,
+              VIVARIUM_WORKSPACE_MOUNT: runtime.scratch,
+              VIVARIUM_LADDER_MOUNT: ladderMount,
+              VIVARIUM_RUN_ID: runId,
+            },
           },
-        });
+        );
         if (result.code !== 0) {
           throw commandError(
             `could not provision ${runtime.arm.name} environment`,
@@ -144,8 +158,44 @@ export async function provisionArmEnvironment(
         note(runtime.arm.name, "fresh clone and services ready");
       }),
     );
+
+    // Balanced mode prevents arbitrary private-network access, but sandboxes
+    // are intentionally addressable by name and can reach host-published
+    // ports through special aliases. Add explicit per-run denies before
+    // either Codex session starts. A policy error is an isolation failure, not
+    // a warning.
+    await Promise.all(
+      runtimes.map(async (runtime) => {
+        const peer = runtimes.find(
+          (candidate) => candidate.sandboxName !== runtime.sandboxName,
+        )!;
+        for (const target of [
+          peer.sandboxName,
+          "host.docker.internal",
+          "gateway.docker.internal",
+          "localhost",
+          "127.0.0.1",
+          "::1",
+        ]) {
+          const result = await exec("sbx", [
+            "policy",
+            "deny",
+            "network",
+            "--sandbox",
+            runtime.sandboxName,
+            target,
+          ]);
+          if (result.code !== 0) {
+            throw commandError(
+              `could not isolate ${runtime.sandboxName} from ${target}`,
+              result,
+            );
+          }
+        }
+      }),
+    );
   } catch (error) {
-    await cleanupRuntime(runtimes, exec).catch(() => {});
+    await cleanupRuntime(runtimes, ladderMount, exec).catch(() => {});
     throw error;
   }
 
@@ -162,14 +212,13 @@ export async function provisionArmEnvironment(
     threadId,
     destination,
   ) => {
-    const container = runtimeByName.get(arm)?.container;
-    if (!container) return undefined;
-    const found = await exec("docker", [
+    const sandboxName = runtimeByName.get(arm)?.sandboxName;
+    if (!sandboxName) return undefined;
+    const found = await exec("sbx", [
       "exec",
-      "-i",
-      container,
+      sandboxName,
       "find",
-      "/codex/sessions",
+      "/home/agent/.codex/sessions",
       "-type",
       "f",
       "-name",
@@ -178,22 +227,25 @@ export async function provisionArmEnvironment(
       "-quit",
     ]);
     if (found.code !== 0) {
-      throw commandError(`find transcript in ${container}`, found);
+      throw commandError(`find transcript in ${sandboxName}`, found);
     }
     const source = found.stdout.trim();
     if (!source) return undefined;
-    if (!source.startsWith("/codex/sessions/") || source.includes("\n")) {
-      throw new Error(`unsafe transcript path reported by ${container}`);
+    if (
+      !source.startsWith("/home/agent/.codex/sessions/") ||
+      source.includes("\n")
+    ) {
+      throw new Error(`unsafe transcript path reported by ${sandboxName}`);
     }
-    const copied = await exec("docker", [
+    const copied = await exec("sbx", [
       "cp",
-      `${container}:${source}`,
+      `${sandboxName}:${source}`,
       destination,
     ]);
     if (copied.code !== 0) {
-      throw commandError(`copy transcript from ${container}`, copied);
+      throw commandError(`copy transcript from ${sandboxName}`, copied);
     }
-    return `${container}:${source}`;
+    return `${sandboxName}:${source}`;
   };
 
   return {
@@ -203,7 +255,7 @@ export async function provisionArmEnvironment(
       for (const runtime of runtimes) {
         note(runtime.arm.name, "destroying ephemeral environment");
       }
-      await cleanupRuntime(runtimes, exec);
+      await cleanupRuntime(runtimes, ladderMount, exec);
     },
   };
 }
