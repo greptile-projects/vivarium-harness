@@ -219,7 +219,7 @@ describe("planNextMilestone", () => {
           entry.command === "sbx" &&
           entry.args.slice(0, 3).join(" ") === "policy deny network",
       ),
-    ).toHaveLength(5);
+    ).toHaveLength(1);
     expect(
       commands.some(
         (entry) =>

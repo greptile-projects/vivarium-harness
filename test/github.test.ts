@@ -136,6 +136,33 @@ describe("credential handling", () => {
     ]);
     expect(JSON.stringify(calls)).not.toContain(TOKEN);
   });
+
+  test("isolated baseline sync crosses the sandbox control plane once", async () => {
+    const { calls, exec } = recorder({
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara vivarium-sync": ok(
+        '{"remote":"https://github.com/org/repo.git","branch":"main","sha":"abc123"}\n',
+      ),
+    });
+
+    const github = armGitHub(
+      arm({
+        repo: "https://github.com/org/repo.git",
+        sandboxName: "vivarium-tuatara",
+        ghToken: TOKEN,
+      }),
+      exec,
+    );
+    expect(await github.isGitHubCheckout()).toBe(true);
+    expect(await github.syncToBaseline()).toEqual({
+      slug: "org/repo",
+      branch: "main",
+      sha: "abc123",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args.at(-1)).toBe("vivarium-sync");
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+  });
 });
 
 describe("syncToBaseline", () => {

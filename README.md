@@ -59,11 +59,13 @@ name prefixes, each arm's github token, and run-wide Codex settings such as
 `CODEX_FAST_MODE=true`. the image, services, screen, noVNC ports, and reviewer
 identity are fixed experiment constants. for every subticket the harness
 creates two fresh microVMs from that template. `sandbox-run.sh` clones one
-remote into each private `/workspace`; Docker's credential proxy supplies that
-arm's GitHub identity without putting the real token in the VM, remote URL, or
-argv. after build, retries, review, and merge, transcripts are copied into the
-run artifacts and the microVMs, Docker state, browser profiles, and private
-filesystems are destroyed.
+remote into each private `/workspace` through one baked `vivarium-init`
+bootstrap; Docker's credential proxy supplies that arm's GitHub identity
+without putting the real token in the VM, remote URL, or argv. after build,
+one baked `vivarium-sync` call resets each checkout to its recorded baseline
+without repeatedly waking the VM. after retries, review, and merge, transcripts
+are copied into the run artifacts and the microVMs, Docker state, browser
+profiles, and private filesystems are destroyed.
 
 each fresh arm microVM brings its own **docker daemon** (inside the VM, never
 the host's socket) and its own **screen**: an X display with chromium on it, so an arm can

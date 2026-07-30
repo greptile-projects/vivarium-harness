@@ -157,27 +157,26 @@ export async function planNextMilestone(
         if (created.code !== 0) {
           throw commandError("could not provision Greg's sandbox", created);
         }
-        for (const target of [
+        const targets = [
           "host.docker.internal",
           "gateway.docker.internal",
           "localhost",
           "127.0.0.1",
           "::1",
-        ]) {
-          const denied = await command("sbx", [
-            "policy",
-            "deny",
-            "network",
-            "--sandbox",
-            plannerSandbox,
-            target,
-          ]);
-          if (denied.code !== 0) {
-            throw commandError(
-              `could not isolate Greg's sandbox from ${target}`,
-              denied,
-            );
-          }
+        ];
+        const denied = await command("sbx", [
+          "policy",
+          "deny",
+          "network",
+          "--sandbox",
+          plannerSandbox,
+          targets.join(","),
+        ]);
+        if (denied.code !== 0) {
+          throw commandError(
+            `could not isolate Greg's sandbox from ${targets.join(", ")}`,
+            denied,
+          );
         }
       }
       result = await runner(

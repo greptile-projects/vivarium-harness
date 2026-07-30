@@ -320,6 +320,9 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
 
   return {
     async isGitHubCheckout() {
+      if (arm.sandboxName) {
+        return slugFromRemote(arm.repo) !== undefined;
+      }
       const url = await remote();
       return url !== undefined && slugFromRemote(url) !== undefined;
     },
@@ -342,6 +345,29 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // blinds the arm to the ladder). The `-x` on the clean below is deliberate;
     // see its comment.
     async syncToBaseline() {
+      if (arm.sandboxName) {
+        const result = await run("vivarium-sync", []);
+        if (result.code !== 0) {
+          throw new Error(
+            `baseline sync failed in ${checkoutLocation}: ${result.stderr.trim() || result.stdout.trim()}`,
+          );
+        }
+        const baseline = parseJson<{
+          remote?: string;
+          branch?: string;
+          sha?: string;
+        }>(result.stdout);
+        const slug = baseline?.remote
+          ? slugFromRemote(baseline.remote)
+          : undefined;
+        if (!baseline?.branch || !baseline.sha || !slug) {
+          throw new Error(
+            `baseline sync returned invalid state in ${checkoutLocation}`,
+          );
+        }
+        return { slug, branch: baseline.branch, sha: baseline.sha };
+      }
+
       const url = await remote();
       const slug = url ? slugFromRemote(url) : undefined;
       const branch = await defaultBranch();
