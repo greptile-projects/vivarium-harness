@@ -81,14 +81,14 @@ function TabStrip({
 export function LiveApp({
   model,
   resultsDir,
-  onStopAfterRung,
+  onStopAfterSubticket,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
 }: {
   model: LiveModel;
   resultsDir?: string;
-  onStopAfterRung?: () => boolean;
+  onStopAfterSubticket?: () => boolean;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -145,12 +145,12 @@ export function LiveApp({
       // The question owns every key while it is up: navigating away from it
       // would leave a run half-quit, and a stray keystroke must not be the
       // thing that answers it. `S` is the climb-only graceful path: keep the
-      // view up, finish the current rung, and let the loop return at its next
-      // milestone boundary.
+      // view up, finish the subticket in flight, and let the loop return at
+      // its next step boundary.
       if (confirming) {
         if (input === "y" || input === "Y") exit();
-        else if ((input === "s" || input === "S") && onStopAfterRung) {
-          const scheduled = onStopAfterRung();
+        else if ((input === "s" || input === "S") && onStopAfterSubticket) {
+          const scheduled = onStopAfterSubticket();
           if (scheduled) setStopScheduled(true);
           setConfirming(false);
         }
@@ -281,13 +281,13 @@ export function LiveApp({
       <Box>
         {confirming ? (
           <Text color="yellow" bold wrap="truncate-end">
-            {confirmQuitPrompt(arms, onStopAfterRung !== undefined)}
+            {confirmQuitPrompt(arms, onStopAfterSubticket !== undefined)}
           </Text>
         ) : (
           <>
             <Text dimColor wrap="truncate-end">
               {stopScheduled
-                ? "stop scheduled after current rung · q quit now"
+                ? "stop scheduled after current subticket · q quit now"
                 : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
             </Text>
             <Box flexGrow={1} />
@@ -324,7 +324,7 @@ export function mountLive(
   options: {
     resultsDir?: string;
     onExit?: () => void;
-    onStopAfterRung?: () => boolean;
+    onStopAfterSubticket?: () => boolean;
   },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
@@ -332,7 +332,7 @@ export function mountLive(
     <LiveApp
       model={model}
       resultsDir={options.resultsDir}
-      onStopAfterRung={options.onStopAfterRung}
+      onStopAfterSubticket={options.onStopAfterSubticket}
     />,
     { exitOnCtrlC: true },
   );

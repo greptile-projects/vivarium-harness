@@ -178,17 +178,14 @@ describe("runGreg", () => {
     expect(ladder).toContain("### [x] 1.2 B");
   });
 
-  it("honours a live stop request after every subticket in the current rung", async () => {
+  it("honours a live stop request after the subticket it arrived during", async () => {
     const { base, ladderPath } = await makeSetup();
-    let stopAfter: number | undefined;
+    let stop = false;
 
     await initLadder(ladderPath, "goal");
     await appendMilestone(ladderPath, 1, "Current", [
       { title: "A", description: "do A" },
       { title: "B", description: "do B" },
-    ]);
-    await appendMilestone(ladderPath, 2, "Next", [
-      { title: "C", description: "do C" },
     ]);
 
     const built = await runGreg(
@@ -196,18 +193,20 @@ describe("runGreg", () => {
       Infinity,
       {
         harness: async (config) => {
-          if (config.ticket === "do A") stopAfter = 1;
+          if (config.ticket === "do A") stop = true;
           return fakeRun(config.ticket);
         },
-        stopAfterMilestone: () => stopAfter,
+        stopRequested: () => stop,
         log: () => {},
       },
       ladderPath,
     );
 
-    expect(built.map((subticket) => subticket.number)).toEqual(["1.1", "1.2"]);
+    // The subticket in flight finishes — and gets its box — but its sibling
+    // 1.2 is not started, even though the rung is unfinished.
+    expect(built.map((subticket) => subticket.number)).toEqual(["1.1"]);
     expect(nextPendingSubticket(await readFile(ladderPath, "utf8"))?.number).toBe(
-      "2.1",
+      "1.2",
     );
   });
 
@@ -402,7 +401,7 @@ describe("planAhead", () => {
 
   it("stops after the planning rung where the live request arrives", async () => {
     const { base, ladderPath } = await makeSetup();
-    let stopAfter: number | undefined;
+    let stop = false;
 
     const planned = await planAhead(
       base,
@@ -412,9 +411,9 @@ describe("planAhead", () => {
           await appendMilestone(path, milestoneNumber, "One rung", [
             { title: "A", description: "do A" },
           ]);
-          stopAfter = milestoneNumber;
+          stop = true;
         },
-        stopAfterMilestone: () => stopAfter,
+        stopRequested: () => stop,
         log: () => {},
       },
       ladderPath,
