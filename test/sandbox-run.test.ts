@@ -72,7 +72,7 @@ printf '%s\\n' "$*" >> "$VIVARIUM_TEST_SBX_LOG"
 if [ "$1 $2" = "secret set" ]; then cat >/dev/null; exit 0; fi
 if [ "$1" = "exec" ]; then
   case "$*" in
-    *"vivarium-init"*) exec sleep 30 ;;
+    *"vivarium-init"*) exec sleep 2 ;;
   esac
   exit 0
 fi

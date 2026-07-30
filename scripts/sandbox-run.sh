@@ -47,6 +47,7 @@ case "$arm" in
   komodo) host_port=6080 ;;
   tuatara) host_port=6081 ;;
 esac
+init_log="/tmp/$sandbox-init.log"
 
 printf '%s' "$token" | sbx secret set "$sandbox" github >/dev/null
 sbx create \
@@ -62,11 +63,12 @@ sbx create \
 # receives the real token as an environment variable, file, remote URL, or
 # argv. vivarium-init clones, configures identity, waits for private Docker,
 # and finally becomes the long-lived GUI supervisor.
-sbx exec -d \
+nohup sbx exec -d \
   -e GH_TOKEN=proxy-managed \
   -e GITHUB_TOKEN=proxy-managed \
   -e DISPLAY=:99 \
-  "$sandbox" vivarium-init "$repo" "$ladder_mount/LADDER.md" &
+  "$sandbox" vivarium-init "$repo" "$ladder_mount/LADDER.md" \
+  >"$init_log" 2>&1 </dev/null &
 init_client_pid=$!
 init_client_done=false
 init_client_rc=0
@@ -94,14 +96,15 @@ done
 if [[ "$ready" != true ]]; then
   kill -KILL "$init_client_pid" 2>/dev/null || true
   wait "$init_client_pid" 2>/dev/null || true
+  tail -n 60 "$init_log" >&2 || true
   sbx exec "$sandbox" bash -lc 'tail -n 30 /var/log/vivarium/*.log' >&2 || true
   exit 1
 fi
-# sbx 0.37.1 keeps its local client attached to a healthy detached exec.
-# The remote detached session survives the local client, and is what keeps the
-# sandbox running between harness commands.
-kill -KILL "$init_client_pid" 2>/dev/null || true
-wait "$init_client_pid" 2>/dev/null || true
+# sbx 0.37.1 keeps its local client attached to a healthy detached exec. Leave
+# that client alive, with every host descriptor redirected, so the sandbox
+# stays warm between deterministic harness commands. `sbx rm` ends it with the
+# remote session during normal cleanup.
+disown "$init_client_pid" 2>/dev/null || true
 
 echo "started $sandbox ($arm — private Docker, clone, and GUI ready)"
 echo "  screen: http://127.0.0.1:$host_port/vnc.html"

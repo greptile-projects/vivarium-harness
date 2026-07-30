@@ -105,6 +105,13 @@ async function cleanupRuntime(
     await rm(runtime.scratch, { recursive: true, force: true }).catch((error) => {
       errors.push(`remove scratch ${runtime.scratch}: ${String(error)}`);
     });
+    await rm(join(tmpdir(), `${runtime.sandboxName}-init.log`), {
+      force: true,
+    }).catch((error) => {
+      errors.push(
+        `remove init log for ${runtime.sandboxName}: ${String(error)}`,
+      );
+    });
   }
   await rm(ladderMount, { recursive: true, force: true }).catch((error) => {
     errors.push(`remove ladder snapshot ${ladderMount}: ${String(error)}`);

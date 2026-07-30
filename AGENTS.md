@@ -173,8 +173,11 @@ prefixes, launches both with `--no-share-skills`, applies explicit network
 denies, and removes both in `finally`. `sandbox-run.sh` makes one remote
 `vivarium-init` call that clones the arm's HTTPS remote into private
 `/workspace`, configures its proxy-backed identity, waits for private Docker,
-and starts the GUI. It mounts only an empty host scratch directory plus
-`LADDER.md` read-only, and publishes noVNC on loopback ports 6080/6081.
+and starts the GUI. Its redirected host client stays attached until cleanup so
+the VM cannot auto-stop between harness commands. A baked `vivarium-sync`
+performs the complete baseline reset in one remote call. The launcher mounts
+only an empty host scratch directory plus `LADDER.md` read-only, and publishes
+noVNC on loopback ports 6080/6081.
 No checkout, browser profile, Docker cache, dependency directory, or Codex
 session survives the subticket. Retries and review rounds intentionally reuse
 the same VM, checkout, MCP client, and thread within that subticket.

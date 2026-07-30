@@ -17,10 +17,12 @@ USER root
 COPY scripts/sandbox-gui.sh /usr/local/bin/vivarium-gui
 COPY scripts/sandbox-browser.sh /usr/local/bin/browser
 COPY scripts/sandbox-init.sh /usr/local/bin/vivarium-init
+COPY scripts/sandbox-sync.sh /usr/local/bin/vivarium-sync
 RUN chmod 0755 \
     /usr/local/bin/vivarium-gui \
     /usr/local/bin/browser \
-    /usr/local/bin/vivarium-init
+    /usr/local/bin/vivarium-init \
+    /usr/local/bin/vivarium-sync
 USER agent
 
 ENV DISPLAY=:99 \
