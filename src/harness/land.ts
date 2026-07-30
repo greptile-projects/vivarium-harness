@@ -4,6 +4,7 @@ import type {
   ArmGitHub,
   Baseline,
   MergeOutcome,
+  PullRequestCheck,
   PullRequestRef,
   ReviewNote,
 } from "./github.js";
@@ -108,6 +109,72 @@ function isReviewPassEvidence(note: ReviewNote): boolean {
       note.updatedAt !== undefined &&
       note.updatedAt !== note.createdAt)
   );
+}
+
+// Greptile normally starts a GitHub check as soon as a pull request or pushed
+// fix asks for review. If five minutes pass with neither reviewer output nor a
+// check that is running or ran during that window, the webhook was likely
+// missed. One explicit mention is the bounded recovery path.
+export const GREPTILE_NUDGE_AFTER_MS = 5 * 60 * 1000;
+export const GREPTILE_REVIEW_REQUEST = "@greptileai review";
+
+const ACTIVE_CHECK_STATES = new Set([
+  "EXPECTED",
+  "IN_PROGRESS",
+  "PENDING",
+  "QUEUED",
+  "REQUESTED",
+  "WAITING",
+]);
+const TERMINAL_CHECK_STATES = new Set([
+  "ACTION_REQUIRED",
+  "CANCELLED",
+  "COMPLETED",
+  "ERROR",
+  "FAILURE",
+  "NEUTRAL",
+  "SKIPPED",
+  "STALE",
+  "SUCCESS",
+  "TIMED_OUT",
+]);
+
+function isGreptileCheck(check: PullRequestCheck): boolean {
+  return `${check.name} ${check.detailsUrl ?? ""}`
+    .toLowerCase()
+    .includes("greptile");
+}
+
+function checkTimestamp(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+// True only when GitHub affirmatively shows no active Greptile check and every
+// matching completed check predates this wait. Missing checks count as idle;
+// unknown states or missing timestamps fail closed and suppress the comment.
+export function greptileReviewIdleSince(
+  checks: PullRequestCheck[],
+  since: number,
+): boolean {
+  const greptile = checks.filter(isGreptileCheck);
+  if (greptile.length === 0) return true;
+
+  return greptile.every((check) => {
+    const status = check.status.toUpperCase();
+    if (ACTIVE_CHECK_STATES.has(status)) return false;
+    if (!TERMINAL_CHECK_STATES.has(status)) return false;
+    const timestamps = [
+      checkTimestamp(check.createdAt),
+      checkTimestamp(check.startedAt),
+      checkTimestamp(check.completedAt),
+    ].filter((value): value is number => value !== undefined);
+    return (
+      timestamps.length > 0 &&
+      timestamps.every((timestamp) => timestamp < since)
+    );
+  });
 }
 
 export type LandingStatus =
@@ -289,6 +356,8 @@ async function waitForReview(
 }> {
   const start = deps.now();
   const deadline = (reviewerLastSeenAt ?? start) + timeoutMs;
+  const nudgeAt = start + GREPTILE_NUDGE_AFTER_MS;
+  let nudgeEvaluated = false;
   const abortedResult = () => ({
     found: [] as ReviewNote[],
     conversation: [] as ReviewNote[],
@@ -302,6 +371,37 @@ async function waitForReview(
     !seen.has(reviewRevision(note)) &&
     (note.kind !== "reaction" ||
       (acceptReactions && isThumbsUpReaction(note)));
+  const maybeRequestReview = async (): Promise<void> => {
+    if (
+      nudgeEvaluated ||
+      deps.now() < nudgeAt ||
+      !sameLogin(reviewer, "greptile-apps[bot]")
+    ) {
+      return;
+    }
+    // Exactly one status read and at most one comment per wait. A failing or
+    // ambiguous read cannot prove Greptile is idle, so it suppresses the ping.
+    nudgeEvaluated = true;
+    try {
+      const checks = await deps.github.checkRuns(pullRequest);
+      if (!greptileReviewIdleSince(checks, start)) {
+        deps.note(
+          `Greptile's review check is running or ran within the last ${Math.round(GREPTILE_NUDGE_AFTER_MS / 60_000)}m — not requesting another review`,
+        );
+        return;
+      }
+      await deps.github.postComment(pullRequest, GREPTILE_REVIEW_REQUEST);
+      deps.note(
+        `no Greptile review check ran within ${Math.round(GREPTILE_NUDGE_AFTER_MS / 60_000)}m — posted "${GREPTILE_REVIEW_REQUEST}" on #${pullRequest}`,
+      );
+    } catch (error) {
+      deps.note(
+        `could not verify Greptile review status after ${Math.round(GREPTILE_NUDGE_AFTER_MS / 60_000)}m (${
+          error instanceof Error ? error.message : String(error)
+        }) — not posting a review request`,
+      );
+    }
+  };
   let lastError: string | undefined;
   for (;;) {
     let conversation: ReviewNote[];
@@ -381,6 +481,7 @@ async function waitForReview(
         error: lastError,
       };
     }
+    await maybeRequestReview();
     if (await waitUnlessAborted(deps, pollMs)) return abortedResult();
   }
 }

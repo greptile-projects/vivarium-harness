@@ -78,7 +78,8 @@ bun start -- --help              # the full option + env reference
   everywhere else and does not acquire a second one here. Stopping live
   sessions exits 1. It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
-  writes one `results/live-<ts>/<arm>/progress.log` per arm either way.
+  writes one `progress.log` per arm either way, filed beside the record it
+  describes — `results/rung-NN/run/N.M/<arm>/progress.log`.
 - **`--json`** prints the machine-readable result and implies `--no-tui`.
 - Exit code is **1** whenever an arm exhausts its retries or the run throws, in
   every mode — the watchable path and the scriptable path are the same path.
@@ -454,6 +455,13 @@ cross-layer import is always visible as a `../harness/` in the specifier.
     - **The maximum is reached.** At most `reviewRounds` reviewer comments are
       handed back to the arm, so a disagreement cannot create an unbounded
       comment loop.
+  A wait also has one bounded missed-trigger recovery. After five minutes with
+  no reviewer output, the harness reads GitHub's Greptile status checks. It
+  posts the PR-level comment `@greptileai review` only when no Greptile check is
+  running and none started, completed, or was created during that same
+  five-minute window. The decision is made once per wait, so a long silence
+  cannot spam the pull request; an unreadable or ambiguous status fails closed
+  and posts nothing.
   Every reviewer event first passes through a 30-second quiet-period debounce.
   New entries reset the window, so a review body and the inline comments that
   become visible a few seconds later produce one arm prompt rather than one
@@ -642,11 +650,13 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   counterpart to `LADDER.md` (see the warning under `ladder.ts`). There is no
   state file: the record **is** the artifact tree, filed by ladder coordinates
   (`rungDirectory` / `planDirectory` / `subticketRunDirectory` are the one
-  place the paths are spelled), and `readClimbState` reassembles the climb by
-  scanning `results/rung-*/` and reconciling it with the checked boxes parsed
-  from `LADDER.md` — a completed `run.json` is evidence, but does not enter
-  climb history until its box is durably checked. Each accepted subticket's
-  `run.json` supplies the run id,
+  place the paths are spelled — and `armLogPath` / `plannerLogPath` /
+  `climbLogPath` sit beside them, so the live feeds use the same coordinates
+  as the records they narrate rather than a parallel scheme), and
+  `readClimbState` reassembles the climb by scanning `results/rung-*/` and
+  reconciling it with the checked boxes parsed from `LADDER.md` — a completed
+  `run.json` is evidence, but does not enter climb history until its box is
+  durably checked. Each accepted subticket's `run.json` supplies the run id,
   artifact dir and each arm's pull request with its review-round counts
   (`comments` for the whole conversation and `diffComments` for the inline
   ones, kept apart because only the second is a count of findings), each
@@ -663,8 +673,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   has ever landed, not just the one in flight.
 
 - **`src/index.ts`** — the single entrypoint. Runs the ladder loop, owns the
-  `results/live-<ts>/` log directory and the exit code, and owns no run logic
-  of its own. Flag resolution lives in `config.ts` as `parseRunMode` (pure, and
+  exit code, and owns no run logic of its own — not even a log directory: the
+  feed's destination is a property of what is being written, so the climb
+  decides it per phase. Flag resolution lives in `config.ts` as `parseRunMode` (pure, and
   tested in `test/config.test.ts`) — a flag that could only be honoured by
   ignoring it throws instead, including the removed `--ticket`.
 
@@ -674,11 +685,28 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   the TUI's log tab, and echoes to stdout when no TUI is mounted — the TUI and
   the `--no-tui` path go through the same wiring, so a change to the feed
   can't drift between them. One
-  file per arm (`live-<ts>/<arm>/progress.log`, plus `ladder.log` for the
-  climb's own lines): one combined file read fine live, where the label column
+  file per arm: one combined file read fine live, where the label column
   tells the arms apart, but the artifact is a *pair* of independent builds and
   reading one arm's three-hour run meant grepping the other one out of every
   line first. The interleaved view survives where it belongs — in the log tab.
+  **Where** those files go is not `attach.ts`'s business — it is handed
+  `LogTargets` and asks them **per line**, because the destination is a
+  property of what is being written rather than of the process writing it. The
+  feeds used to land in one `results/live-<ts>/` directory per `bun start`,
+  which named the run by when it happened to start (saying nothing about what
+  it holds) and left a parallel tree accumulating one directory per invocation
+  beside the tree that actually matters. Now `src/climb.ts` re-points the
+  target as the loop advances — an arm's commentary into that subticket's run
+  directory beside its attempts, Greg's into that rung's `plan/` beside the
+  transcript of the same turn, and the climb's own lines into a single
+  `results/climb.log` that reads continuously across every invocation because
+  those lines belong to no rung and no arm. Resolving per line rather than at
+  attach time is what lets a feed opened before the first subticket exists
+  still land correctly once one does; with no target yet, arm lines are
+  discarded rather than filed somewhere provisional, so a run that dies during
+  setup leaves no empty directory behind. The cost, accepted knowingly, is
+  that per-invocation grouping is gone: "what did last night's run do" is now
+  answered by reading timestamps, not by listing a directory.
   `store.ts` reduces raw `codex/event` messages into per-arm `ArmState`, plus
   `note()` for landing progress (waiting on a review is the arm working with
   its session idle, and it belongs on the same activity trail) and `phase()`
@@ -742,7 +770,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   have a tab of its own next to the climb: the same plan with none of the
   outcomes, and the rung being built was the only thing anyone opened it for —
   which the climb tree marks anyway. The climb's own log lines survive as a
-  short tail under the tree, and in full in the log tab and `ladder.log`. The pull
+  short tail under the tree, and in full in the log tab and `results/climb.log`. The pull
   request rows are budgeted *before* the answer and print the URL whole,
   truncating the title instead: those rows exist to be opened, and a truncated
   link is not a link. The activity trail is capped at ten rows however tall the
@@ -851,31 +879,40 @@ Everything a rung produced lives under its own directory, filed by ladder
 coordinates — the path answers "what is this" without opening a file:
 
 ```
+results/climb.log           # the climb's own lines, across every invocation
 results/rung-01/            # one directory per rung (milestone)
   plan/
     plan.json               # Greg's planning turns for this rung, appended per attempt
     <threadId>.jsonl        # …and each turn's raw Codex transcript
+    progress.log            # …and the live feed of those turns
   run/1.1/                  # one directory per subticket — this IS the run dir
     run.json                # the whole record: status, subticket, config,
                             # baselines, each arm's attempts and landing
     ticket.md prompt.md
     tuatara/attempt-01/  request.json status.json response.json output.txt
                          error.txt transcript.jsonl
+    tuatara/progress.log           # the live feed, beside the attempts it narrates
     tuatara/rounds/round-01.diff   # what each answered review round pushed
     komodo/attempt-01/   ...
+    komodo/progress.log
     superseded/<ts>/        # what a re-run of a failed box replaced, in full
   run/1.2/ ...
-results/live-<ts>/
-  tuatara/progress.log      # one feed per arm, written by the live view
-  komodo/progress.log
-  greg/progress.log         # the planner session, when there is one
-  ladder.log                # the climb's own lines
 results/mirror/
   makors__vivarium-test-komodo-mirror/   # one directory per mirror repo
     pr-0026.json            # one mirror PR: Komodo's counterfactual review,
                             # conversation + every observed revision, keyed
                             # back to the source PR it mirrors
 ```
+
+The feeds are filed by the same coordinates as the records, so `results/`
+holds only rungs and one climb log — no parallel tree, and nothing named after
+the process that happened to produce it. They are a **debugging** artifact,
+not an analysis one: for a run that finished cleanly, that arm's
+`transcript.jsonl` is a strict superset. What they uniquely hold is resolution
+*inside* an attempt (the record has only a start and an end snapshot), the
+landing phase (which emits no `codex/event` at all), and whatever a process
+killed mid-attempt never got to copy out of the container. Analysis reads
+`run.json`.
 
 The landing inside `run.json` is the close-reading input the experiment is
 for: the reviewer's findings and the arm's answers to them, in one

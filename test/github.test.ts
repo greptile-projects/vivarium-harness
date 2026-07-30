@@ -529,6 +529,63 @@ describe("merge", () => {
   });
 });
 
+describe("review check recovery", () => {
+  test("normalizes GitHub check runs and status contexts", async () => {
+    const { exec } = recorder({
+      "gh pr view 7": ok(
+        JSON.stringify({
+          statusCheckRollup: [
+            {
+              name: "Greptile Review",
+              status: "IN_PROGRESS",
+              startedAt: "2026-07-30T01:00:00Z",
+              completedAt: "0001-01-01T00:00:00Z",
+              detailsUrl: "https://greptile.com/",
+            },
+            {
+              context: "continuous-integration",
+              state: "SUCCESS",
+              createdAt: "2026-07-30T00:55:00Z",
+              targetUrl: "https://ci.example/run/1",
+            },
+          ],
+        }),
+      ),
+    });
+
+    expect(await armGitHub(arm(), exec).checkRuns(7)).toEqual([
+      {
+        name: "Greptile Review",
+        status: "IN_PROGRESS",
+        startedAt: "2026-07-30T01:00:00Z",
+        completedAt: "0001-01-01T00:00:00Z",
+        createdAt: undefined,
+        detailsUrl: "https://greptile.com/",
+      },
+      {
+        name: "continuous-integration",
+        status: "SUCCESS",
+        startedAt: undefined,
+        completedAt: undefined,
+        createdAt: "2026-07-30T00:55:00Z",
+        detailsUrl: "https://ci.example/run/1",
+      },
+    ]);
+  });
+
+  test("posts the review request as an exact PR-level comment", async () => {
+    const { calls, exec } = recorder();
+
+    await armGitHub(arm(), exec).postComment(7, "@greptileai review");
+
+    expect(calls).toContainEqual({
+      command: "gh",
+      args: ["pr", "comment", "7", "--body", "@greptileai review"],
+      env: undefined,
+    });
+  });
+});
+
 describe("headSha", () => {
   test("reads the head off the pull request", async () => {
     const { exec, calls } = recorder({

@@ -55,17 +55,24 @@ export function confirmQuitPrompt(
 // everything worth saying and a second message would only be noise.
 export function quitNotice(
   arms: ArmState[],
-  options: { logDir?: string },
+  options: { feedPath?: string },
 ): string | null {
   const running = stillRunning(arms);
   if (running.length === 0) return null;
 
   const { count, names } = describe(running);
+  // Name the feed that was active when the view closed. The caller supplies
+  // the same target used by the writer, so planner output can be named exactly
+  // while a harness target keeps its per-arm placeholder. Before any phase
+  // begins, the generic run shape is the honest answer.
+  const path =
+    options.feedPath ??
+    "results/rung-<NN>/run/<N.M>/<arm>/progress.log";
   return [
     "",
     `quit · stopping ${count} (${names})`,
     "what they wrote before the stop is under",
-    `  ${options.logDir ?? "results/live-<ts>"}/<arm>/progress.log`,
+    `  ${path}`,
     "",
   ].join("\n");
 }
@@ -77,9 +84,11 @@ export function quitNotice(
 export function onViewClosed(
   model: LiveModel,
   controller: AbortController,
-  options: { logDir?: string },
+  options: { feedPath?: string },
 ): void {
-  const notice = quitNotice(model.live.snapshot(), { logDir: options.logDir });
+  const notice = quitNotice(model.live.snapshot(), {
+    feedPath: options.feedPath,
+  });
   if (!notice) return;
 
   process.stdout.write(`${notice}\n`);

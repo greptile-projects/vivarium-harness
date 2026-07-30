@@ -1,9 +1,6 @@
 #!/usr/bin/env bun
-import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
 import {
   MAX_MILESTONES,
-  RESULTS_DIR,
   parseArgs,
   parseRunMode,
   usage,
@@ -27,24 +24,15 @@ async function main(): Promise<void> {
     const mode = parseRunMode(argv, Boolean(process.stdout.isTTY));
     const { json, useTui, planOnly } = mode;
 
-    // Every mode writes its human-readable feed under the same directory —
-    // one progress.log per arm, plus ladder.log for the climb's own lines.
-    // Created only once a run is actually about to start, so a config error
-    // does not leave an empty live-<ts> directory behind.
-    const logDir = resolve(
-      RESULTS_DIR,
-      `live-${new Date().toISOString().replaceAll(":", "-")}`,
-    );
-    const logs = `${logDir}/<arm>/progress.log`;
-
     const base = await validateConfig(parseArgs(argv, process.env));
-    await mkdir(logDir, { recursive: true });
     const limit = mode.unbounded ? Infinity : MAX_MILESTONES;
 
-    const subtickets = await runGregLive(base, limit, planOnly, {
-      useTui,
-      logDir,
-    });
+    // Every mode writes the same human-readable feed; where each line lands is
+    // decided per phase by the climb, beside the record it explains. Nothing
+    // is created up front, so a run that never starts leaves nothing behind.
+    const logs = `${base.resultsDir}/rung-<NN>/run/<N.M>/<arm>/progress.log`;
+
+    const subtickets = await runGregLive(base, limit, planOnly, { useTui });
     const milestones = new Set(
       subtickets.map((subticket) => subticket.milestone),
     ).size;

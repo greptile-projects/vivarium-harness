@@ -85,7 +85,9 @@ raw log. `↹`/`←→` or `1`-`9` switch, `↑↓` scroll, `q` quits.
 `q` quits, and quitting stops the run. while sessions are still working it
 asks first (`y / n`) and names what would be torn down; anything other than
 `y` goes back to watching. ctrl-c stops without asking. what each arm wrote
-before the stop is under `results/live-<ts>/<arm>/progress.log`.
+before the stop is under that subticket's own directory —
+`results/rung-<NN>/run/<N.M>/<arm>/progress.log`, beside its attempts — and the
+notice names it exactly.
 
 ## if a run gets interrupted
 

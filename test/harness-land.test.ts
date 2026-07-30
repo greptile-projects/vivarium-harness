@@ -98,6 +98,10 @@ function fakeGitHub(
         },
       ];
     },
+    async checkRuns() {
+      return [];
+    },
+    async postComment() {},
     async merge() {
       state.merged.push(arm.name);
       return { merged: true, method: "merge", mergedAt: "2026-07-24T01:00:00Z" };
@@ -385,6 +389,10 @@ describe("runHarness environment lifecycle", () => {
           async conversation() {
             return [];
           },
+          async checkRuns() {
+            return [];
+          },
+          async postComment() {},
           async headSha() {
             return undefined;
           },
@@ -510,6 +518,10 @@ describe("runHarness environment lifecycle", () => {
           async conversation() {
             return [];
           },
+          async checkRuns() {
+            return [];
+          },
+          async postComment() {},
           async headSha() {
             return undefined;
           },

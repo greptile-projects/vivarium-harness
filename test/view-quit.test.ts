@@ -57,14 +57,33 @@ describe("quitNotice", () => {
   it("names what it is stopping and where its feed went", () => {
     const notice = quitNotice(
       [arm("tuatara", "working"), arm("komodo", "done")],
-      { logDir: "results/live-x" },
+      { feedPath: "results/rung-02/run/2.3/<arm>/progress.log" },
     );
 
     expect(notice).toContain("stopping 1 session");
     expect(notice).toContain("tuatara");
     expect(notice).not.toContain("komodo");
-    // The one thing the reader needs from it: where the run keeps writing.
-    expect(notice).toContain("results/live-x/<arm>/progress.log");
+    // The one thing the reader needs from it: where the run keeps writing —
+    // the directory of the subticket that was in flight.
+    expect(notice).toContain("results/rung-02/run/2.3/<arm>/progress.log");
+  });
+
+  it("names the planner feed without appending an arm path", () => {
+    const notice = quitNotice([arm("greg", "working")], {
+      feedPath: "results/rung-02/plan/progress.log",
+    });
+
+    expect(notice).toContain("results/rung-02/plan/progress.log");
+    expect(notice).not.toContain("<arm>");
+  });
+
+  // Before the first phase there is no active target, so the notice points at
+  // the generic run shape rather than inventing a path that does not exist.
+  it("falls back to the tree shape before any feed is active", () => {
+    const notice = quitNotice([arm("greg", "working")], {});
+
+    expect(notice).toContain("stopping 1 session");
+    expect(notice).toContain("rung-<NN>/run/<N.M>/<arm>/progress.log");
   });
 
   it("names every running session", () => {
@@ -128,7 +147,9 @@ describe("onViewClosed", () => {
     );
 
     try {
-      onViewClosed(modelMidRun(), controller, { logDir: "log/path" });
+      onViewClosed(modelMidRun(), controller, {
+        feedPath: "results/rung-01/run/1.1/<arm>/progress.log",
+      });
     } finally {
       write.mockRestore();
     }
@@ -136,7 +157,9 @@ describe("onViewClosed", () => {
     expect(controller.signal.aborted).toBe(true);
     expect(written.join("")).toContain("stopping 1 session");
     expect(written.join("")).toContain("tuatara");
-    expect(written.join("")).toContain("log/path/<arm>/progress.log");
+    expect(written.join("")).toContain(
+      "results/rung-01/run/1.1/<arm>/progress.log",
+    );
   });
 
   // The end-of-run unmount: nothing running, so nothing to say and nothing to

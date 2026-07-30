@@ -25,7 +25,7 @@ export interface ClimbRow {
 export const UPCOMING = 3;
 
 // Notes kept below the tree. The climb's own log lines are also in the log tab
-// (and in ladder.log) in full; these are the last few, where they can be read
+// (and in climb.log) in full; these are the last few, where they can be read
 // beside the rung they are about.
 export const NOTE_ROWS = 3;
 
