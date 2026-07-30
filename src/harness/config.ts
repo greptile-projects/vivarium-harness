@@ -38,15 +38,15 @@ export const REVIEW_DEBOUNCE_MS = 30_000;
 // re-reviews after a push, so round 2 is where "did the answer land" shows up,
 // and later rounds are where a disagreement actually plays out — the reviewed
 // arm pushing back, Greptile holding or conceding. That exchange is the
-// experiment's subject matter, so the cap is set well above the point where
-// most pull requests settle rather than at it.
+// experiment's subject matter, so the cap leaves room for the initial review
+// and two re-review passes without making one stubborn score unbounded.
 //
 // It is a *maximum*, not a count: the loop stops at the first round where the
 // reviewer says nothing new (recorded as a timeout) or the arm's answer turn
 // errors, so a pull request that settles in one round still costs one round.
 // The wall-clock exposure is bounded the same way — only the final, unanswered
 // round pays the full REVIEW_TIMEOUT_MS.
-export const REVIEW_ROUNDS = 5;
+export const REVIEW_ROUNDS = 3;
 // The login the reviewed arm has to answer to. This is part of the experiment,
 // not deployment configuration; change it deliberately in code if the
 // installed reviewer identity ever changes.

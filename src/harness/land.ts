@@ -36,6 +36,10 @@ export interface ReviewRound {
   // What appeared from the reviewer this round. Recorded for the record only —
   // the arm is never handed these; it fetches its own review.
   found: ReviewNote[];
+  // The latest score in Greptile's editable PR-level summary as of this
+  // round. Greptile keeps the comment id stable and edits the score in place,
+  // so the value belongs beside the exact revision that drove this round.
+  confidenceScore?: number;
   // The branch head before and after the arm answered. `reviewedSha` is the
   // commit the review was written against, pinned before the arm can move the
   // ref; without it a force-push would erase the only diff that shows what the
@@ -95,6 +99,37 @@ export function reviewRevision(note: ReviewNote): string {
 // left to say. Any prose in the batch is work for the arm.
 export function reviewerSignedOff(found: ReviewNote[]): boolean {
   return found.length > 0 && found.every(isThumbsUpReaction);
+}
+
+const GREPTILE_SUMMARY = /<h3>\s*Greptile Summary\s*<\/h3>/i;
+const GREPTILE_CONFIDENCE = /Confidence Score:\s*([1-5])\s*\/\s*5/i;
+
+// Read the current score from the newest revision of Greptile's editable
+// summary. The conversation is ordered by comment creation, not edit time, so
+// taking the last matching array entry would preserve a stale score whenever
+// an older summary comment was edited after newer thread comments appeared.
+export function reviewerConfidenceScore(
+  conversation: ReviewNote[],
+  reviewer: string,
+): number | undefined {
+  let latest: { at: string; score: number } | undefined;
+  for (const note of conversation) {
+    if (
+      note.kind !== "issue-comment" ||
+      !sameLogin(note.author, reviewer) ||
+      !GREPTILE_SUMMARY.test(note.body)
+    ) {
+      continue;
+    }
+    const match = GREPTILE_CONFIDENCE.exec(note.body);
+    if (!match?.[1]) continue;
+    const candidate = {
+      at: note.updatedAt ?? note.createdAt,
+      score: Number(match[1]),
+    };
+    if (!latest || candidate.at >= latest.at) latest = candidate;
+  }
+  return latest?.score;
 }
 
 // Evidence that a push-triggered review pass has arrived: a fresh root inline
@@ -618,6 +653,25 @@ export async function reviewArm(
   // the anchor that makes the review timeout a rolling window over reviewer
   // silence rather than a fresh allowance per round.
   let reviewerLastSeenAt: number | undefined;
+  let confidenceScore: number | undefined;
+  const requestConfidenceReview = async (): Promise<void> => {
+    if (confidenceScore === undefined) return;
+    try {
+      await deps.github.postComment(
+        pullRequest.number,
+        GREPTILE_REVIEW_REQUEST,
+      );
+      note(
+        `confidence remains ${confidenceScore}/5 — requested another review of #${pullRequest.number}`,
+      );
+    } catch (error) {
+      note(
+        `confidence remains ${confidenceScore}/5 but another review of #${pullRequest.number} could not be requested (${
+          error instanceof Error ? error.message : String(error)
+        }) — continuing to the next bounded wait`,
+      );
+    }
+  };
   // The reviewer re-reviews every pushed commit, and that pass lands minutes
   // after the ACKs and thread replies do — long enough that "nothing left to
   // answer" read off the fast responses merged PR #7 with a fresh P1 root
@@ -660,12 +714,16 @@ export async function reviewArm(
       }
 
       if (waited.timedOut) {
+        confidenceScore =
+          reviewerConfidenceScore(waited.conversation, arm.reviewer) ??
+          confidenceScore;
         reviewRounds.push({
           round,
           reviewer: arm.reviewer,
           waitedMs: waited.waitedMs,
           timedOut: true,
           found: [],
+          confidenceScore,
           error: waited.error,
         });
         note(
@@ -680,6 +738,8 @@ export async function reviewArm(
 
       const found = waited.found;
       const conversation = waited.conversation;
+      confidenceScore =
+        reviewerConfidenceScore(conversation, arm.reviewer) ?? confidenceScore;
       reviewerLastSeenAt = deps.now();
 
       // Everything visible now counts as seen, including the arm's own replies:
@@ -697,17 +757,44 @@ export async function reviewArm(
       // A batch of nothing but reviewer thumbs-up is the sole mechanical close
       // signal. Other reactions never enter `found`; prose is always handed to
       // the arm.
-      if (reviewerSignedOff(found)) {
+      if (
+        reviewerSignedOff(found) &&
+        (confidenceScore === undefined || confidenceScore === 5)
+      ) {
         reviewRounds.push({
           round,
           reviewer: arm.reviewer,
           waitedMs: waited.waitedMs,
           timedOut: false,
           found,
+          confidenceScore,
           signedOff: true,
         });
         note(
           `${arm.reviewer} came back with nothing to answer — the review is settled`,
+        );
+        break;
+      }
+
+      // A thumbs-up batch acknowledges the arm's comments, but a known score
+      // below 5/5 says the pull request itself has not reached the merge target.
+      // There is no answer turn to leave a trigger in this branch, so request
+      // another bounded pass directly instead of waiting for the timeout.
+      if (reviewerSignedOff(found) && confidenceScore !== undefined) {
+        reviewRounds.push({
+          round,
+          reviewer: arm.reviewer,
+          waitedMs: waited.waitedMs,
+          timedOut: false,
+          found,
+          confidenceScore,
+        });
+        if (round < config.reviewRounds) {
+          await requestConfidenceReview();
+          continue;
+        }
+        note(
+          `confidence remains ${confidenceScore}/5 after the maximum ${config.reviewRounds} review rounds — the configured cap allows landing`,
         );
         break;
       }
@@ -786,6 +873,7 @@ export async function reviewArm(
         waitedMs: waited.waitedMs,
         timedOut: false,
         found,
+        confidenceScore,
         reviewedSha,
         respondedSha,
         respondedAt: new Date().toISOString(),
@@ -881,12 +969,26 @@ export async function reviewArm(
               observedRevisions,
             );
         if (!leftTrace) {
-          answered.settled = true;
-          note(
-            `the answer pushed nothing and posted nothing on #${pullRequest.number} — nothing for ${arm.reviewer} to respond to, so the review is settled`,
-          );
-          break;
+          if (confidenceScore !== undefined && confidenceScore < 5) {
+            await requestConfidenceReview();
+          } else {
+            answered.settled = true;
+            note(
+              `the answer pushed nothing and posted nothing on #${pullRequest.number} — nothing for ${arm.reviewer} to respond to, so the review is settled`,
+            );
+            break;
+          }
         }
+      }
+
+      if (
+        round === config.reviewRounds &&
+        confidenceScore !== undefined &&
+        confidenceScore < 5
+      ) {
+        note(
+          `confidence remains ${confidenceScore}/5 after the maximum ${config.reviewRounds} review rounds — the configured cap allows landing`,
+        );
       }
     }
   }

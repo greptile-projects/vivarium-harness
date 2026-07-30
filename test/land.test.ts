@@ -62,6 +62,21 @@ function note(author: string, id: string, body = "fix this"): ReviewNote {
   };
 }
 
+function summary(
+  score: number,
+  updatedAt: string,
+  body = "reviewed the current head",
+): ReviewNote {
+  return {
+    id: "issue-comment:summary",
+    kind: "issue-comment",
+    author: REVIEWER,
+    body: `<h3>Greptile Summary</h3>\n\n${body}\n\n<h3>Confidence Score: ${score}/5</h3>`,
+    createdAt: "2026-07-24T00:00:01Z",
+    updatedAt,
+  };
+}
+
 // A GitHub side that answers from a script instead of the network. `rounds` is
 // what conversation() returns on successive calls, so a test can say "nothing,
 // nothing, then the review arrives".
@@ -749,7 +764,7 @@ describe("the rounds after the first", () => {
   // leaves no trace on the pull request.
   it("settles when the answer pushes nothing and posts nothing", async () => {
     const github = fakeGitHub({
-      conversations: [[note(REVIEWER, "c1", "5/5 — no issues found")]],
+      conversations: [[summary(5, "2026-07-24T00:00:01Z", "no issues found")]],
       // The branch never moves either.
       heads: ["sha-unchanged"],
     });
@@ -766,8 +781,143 @@ describe("the rounds after the first", () => {
 
     expect(prompts).toHaveLength(1);
     expect(record.reviewRounds).toHaveLength(1);
+    expect(record.reviewRounds[0]?.confidenceScore).toBe(5);
     expect(record.reviewRounds[0]?.settled).toBe(true);
     expect(record.reviewRounds[0]?.timedOut).toBe(false);
+    expect(record.status).toBe("merged");
+  });
+
+  it("requests another pass instead of settling below 5/5", async () => {
+    const low = summary(
+      2,
+      "2026-07-24T00:00:01Z",
+      "the focused checks pass but confidence remains low",
+    );
+    const high = summary(
+      5,
+      "2026-07-24T00:03:00Z",
+      "the focused checks pass and no issues remain",
+    );
+    const github = fakeGitHub({
+      conversations: [
+        [low],
+        [low],
+        [high],
+        [high],
+      ],
+      heads: ["sha-unchanged"],
+    });
+    const prompts: string[] = [];
+    const record = await landArm(
+      reviewed,
+      threeRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    expect(prompts).toHaveLength(2);
+    expect(record.reviewRounds).toHaveLength(2);
+    expect(record.reviewRounds.map((round) => round.confidenceScore)).toEqual([
+      2, 5,
+    ]);
+    expect(record.reviewRounds[0]?.settled).toBeUndefined();
+    expect(record.reviewRounds[1]?.settled).toBe(true);
+    expect(
+      github.calls.filter(
+        (call) => call === `postComment:${GREPTILE_REVIEW_REQUEST}`,
+      ),
+    ).toHaveLength(1);
+    expect(record.status).toBe("merged");
+  });
+
+  it("allows a sub-5/5 score only when the review-round cap is reached", async () => {
+    const first = summary(2, "2026-07-24T00:00:01Z");
+    const second = summary(2, "2026-07-24T00:03:00Z");
+    const twoRounds = { ...config, reviewRounds: 2 };
+    const github = fakeGitHub({
+      conversations: [
+        [first],
+        [first],
+        [second],
+      ],
+      heads: ["sha-unchanged"],
+    });
+    const record = await landArm(
+      reviewed,
+      twoRounds,
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async () => answer()),
+    );
+
+    expect(record.reviewRounds).toHaveLength(2);
+    expect(record.reviewRounds.map((round) => round.confidenceScore)).toEqual([
+      2, 2,
+    ]);
+    expect(record.reviewRounds.every((round) => !round.settled)).toBe(true);
+    expect(
+      github.calls.filter(
+        (call) => call === `postComment:${GREPTILE_REVIEW_REQUEST}`,
+      ),
+    ).toHaveLength(1);
+    expect(
+      record.notes.some(
+        (entry) =>
+          entry.includes("confidence remains 2/5") &&
+          entry.includes("maximum 2 review rounds"),
+      ),
+    ).toBe(true);
+    expect(record.status).toBe("merged");
+  });
+
+  it("does not accept an ACK-only batch while confidence is below 5/5", async () => {
+    const root = note(REVIEWER, "c1", "fix the race");
+    const low = summary(2, "2026-07-24T00:00:01Z");
+    const high = summary(5, "2026-07-24T00:04:00Z");
+    const reply = armReply("c2", "fixed without moving the branch");
+    const ack: ReviewNote = {
+      id: "reaction:review-comment:95",
+      kind: "reaction",
+      author: REVIEWER,
+      body: "+1",
+      createdAt: "2026-07-24T00:03:00Z",
+      inReplyTo: "review-comment:c2",
+    };
+    const github = fakeGitHub({
+      conversations: [
+        [root, low],
+        [root, low, reply],
+        [root, low, reply, ack],
+        [root, high, reply, ack],
+        [root, high, reply, ack],
+      ],
+      heads: ["sha-unchanged"],
+    });
+    const prompts: string[] = [];
+    const record = await landArm(
+      reviewed,
+      { ...config, reviewRounds: 4 },
+      succeeded(`PR: ${pr.url}`),
+      deps(github, async (prompt) => {
+        prompts.push(prompt);
+        return answer();
+      }),
+    );
+
+    expect(prompts).toHaveLength(2);
+    expect(record.reviewRounds).toHaveLength(3);
+    expect(record.reviewRounds[1]?.found).toEqual([ack]);
+    expect(record.reviewRounds[1]?.signedOff).toBeUndefined();
+    expect(record.reviewRounds[1]?.confidenceScore).toBe(2);
+    expect(record.reviewRounds[2]?.confidenceScore).toBe(5);
+    expect(record.reviewRounds[2]?.settled).toBe(true);
+    expect(
+      github.calls.filter(
+        (call) => call === `postComment:${GREPTILE_REVIEW_REQUEST}`,
+      ),
+    ).toHaveLength(1);
     expect(record.status).toBe("merged");
   });
 
