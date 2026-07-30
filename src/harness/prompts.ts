@@ -154,15 +154,23 @@ ${priorLadder}
 <end_ladder>
 
 ## Task Summary
-Plan milestone ${milestoneNumber}, the next coherent piece of progress toward the North Star.
+Plan milestone ${milestoneNumber}, an ambitious coherent capability leap toward the North Star.
+
+## Standard of Ambition
+Choose the milestone's outcome before decomposing it. The milestone should materially expand what a developer or agent can accomplish with the product and end in a complete, demonstrable workflow through a public surface. Ambition is measured by that product outcome, not by lines of code or by making every subticket large.
+
+Do not default to another sequence of adjacent backend layers such as defining an abstraction, persisting it, hardening it, and finally proving it. Prefer a vertical slice that crosses the layers needed to make a new capability real. A narrow schema, adapter, migration, test, or cleanup subticket is welcome when it is necessary to unlock the ambitious whole; it does not need artificial scope of its own.
+
+Use the existing ladder to avoid merely renaming or extending the most recent milestone's template. Infrastructure and boundary work must name the new end-to-end behavior it unlocks in this milestone rather than treating the boundary itself as the outcome.
 
 ## Work Instructions
 Read \`${ladderFile}\` before making any changes, and then, with all context in mind, plan the next milestone towards the North Star. After the task has been planned, ONLY append the new milestone to \`${ladderFile}\`. Do **not** make any other changes, removals, rewrites, or API calls.
 
-- Break the larger milestone into ${MIN_SUBTICKETS_PER_MILESTONE}-${MAX_SUBTICKETS_PER_MILESTONE} ordered subtickets.
+- Break the larger milestone into ${MIN_SUBTICKETS_PER_MILESTONE}-${MAX_SUBTICKETS_PER_MILESTONE} ordered subtickets, using only as many as the capability genuinely needs.
 - Follow the \`LADDER.md\` format detailed below.
-- Subtickets must be PR-shaped, and PR-sized. While it may not always make sense to give multi-thousand LOC tickets, ambition is *always* more important than keeping PRs small and tidy. The workers should be challenged on large-scale subtickets when possible.
-- Keep the subtickets compact, such as the example. :)
+- Subtickets must be independently mergeable and PR-shaped, but do not shrink the milestone's outcome merely to keep every PR small.
+- Keep ticket descriptions compact; their scope need not be. Include small enabling subtickets when appropriate instead of inflating them.
+- At least one subticket must complete or expose the milestone's capability through the product's public surface, not leave the entire outcome as hidden machinery.
 - Tasks should be independently actionable to an amnesic worker - the worker will receive only this ticket.
 - Do NOT file any tickets, call external ticketing tools, or invent ticket IDs.
 
@@ -170,24 +178,28 @@ Read \`${ladderFile}\` before making any changes, and then, with all context in 
 Append the milestone using the exact Markdown structure below. The example is structural only; replace its subject matter, then repeat the subticket block for ${milestoneNumber}.2 and each remaining subticket.
 
 <start_format>
-## Milestone ${milestoneNumber}: Repository foundations
+## Milestone ${milestoneNumber}: Agent-native change workspace
 
-Establish the first durable boundary for hosted repositories.
+Turn a pull request into a shared workspace where a developer can delegate work
+to an agent, watch progress, intervene, and review the resulting change in one
+flow.
 
-### [ ] ${milestoneNumber}.1 Create and open repositories
+### [ ] ${milestoneNumber}.1 Open a live change session from a pull request
 
 ## Objective
 
-Give the platform a repository lifecycle.
+Make agent collaboration a first-class pull request workflow.
 
 ## Deliverable
 
-A caller can create, identify, reopen, and inspect an empty repository through
-the storage interface.
+A collaborator can start a durable change session from a pull request through
+the platform's public surface, observe its state and event timeline, and
+reconnect after interruption without access to worker internals.
 
 ## Framing question
 
-What is the smallest repository boundary that later work can depend on?
+What first complete workflow would make agent collaboration tangible to a user
+rather than another hidden backend primitive?
 <end_format>
 
 ## Agent Format and Expectations
