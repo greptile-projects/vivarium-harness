@@ -4,6 +4,7 @@ import {
   elapsedSeconds,
   formatDuration,
   formatTokens,
+  modelLabel,
   statusLabel,
   stripLogTimestamp,
   truncate,
@@ -65,6 +66,19 @@ describe("stripLogTimestamp", () => {
 });
 
 describe("formatting", () => {
+  test("formats Codex's effective configuration as a compact model line", () => {
+    const store = new LiveStore();
+    store.register("komodo");
+    const arm = store.arms.get("komodo")!;
+    arm.model = "gpt-5.6-sol";
+    arm.reasoningEffort = "high";
+    arm.serviceTier = "priority";
+
+    expect(modelLabel(arm)).toBe("gpt-5.6-sol high fast");
+    arm.serviceTier = "default";
+    expect(modelLabel(arm)).toBe("gpt-5.6-sol high");
+  });
+
   test("durations stay compact past an hour", () => {
     expect(formatDuration(6)).toBe("0:06");
     expect(formatDuration(64)).toBe("1:04");

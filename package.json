@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "mirror-snapshot": "bun src/mirror/snapshot.ts",
     "start": "bun src/index.ts",
     "test": "bun test test/"
   },

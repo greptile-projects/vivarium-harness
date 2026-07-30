@@ -77,7 +77,10 @@ function isThumbsUpReaction(note: ReviewNote): boolean {
 // instead of posting a new comment, so deduplicating by id alone turns that
 // completed pass into reviewer silence. Revisions are what the poll loop has
 // seen; stable ids remain available for inReplyTo relationships and artifacts.
-function reviewRevision(note: ReviewNote): string {
+// Exported so the mirror snapshot accumulates Komodo's counterfactual reviews
+// under the identical rule — two revision vocabularies would make the two
+// arms' review histories incomparable.
+export function reviewRevision(note: ReviewNote): string {
   return `${note.id}@${note.updatedAt ?? note.createdAt}`;
 }
 

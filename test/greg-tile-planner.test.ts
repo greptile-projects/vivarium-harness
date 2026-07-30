@@ -35,6 +35,7 @@ async function scratchLadder(): Promise<string> {
 
 const base = {
   codexHome: "/tmp/codex",
+  fastMode: true,
   idleTimeoutMs: 600_000,
   reviewTimeoutMs: 1_000,
   reviewPollMs: 10,
@@ -54,6 +55,7 @@ describe("planNextMilestone", () => {
         cwd: spec.cwd,
         saw: await readdir(spec.cwd),
       });
+      expect(spec.fastMode).toBe(true);
       // Greg edits his scratch copy directly instead of returning structured
       // data; the planner carries the validated edit back to the real ladder.
       await appendFile(

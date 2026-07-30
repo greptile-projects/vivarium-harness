@@ -92,6 +92,19 @@ describe("parseArgs", () => {
     ]);
   });
 
+  it("uses an explicit boolean toggle for Codex fast mode", () => {
+    expect(parseArgs([], env).fastMode).toBe(false);
+    expect(
+      parseArgs([], { ...env, CODEX_FAST_MODE: "true" }).fastMode,
+    ).toBe(true);
+    expect(
+      parseArgs([], { ...env, CODEX_FAST_MODE: "FALSE" }).fastMode,
+    ).toBe(false);
+    expect(() =>
+      parseArgs([], { ...env, CODEX_FAST_MODE: "1" }),
+    ).toThrow(/CODEX_FAST_MODE must be true or false/);
+  });
+
   it("requires static arm configuration", () => {
     expect(() => parseArgs([], {})).toThrow(
       /KOMODO_REPO.*TUATARA_REPO/,

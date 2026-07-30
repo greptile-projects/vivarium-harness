@@ -64,6 +64,17 @@ export function contextColor(ratio: number): string {
   return ratio > 0.85 ? "red" : ratio > 0.6 ? "yellow" : "green";
 }
 
+// Match Codex's own compact status vocabulary: model, effort, then the
+// user-facing tier label only when Fast is active.
+export function modelLabel(state: ArmState): string {
+  const parts = [state.model];
+  if (state.reasoningEffort) parts.push(state.reasoningEffort);
+  if (state.serviceTier === "fast" || state.serviceTier === "priority") {
+    parts.push("fast");
+  }
+  return parts.filter((part): part is string => Boolean(part)).join(" ") || "—";
+}
+
 // A plain block meter. Kept ASCII-adjacent so it survives fonts that render
 // partial blocks at odd widths.
 export function meter(ratio: number, width: number): string {

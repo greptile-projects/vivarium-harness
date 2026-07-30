@@ -96,6 +96,10 @@ export interface HarnessConfig {
   ticket: string;
   arms: [ArmConfig, ArmConfig];
   sandbox: SandboxMode;
+  // Run every Codex session on the fast service tier. Optional so injected
+  // test configs and direct runHarness callers written before the toggle keep
+  // their standard-tier behavior.
+  fastMode?: boolean;
   resultsDir: string;
   destination?: RunDestination;
   codexHome: string;
@@ -149,6 +153,18 @@ function positiveFromEnv(
   return parsed;
 }
 
+function booleanFromEnv(
+  name: string,
+  value: string | undefined,
+  fallback: boolean,
+): boolean {
+  if (value === undefined || value.trim() === "") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`${name} must be true or false`);
+}
+
 export function parseArgs(
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -188,6 +204,11 @@ export function parseArgs(
       },
     ],
     sandbox: sandbox ?? "workspace-write",
+    fastMode: booleanFromEnv(
+      "CODEX_FAST_MODE",
+      env.CODEX_FAST_MODE,
+      false,
+    ),
     resultsDir: RESULTS_DIR,
     codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
     maxAttempts: MAX_ATTEMPTS,
@@ -379,6 +400,9 @@ Optional environment:
                           danger-full-access (it needs the network to push and
                           to answer a review; the container is the boundary)
                           and a host arm runs workspace-write.
+  CODEX_FAST_MODE=<bool>  Use Codex's fast service tier for Greg and both
+                          arms. Defaults to false. Fast mode consumes credits
+                          faster and only applies to supported models.
   CODEX_HOME=<path>       Defaults to ~/.codex; used by Greg and host smoke
                           sessions. Arm transcripts are copied from containers.
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.

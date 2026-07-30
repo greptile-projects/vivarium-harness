@@ -64,7 +64,8 @@ bun start -- --help              # the full option + env reference
   `--unbounded`. A later bare `bun start` builds everything queued this way.
 - **`--tui` / `--no-tui`** force the live view (default: on when stdout is a
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
-  tab **per arm** with its context meter, recent activity and answer, the
+  tab **per arm** with its effective model/effort/tier on one line, context
+  meter, recent activity and answer, the
   **climb** (every rung built, with both arms' pull requests, the rung in
   flight, and the next few), and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
   scroll the list tabs. Each arm's duration excludes time spent idle at the
@@ -103,6 +104,7 @@ bun run build                  # emit dist/ via tsconfig.build.json
 ```bash
 docker build -t vivarium-arm .   # build the arm image once
 scripts/mirror_sync.sh           # replay Komodo's main-states into the review mirror
+bun run mirror-snapshot          # file the mirror's reviews under results/mirror/
 scripts/resume-clean.sh          # report what an interrupted climb left behind
 scripts/resume-clean.sh --apply  # …and destroy those leftover environments
 ```
@@ -121,6 +123,15 @@ reading Komodo and moving the state variable — `docs/mirror-sync.md` is the
 runbook for creating both. `test/mirror-sync.test.ts` exercises its local git
 logic against throwaway bare repos with a `gh` stub — no network, and included
 in the normal `bun test` suite.
+`bun run mirror-snapshot` (`src/mirror/snapshot.ts`) is the mirror's record
+keeper: the mirror PRs are where Komodo's counterfactual reviews live, nothing
+in `run.json` captures them (the arm never sees them, so its landing holds
+none), and Greptile edits its overview in place — history that is only cheap
+to read before it happens. Run it on a schedule while the experiment is live;
+each pass re-reads every mirror PR into `results/mirror/pr-NNNN.json`,
+accumulating comment revisions under the same rule `land.ts` uses so the two
+arms' review records read as one corpus. It needs a token that can read the
+private mirror (`MIRROR_SNAPSHOT_TOKEN`, or gh's ambient login).
 `resume-clean.sh` is the preflight for resuming an interrupted climb (below).
 
 Runtime is **Bun** (not Node) — use `bun`, not `npm`/`node`. Source is authored
@@ -136,8 +147,10 @@ harness and `scripts/arm-run.sh` read it — nothing is passed on the command li
 Run-wide knobs live there too: `CODEX_SANDBOX` (unset gives a containerized
 arm `danger-full-access` — it has to push, open a PR and answer a review, and
 the container is the boundary — and a host arm `workspace-write`),
-`REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review phase, `CODEX_HOME`, and
-`IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0` disables). The image,
+`CODEX_FAST_MODE` (default `false`; selects the same Codex fast service tier
+for Greg and both arms), `REVIEW_TIMEOUT_MS` / `REVIEW_ROUNDS` for the review
+phase, `CODEX_HOME`, and `IDLE_TIMEOUT_MS` (watchdog, default `240000`, `0`
+disables). The image,
 nested Docker, GUI, screen geometry, noVNC ports, and reviewer identity are
 fixed experiment constants rather than deployment knobs. See `.env.example`
 for the annotated list.
@@ -259,6 +272,7 @@ src/index.ts climb.ts             # entrypoint + the climb's live wiring
 src/harness/                      # running one ticket through both arms, and landing it
 src/greg-tile/                    # the planner loop above the harness
 src/view/                         # the live view watching it
+src/mirror/                       # the mirror-review snapshotter (its own command)
 ```
 
 `harness/` is the layer the other two are defined against — `greg-tile/` calls
@@ -267,7 +281,7 @@ own modules are siblings, so they refer to each other by bare `./name.js`; a
 cross-layer import is always visible as a `../harness/` in the specifier.
 
 - **`src/harness/config.ts`** — turns env into a validated `HarnessConfig`.
-  `parseArgs` reads env (repos, containers, sandbox, attempts, timeout) and
+  `parseArgs` reads env (repos, containers, sandbox, fast mode, timeout) and
   leaves the ticket blank — the ladder loop fills it per subticket, and
   `runHarness` refuses to run on the placeholder;
   for container deployments `validateConfig` requires two distinct plain HTTPS
@@ -555,8 +569,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   feeds both the TUI and the watchdog) rather than discarded; (2) an **activity
   watchdog** aborts an arm after `idleTimeoutMs` of event silence (default 4m),
   independent of the 24h hard ceiling; (3) every fresh session is started with
-  **`config: {features: {apps: false, plugins: false}}`** (`codexToolArguments`,
-  the one pure, tested part of this module) — no ambient account tooling, in
+  a tested **tool-call config override** (`codexToolArguments`) that pins
+  `service_tier` to `fast` or `default`, pins `features.fast_mode` to the
+  matching `CODEX_FAST_MODE` value, and disables `features.apps` and
+  `features.plugins` — no ambient service-tier choice or account tooling, in
   either arm or in Greg. `codex_apps` connectors (Linear, GitHub) are
   *account*-scoped and arrive via `$CODEX_HOME/auth.json` alone, which
   `arm-run.sh` mounts into every container, so an arm would otherwise read the
@@ -854,6 +870,11 @@ results/live-<ts>/
   komodo/progress.log
   greg/progress.log         # the planner session, when there is one
   ladder.log                # the climb's own lines
+results/mirror/
+  makors__vivarium-test-komodo-mirror/   # one directory per mirror repo
+    pr-0026.json            # one mirror PR: Komodo's counterfactual review,
+                            # conversation + every observed revision, keyed
+                            # back to the source PR it mirrors
 ```
 
 The landing inside `run.json` is the close-reading input the experiment is

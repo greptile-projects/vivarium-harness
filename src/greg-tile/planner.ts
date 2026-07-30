@@ -147,6 +147,7 @@ export async function planNextMilestone(
           ),
           cwd: execution.cwd,
           sandbox: execution.sandbox,
+          fastMode: base.fastMode,
           codexHome: base.codexHome,
           idleTimeoutMs: base.idleTimeoutMs,
           exec: execution.exec,

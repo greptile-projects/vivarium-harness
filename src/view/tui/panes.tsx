@@ -13,6 +13,7 @@ import {
   formatDuration,
   formatTokens,
   meter,
+  modelLabel,
   oneLine,
   statusLabel,
   truncate,
@@ -65,7 +66,7 @@ export function ArmCard({
   const line = headline(state, frame);
 
   const stats: string[] = [];
-  if (state.model) stats.push(state.model);
+  if (state.model) stats.push(modelLabel(state));
   if (state.tokens !== undefined) stats.push(`${formatTokens(state.tokens)} tok`);
   if (ratio !== undefined) stats.push(`${Math.round(ratio * 100)}% context`);
 
@@ -266,10 +267,7 @@ export function ArmDetail({
         </Text>
       </Field>
       <Field label="model">
-        <Text>
-          {state.model ?? "—"}
-          {state.reasoningEffort ? `  ${state.reasoningEffort}` : ""}
-        </Text>
+        <Text>{modelLabel(state)}</Text>
       </Field>
       <Field label="context">
         {ratio === undefined ? (

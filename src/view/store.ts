@@ -12,6 +12,9 @@ export interface ArmState {
   phase?: ArmPhase;
   model?: string;
   reasoningEffort?: string;
+  // Effective service tier reported by Codex (`priority` is the request-level
+  // value behind its user-facing Fast label).
+  serviceTier?: string;
   activity: string;
   // The last `ACTIVITY_HISTORY` activity lines, oldest first — what the arm's
   // own tab shows so a single `activity` string is not the whole story.
@@ -85,7 +88,13 @@ export const NOISY = new Set([
 export function summarize(msg: CodexMsg): string {
   switch (msg.type) {
     case "session_configured":
-      return `model ${str(msg.model) ?? "?"}`;
+      return `model ${[
+        str(msg.model) ?? "?",
+        str(msg.reasoning_effort),
+        str(msg.service_tier) === "fast" || str(msg.service_tier) === "priority"
+          ? "fast"
+          : undefined,
+      ].filter(Boolean).join(" ")}`;
     case "mcp_startup_update":
       return `mcp ${str(msg.server) ?? "?"} starting`;
     case "task_started":
@@ -165,6 +174,7 @@ export class LiveStore {
         state.model = str(msg.model) ?? state.model;
         state.reasoningEffort =
           str(msg.reasoning_effort) ?? state.reasoningEffort;
+        state.serviceTier = str(msg.service_tier) ?? state.serviceTier;
         state.threadId = str(msg.thread_id) ?? state.threadId;
         break;
       case "task_started":
