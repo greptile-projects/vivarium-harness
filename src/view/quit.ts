@@ -41,12 +41,12 @@ function describe(running: ArmState[]): { count: string; names: string } {
 // tells the human what they are about to lose.
 export function confirmQuitPrompt(
   arms: ArmState[],
-  canStopAfterRung = false,
+  canStopAfterSubticket = false,
 ): string {
   const running = stillRunning(arms);
   const { count, names } = describe(running);
   return `stop ${count} (${names}) and quit?  y / n${
-    canStopAfterRung ? " / S after rung" : ""
+    canStopAfterSubticket ? " / S after subticket" : ""
   }`;
 }
 

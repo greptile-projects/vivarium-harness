@@ -125,11 +125,11 @@ describe("needsQuitConfirm", () => {
     expect(prompt).toContain("y / n");
   });
 
-  it("offers a rung-boundary stop only when the climb supports it", () => {
+  it("offers a subticket-boundary stop only when the climb supports it", () => {
     const arms = [arm("tuatara", "working")];
 
-    expect(confirmQuitPrompt(arms)).not.toContain("S after rung");
-    expect(confirmQuitPrompt(arms, true)).toContain("y / n / S after rung");
+    expect(confirmQuitPrompt(arms)).not.toContain("S after subticket");
+    expect(confirmQuitPrompt(arms, true)).toContain("y / n / S after subticket");
   });
 });
 

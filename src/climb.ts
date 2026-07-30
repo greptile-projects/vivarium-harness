@@ -114,8 +114,12 @@ export async function runGregLive(
   // Quitting the view stops every Codex session this loop owns — Greg's
   // planning session as much as the builders'.
   const controller = new AbortController();
-  let currentMilestone: number | undefined;
-  let stopAfterMilestone: number | undefined;
+  // What the loop is on right now, named for the stop-request note — "subticket
+  // 6.2" while the harness builds it, "planning milestone 7" during Greg's
+  // turn. Undefined until the first step starts, when a stop request would have
+  // nothing to finish.
+  let currentStep: string | undefined;
+  let stopRequested = false;
 
   // The planner's own Codex session, surfaced as a "greg" tab.
   const plannerRunner: AttemptRunner = (params) =>
@@ -125,7 +129,7 @@ export async function runGregLive(
 
   const deps: Partial<GregDeps> = {
     plan: async (config, ladderPath, ladder, milestoneNumber) => {
-      currentMilestone = milestoneNumber;
+      currentStep = `planning milestone ${milestoneNumber}`;
       // Greg's turn belongs to the rung he is planning, not to any run under
       // it — the transcript of this same turn lands in that directory too.
       armLog = () => plannerLogPath(base.resultsDir, milestoneNumber);
@@ -163,7 +167,9 @@ export async function runGregLive(
       const building = model
         .climb()
         .find((subticket) => subticket.state === "building");
-      currentMilestone = building?.milestone;
+      currentStep = building
+        ? `subticket ${building.number}`
+        : "the current subticket";
       const description = (building?.title ?? "current rung")
         .replace(/\s+/g, " ")
         .slice(0, 60);
@@ -185,7 +191,7 @@ export async function runGregLive(
       if (useTui) model.note(message);
       sinks.note(message);
     },
-    stopAfterMilestone: () => stopAfterMilestone,
+    stopRequested: () => stopRequested,
   };
 
   const app = useTui
@@ -199,12 +205,12 @@ export async function runGregLive(
             // it and returns the exact rung plan/progress.log path.
             feedPath: armLog?.("<arm>"),
           }),
-        onStopAfterRung: () => {
-          if (stopAfterMilestone !== undefined || currentMilestone === undefined) {
+        onStopAfterSubticket: () => {
+          if (stopRequested || currentStep === undefined) {
             return false;
           }
-          stopAfterMilestone = currentMilestone;
-          const message = `stop scheduled after milestone ${currentMilestone}`;
+          stopRequested = true;
+          const message = `stop scheduled after ${currentStep}`;
           model.note(message);
           sinks.note(message);
           return true;

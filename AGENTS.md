@@ -73,8 +73,10 @@ bun start -- --help              # the full option + env reference
   merge barrier waiting only for its peer, so the two A/B timings do not
   collapse into the shared run duration. `q` quits — and quitting **stops the
   run**. The in-view confirmation offers `y` to stop immediately, `n` to keep
-  watching, and, during a climb, `S` to finish every subticket in the current
-  rung and stop before the next one; once everything has settled the view is a report and closes
+  watching, and, during a climb, `S` to finish the subticket in flight (or the
+  milestone being planned) and stop cleanly before the next step — the merge
+  barrier makes that boundary safe, and it arrives in minutes rather than the
+  hours a whole rung can take; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
   everywhere else and does not acquire a second one here. Stopping live
   sessions exits 1. It runs on the alternate screen and gives the
