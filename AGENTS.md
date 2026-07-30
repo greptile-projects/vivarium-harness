@@ -396,19 +396,25 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   arm's extra rounds come from `arm.reviewer` being set in config, never from a
   name check here. A round waits for something new from that login, hands the
   arm a `reviewPrompt` on **its own Codex thread**, and repeats up to
-  `reviewRounds` (default 5) — a **maximum**, not a count. The cap sits well
-  above where most pull requests settle because the later rounds are where a
-  *disagreement* plays out — the arm pushing back, Greptile holding or
-  conceding — which is the experiment's subject matter. The exchange ends on
-  one of four bounded conditions:
+  `reviewRounds` (default 3) — a **maximum**, not a count. The cap leaves room
+  for the initial review and two re-review passes, where a *disagreement*
+  plays out — the arm pushing back, Greptile holding or conceding — without
+  letting one stubborn score dominate the climb. A score present in
+  Greptile's editable summary is also a merge target: the two early completion
+  paths below apply only at **5/5**. A lower score keeps the exchange moving
+  until a later summary reaches 5/5 or the configured round cap is exhausted;
+  if the arm leaves no push or comment to trigger that pass, the harness posts
+  one bounded `@greptileai review` request itself. The exchange ends on these
+  bounded conditions:
     - **The reviewer's response is nothing but thumbs-up reactions.** GitHub
       exposes that structured reaction as `+1`, and Greptile attaches one to
       each arm reply it accepts — an ACK of that comment, **not** a verdict on
       the pull request: it hands them out while still replying in other
       threads. So only a batch that is *entirely* thumbs-up is recorded
-      `signedOff`; any prose beside an ACK is handed to the arm. Review bodies
-      and comments are never classified by their wording, and every other
-      reaction is ignored.
+      `signedOff`; any prose beside an ACK is handed to the arm. A known
+      confidence score below 5/5 overrides that fast exit and requests another
+      pass. Review bodies and comments are never classified by their wording,
+      and every other reaction is ignored.
       Every distinct comment revision observed during polling is retained in
       the landing record's `conversationRevisions`, in addition to the final
       `conversation` snapshot. Greptile edits its PR-level overview in place
@@ -420,9 +426,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
       its thumbs-up is an ACK to one. An answer that pushed nothing and posted
       nothing (a clean review gives the arm nothing to fix and nothing to say)
       gave the reviewer nothing to react to, so waiting again could only end in
-      the full timeout. The round is recorded `settled` and the exchange ends
-      immediately. An unreadable post-answer check fails open to waiting —
-      unknown must not end the exchange early.
+      the full timeout. At 5/5 (or when no score exists) the round is recorded
+      `settled` and the exchange ends immediately. Below 5/5 the harness posts
+      one review request and continues instead. An unreadable post-answer check
+      fails open to waiting — unknown must not end the exchange early.
     - …with one standing exception to both: **a pushed commit holds the
       exchange open.** Greptile re-reviews every push, and that pass lands
       minutes after its thread replies and ACKs do — reading the fast
@@ -441,9 +448,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
       silence, not each round afresh: a round that starts after a long answer
       turn inherits the silence already on the clock. At least one poll always
       happens, so activity that landed during the answer turn is still found.
-    - **The maximum is reached.** At most `reviewRounds` reviewer comments are
-      handed back to the arm, so a disagreement cannot create an unbounded
-      comment loop.
+    - **The maximum is reached.** At most `reviewRounds` reviewer batches are
+      consumed, so a disagreement or a score that never reaches 5/5 cannot
+      create an unbounded comment loop. The final recorded score remains
+      visible when the cap permits landing below 5/5.
   A wait also has one bounded missed-trigger recovery. After five minutes with
   no reviewer output, the harness reads GitHub's Greptile status checks. It
   posts the PR-level comment `@greptileai review` only when no Greptile check is
