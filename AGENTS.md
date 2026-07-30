@@ -319,9 +319,14 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   round cap.
   `retryPrompt` is what `runArm` prepends on a failed attempt,
   and `plannerPrompt(ladder, n, file)` is Greg's whole turn — it carries
-  `NORTH_STAR` and the subticket-shape rules, which makes the `### [ ] N.M`
-  heading it dictates a contract with `greg-tile/ladder.ts`, the module that
-  parses exactly what it asks Greg to write. Change one and change the other.
+  `NORTH_STAR`, the milestone-level ambition standard, and the subticket-shape
+  rules. Ambition means a complete product capability through a public surface,
+  not raw lines of code or making every enabling ticket large; the prompt
+  explicitly steers Greg away from repeating an
+  abstraction/persistence/hardening/proof template while allowing small
+  subtickets that unlock a bold vertical slice. The `### [ ] N.M` heading it
+  dictates is a contract with `greg-tile/ladder.ts`, the module that parses
+  exactly what it asks Greg to write. Change one and change the other.
 
 - **`src/harness/github.ts`** — everything the harness does to git and GitHub *outside*
   Codex, bound per arm (`armGitHub(arm, exec)` → `ArmGitHub`) so a caller never

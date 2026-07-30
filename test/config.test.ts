@@ -147,6 +147,9 @@ describe("run mode", () => {
     expect(() => parseRunMode(["--ticket", "ENG-1"], true)).toThrow(
       /--ticket has been removed/,
     );
+    expect(() => parseRunMode(["--ticket=ENG-1"], true)).toThrow(
+      /--ticket has been removed/,
+    );
   });
 
   it("resolves the view from the flags, then the terminal", () => {
