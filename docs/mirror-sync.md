@@ -137,6 +137,19 @@ under this login during bring-up. If it ever changes, update the constant in
 To re-verify or run manually: **Actions → mirror-sync → Run workflow**
 (`workflow_dispatch`). It is idempotent and safe to re-run.
 
+## Snapshotting the reviews
+
+The mirror PRs are the only place Komodo's counterfactual reviews exist, and
+Greptile edits its PR-level overview (confidence score included) in place —
+after which the earlier text survives only behind GitHub's edit-history API.
+`bun run mirror-snapshot` (in the harness repo) files every mirror PR under
+`results/mirror/pr-NNNN.json`: churn numbers, the provenance keys back to the
+source PR, the full conversation, and an accumulating list of every comment
+revision observed, under the same revision rule the harness uses for Tuatara's
+live reviews. Idempotent and safe to re-run; run it on a schedule while the
+experiment is live. It needs a token that can read the private mirror
+(`MIRROR_SNAPSHOT_TOKEN` in `.env`) — the org PAT above deliberately cannot.
+
 ## Behavior notes
 
 - **Sequential**: `concurrency: mirror-sync`, `cancel-in-progress: false`. One

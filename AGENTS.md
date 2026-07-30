@@ -104,6 +104,7 @@ bun run build                  # emit dist/ via tsconfig.build.json
 ```bash
 docker build -t vivarium-arm .   # build the arm image once
 scripts/mirror_sync.sh           # replay Komodo's main-states into the review mirror
+bun run mirror-snapshot          # file the mirror's reviews under results/mirror/
 scripts/resume-clean.sh          # report what an interrupted climb left behind
 scripts/resume-clean.sh --apply  # …and destroy those leftover environments
 ```
@@ -122,6 +123,15 @@ reading Komodo and moving the state variable — `docs/mirror-sync.md` is the
 runbook for creating both. `test/mirror-sync.test.ts` exercises its local git
 logic against throwaway bare repos with a `gh` stub — no network, and included
 in the normal `bun test` suite.
+`bun run mirror-snapshot` (`src/mirror/snapshot.ts`) is the mirror's record
+keeper: the mirror PRs are where Komodo's counterfactual reviews live, nothing
+in `run.json` captures them (the arm never sees them, so its landing holds
+none), and Greptile edits its overview in place — history that is only cheap
+to read before it happens. Run it on a schedule while the experiment is live;
+each pass re-reads every mirror PR into `results/mirror/pr-NNNN.json`,
+accumulating comment revisions under the same rule `land.ts` uses so the two
+arms' review records read as one corpus. It needs a token that can read the
+private mirror (`MIRROR_SNAPSHOT_TOKEN`, or gh's ambient login).
 `resume-clean.sh` is the preflight for resuming an interrupted climb (below).
 
 Runtime is **Bun** (not Node) — use `bun`, not `npm`/`node`. Source is authored
@@ -262,6 +272,7 @@ src/index.ts climb.ts             # entrypoint + the climb's live wiring
 src/harness/                      # running one ticket through both arms, and landing it
 src/greg-tile/                    # the planner loop above the harness
 src/view/                         # the live view watching it
+src/mirror/                       # the mirror-review snapshotter (its own command)
 ```
 
 `harness/` is the layer the other two are defined against — `greg-tile/` calls
@@ -859,6 +870,11 @@ results/live-<ts>/
   komodo/progress.log
   greg/progress.log         # the planner session, when there is one
   ladder.log                # the climb's own lines
+results/mirror/
+  makors__vivarium-test-komodo-mirror/   # one directory per mirror repo
+    pr-0026.json            # one mirror PR: Komodo's counterfactual review,
+                            # conversation + every observed revision, keyed
+                            # back to the source PR it mirrors
 ```
 
 The landing inside `run.json` is the close-reading input the experiment is
