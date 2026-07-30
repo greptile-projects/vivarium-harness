@@ -77,6 +77,10 @@ exit 0
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         VIVARIUM_TEST_SBX_LOG: log,
+        // Supplied through the environment so the test runs in a clean
+        // checkout with no .env — the script's guards accept either source.
+        KOMODO_SANDBOX: "vivarium-test-komodo",
+        TUATARA_SANDBOX: "vivarium-test-tuatara",
       },
     );
 

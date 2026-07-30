@@ -27,10 +27,16 @@ for argument in "$@"; do
 done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-set -a
-# shellcheck disable=SC1091
-. "$root/.env"
-set +a
+# The prefixes may also arrive through the environment (the test suite runs
+# this script in a checkout with no .env at all), so a missing file is not
+# itself fatal — the guards below still fail loudly when the config is absent
+# from both sources.
+if [ -f "$root/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$root/.env"
+  set +a
+fi
 : "${KOMODO_SANDBOX:?KOMODO_SANDBOX must be set in .env}"
 : "${TUATARA_SANDBOX:?TUATARA_SANDBOX must be set in .env}"
 
