@@ -116,6 +116,10 @@ function fakeGitHub(options: {
       calls.push("diff");
       return `diff --git a/fix.ts b/fix.ts\n--- ${base}\n+++ ${head}\n`;
     },
+    async discardCurrentWork() {
+      calls.push("discardCurrentWork");
+      return { pullRequestClosed: false, branchDeleted: false };
+    },
     async isGitHubCheckout() {
       return options.isCheckout ?? true;
     },

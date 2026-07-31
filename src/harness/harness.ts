@@ -302,15 +302,16 @@ export async function runHarness(
   const phase = (arm: ArmName, label: ArmPhase): void =>
     sinks.onArmPhase?.(arm, label);
   let environment: Awaited<ReturnType<EnvironmentFactory>> | undefined;
+  let runtimeConfig = config;
+  const baselines: Partial<Record<ArmName, Baseline>> = {};
   const sessions = new Map<ArmName, ArmSession>();
 
   try {
     environment = await environmentFactory(config, artifacts.runId, note);
-    const runtimeConfig = environment.config;
+    runtimeConfig = environment.config;
     // Both checkouts go back to origin's default branch *before* either session
     // starts: a subticket has to begin where the last one landed, and doing it
     // up front means a sync failure costs nothing already in flight.
-    const baselines: Partial<Record<ArmName, Baseline>> = {};
     for (const arm of runtimeConfig.arms) {
       phase(arm.name, "preparing");
       const baseline = await prepareArm({
@@ -496,6 +497,52 @@ export async function runHarness(
     await Promise.allSettled(
       [...sessions.values()].map((session) => session.close()),
     );
+    const cleanupErrors: string[] = [];
+    // A confirmed immediate stop is a rollback boundary, not merely a process
+    // kill. The session is closed first so it cannot push again while the
+    // harness closes its open PR and removes the feature ref. Use the exact
+    // runtime arms owned by this call; the recovery script's prefix scan is
+    // intentionally too broad to run while another climb may be active.
+    if (signal?.aborted) {
+      await Promise.all(
+        runtimeConfig.arms.map(async (arm) => {
+          const baseline = baselines[arm.name];
+          // No recorded baseline means this arm never reached worker
+          // execution, so there is no run-created GitHub state to discard.
+          if (!baseline) return;
+          note(arm.name, "discarding interrupted GitHub work");
+          try {
+            const outcome = await github(arm).discardCurrentWork(
+              baseline.branch,
+            );
+            const removed = [
+              outcome.pullRequestClosed && outcome.pullRequest !== undefined
+                ? `closed PR #${outcome.pullRequest}`
+                : undefined,
+              outcome.branchDeleted && outcome.branch
+                ? `deleted remote branch ${outcome.branch}`
+                : undefined,
+            ].filter((entry): entry is string => entry !== undefined);
+            note(
+              arm.name,
+              removed.length > 0
+                ? `interrupted GitHub cleanup: ${removed.join("; ")}`
+                : "interrupted GitHub cleanup: nothing was pushed",
+            );
+          } catch (cleanupError) {
+            const message =
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError);
+            cleanupErrors.push(`${arm.name}: ${message}`);
+            note(
+              arm.name,
+              `interrupted GitHub cleanup was incomplete: ${message}`,
+            );
+          }
+        }),
+      );
+    }
     if (environment) {
       try {
         await environment.cleanup();
@@ -504,18 +551,24 @@ export async function runHarness(
           cleanupError instanceof Error
             ? cleanupError.message
             : String(cleanupError);
+        cleanupErrors.push(message);
         for (const arm of environment.config.arms) {
           note(
             arm.name,
             `ephemeral cleanup failed after the run settled: ${message}`,
           );
         }
-        // Cleanup follows completed landing and is therefore diagnostic only:
-        // rejecting here would make Greg repeat a subticket whose pull
-        // requests may already be merged. Do not let recording that diagnostic
-        // mask the run's original outcome either.
-        await artifacts.recordCleanupError(cleanupError).catch(() => {});
       }
+    }
+    if (cleanupErrors.length > 0) {
+      // Cleanup follows completed landing and is therefore diagnostic only:
+      // rejecting here would make Greg repeat a subticket whose pull requests
+      // may already be merged. An immediate stop exits nonzero already; retain
+      // any incomplete rollback in the same durable diagnostic without
+      // masking the run's primary outcome.
+      await artifacts
+        .recordCleanupError(new Error(cleanupErrors.join("\n")))
+        .catch(() => {});
     }
     await artifacts.release();
   }

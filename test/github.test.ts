@@ -803,6 +803,83 @@ describe("headSha", () => {
   });
 });
 
+describe("discarding interrupted work", () => {
+  test("closes the current branch's PR and deletes its remote ref", async () => {
+    const { calls, exec } = recorder({
+      "git rev-parse HEAD": ok("subticket-6-5\n"),
+      "gh pr list": ok('[{"number":41}]\n'),
+      "gh pr close 41": ok("closed\n"),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${"a".repeat(40)}\trefs/heads/subticket-6-5\n`,
+      ),
+      "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
+    });
+
+    const outcome = await armGitHub(
+      arm({ ghToken: TOKEN }),
+      exec,
+    ).discardCurrentWork!("main");
+
+    expect(outcome).toEqual({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: true,
+      branchDeleted: true,
+    });
+    const closed = calls.find(
+      (call) => call.command === "gh" && call.args.includes("close"),
+    );
+    expect(closed?.args).toEqual([
+      "pr",
+      "close",
+      "41",
+      "--comment",
+      "Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.",
+    ]);
+    const deletion = calls.find(
+      (call) =>
+        call.command === "git" &&
+        call.args.includes(":refs/heads/subticket-6-5"),
+    );
+    expect(deletion?.env?.[GIT_TOKEN_ENV]).toBe(TOKEN);
+    expect(calls.flatMap((call) => call.args).join(" ")).not.toContain(TOKEN);
+  });
+
+  test("never touches the recorded baseline branch", async () => {
+    const { calls, exec } = recorder({
+      "git rev-parse HEAD": ok("main\n"),
+    });
+
+    expect(
+      await armGitHub(arm(), exec).discardCurrentWork!("main"),
+    ).toEqual({
+      branch: "main",
+      pullRequestClosed: false,
+      branchDeleted: false,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe("git");
+  });
+
+  test("still deletes a pushed branch that has no PR", async () => {
+    const { calls, exec } = recorder({
+      "git rev-parse HEAD": ok("subticket-6-5\n"),
+      "gh pr list": ok("[]\n"),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${"a".repeat(40)}\trefs/heads/subticket-6-5\n`,
+      ),
+      "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
+    });
+
+    const outcome = await armGitHub(arm(), exec).discardCurrentWork!("main");
+
+    expect(outcome.pullRequest).toBeUndefined();
+    expect(outcome.pullRequestClosed).toBe(false);
+    expect(outcome.branchDeleted).toBe(true);
+    expect(calls.some((call) => call.args.includes("close"))).toBe(false);
+  });
+});
+
 describe("pure helpers", () => {
   // Host-agnostic on purpose: it parses `owner/name` out of either spelling
   // git uses, and says nothing about which host that is.
@@ -947,6 +1024,52 @@ describe("the bundled landing reads", () => {
     );
   });
 
+  test("discardCurrentWork closes and deletes in one crossing", async () => {
+    const { calls, exec } = recorder(
+      bashReply({
+        branch: "subticket-6-5",
+        pullRequest: 41,
+        pullRequestClosed: true,
+        branchDeleted: true,
+        errors: [],
+      }),
+    );
+    const github = armGitHub(isolated(), exec);
+
+    expect(await github.discardCurrentWork!("main")).toEqual({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: true,
+      branchDeleted: true,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args.slice(-2)).toEqual([
+      "main",
+      "Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.",
+    ]);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+
+    const syntax = spawnSync("bash", ["-n", "-c", scriptOf(calls[0])]);
+    expect(syntax.status).toBe(0);
+  });
+
+  test("discardCurrentWork reports partial cleanup instead of hiding it", async () => {
+    const { exec } = recorder(
+      bashReply({
+        branch: "subticket-6-5",
+        pullRequest: 41,
+        pullRequestClosed: true,
+        branchDeleted: false,
+        errors: ["could not delete remote branch subticket-6-5: denied"],
+      }),
+    );
+    const github = armGitHub(isolated(), exec);
+
+    await expect(github.discardCurrentWork!("main")).rejects.toThrow(
+      /could not delete remote branch subticket-6-5/,
+    );
+  });
+
   test("finalizeMerge decides merged from the re-read state, not the exit code", async () => {
     const { calls, exec } = recorder(
       bashReply({
@@ -1035,7 +1158,7 @@ describe("the bundled scripts, executed", () => {
     const { calls, exec } = recorder({
       "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash":
         ok(
-          '{"sha":null,"diff":null,"diffError":null,"conversation":null,"conversationError":null,"merge":{"code":0,"stdout":"","stderr":""},"view":null,"refreshed":null}\n',
+          '{"sha":null,"diff":null,"diffError":null,"conversation":null,"conversationError":null,"merge":{"code":0,"stdout":"","stderr":""},"view":null,"refreshed":null,"branch":"subticket-6-5","pullRequest":41,"pullRequestClosed":true,"branchDeleted":true,"errors":[]}\n',
         ),
     });
     const github = armGitHub(
@@ -1060,6 +1183,8 @@ describe("the bundled scripts, executed", () => {
       `#!/usr/bin/env bash
 args="$*"
 case "$args" in
+  "pr list --head subticket-6-5 --state open --limit 1 --json number") echo '[{"number":41}]' ;;
+  "pr close 41 --comment Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.") exit 0 ;;
   "pr view 7 --json headRefOid") printf '{"headRefOid":"%s"}\\n' "$GH_STUB_SHA" ;;
   "pr view 7 --json reviews") echo '{"reviews":[]}' ;;
   "pr merge 7 --merge --delete-branch") exit 0 ;;
@@ -1076,6 +1201,9 @@ esac
       join(dir, "git"),
       `#!/usr/bin/env bash
 case "$1" in
+  symbolic-ref) echo subticket-6-5 ;;
+  ls-remote) printf '%s\\trefs/heads/subticket-6-5\\n' aaaaaaaa ;;
+  push) exit 0 ;;
   diff) printf 'STUBDIFF %s\\n' "$2" ;;
   *) exit 1 ;;
 esac
@@ -1127,6 +1255,21 @@ esac
     expect(parsed.diffError).toBeNull();
     expect(parsed.conversation).toBeNull();
     expect(parsed.conversationError).toBeNull();
+  });
+
+  test("discardCurrentWork closes the PR and deletes the branch", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.discardCurrentWork!("main"),
+    );
+    const parsed = runScript(scriptAndArgs, "");
+
+    expect(parsed).toMatchObject({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: true,
+      branchDeleted: true,
+      errors: [],
+    });
   });
 
   test("finalizeMerge merges, re-reads, captures and refreshes in one pass", async () => {

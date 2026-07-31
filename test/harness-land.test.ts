@@ -86,6 +86,9 @@ function fakeGitHub(
     async diff() {
       return `diff --git a/${arm.name}.ts b/${arm.name}.ts\n`;
     },
+    async discardCurrentWork() {
+      return { pullRequestClosed: false, branchDeleted: false };
+    },
     async conversation(): Promise<ReviewNote[]> {
       if (!options.withReview) return [];
       return [
@@ -369,6 +372,109 @@ describe("runHarness environment lifecycle", () => {
     expect(cleaned).toBe(1);
   });
 
+  it("discards each arm's GitHub work before destroying an aborted environment", async () => {
+    const config = await makeConfig();
+    const controller = new AbortController();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const lifecycle: string[] = [];
+    let attempts = 0;
+    const baseGitHub = fakeGitHub(state);
+
+    const run = await runHarness(
+      config,
+      {},
+      controller.signal,
+      {
+        environment: async () => ({
+          config,
+          async cleanup() {
+            lifecycle.push("environment cleanup");
+          },
+        }),
+        github: (arm) => ({
+          ...baseGitHub(arm),
+          async discardCurrentWork(baselineBranch) {
+            lifecycle.push(`discard ${arm.name} from ${baselineBranch}`);
+            return {
+              branch: `subticket-${arm.name}`,
+              pullRequest: arm.name === "tuatara" ? 41 : 42,
+              pullRequestClosed: true,
+              branchDeleted: true,
+            };
+          },
+        }),
+        runner: async (params) => {
+          attempts += 1;
+          if (attempts === config.arms.length) {
+            controller.abort(new Error("the live view was quit"));
+          }
+          await Promise.resolve();
+          throw new Error(`${params.arm} aborted: the live view was quit`);
+        },
+      },
+    );
+
+    expect(run.status).toBe("completed_with_failures");
+    expect(lifecycle.slice(0, 2).sort()).toEqual([
+      "discard komodo from main",
+      "discard tuatara from main",
+    ]);
+    expect(lifecycle.at(-1)).toBe("environment cleanup");
+  });
+
+  it("still destroys the environment and records an incomplete abort rollback", async () => {
+    const config = await makeConfig();
+    const controller = new AbortController();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    let cleaned = 0;
+    let attempts = 0;
+    const baseGitHub = fakeGitHub(state);
+
+    const run = await runHarness(
+      config,
+      {},
+      controller.signal,
+      {
+        environment: async () => ({
+          config,
+          async cleanup() {
+            cleaned += 1;
+          },
+        }),
+        github: (arm) => ({
+          ...baseGitHub(arm),
+          async discardCurrentWork() {
+            if (arm.name === "tuatara") {
+              throw new Error("could not close PR #41");
+            }
+            return {
+              pullRequestClosed: false,
+              branchDeleted: false,
+            };
+          },
+        }),
+        runner: async (params) => {
+          attempts += 1;
+          if (attempts === config.arms.length) {
+            controller.abort(new Error("the live view was quit"));
+          }
+          await Promise.resolve();
+          throw new Error(`${params.arm} aborted: the live view was quit`);
+        },
+      },
+    );
+
+    expect(run.status).toBe("completed_with_failures");
+    expect(cleaned).toBe(1);
+    expect(
+      await readFile(join(run.artifactDir, "cleanup-error.txt"), "utf8"),
+    ).toContain("tuatara: could not close PR #41");
+    const record = JSON.parse(
+      await readFile(join(run.artifactDir, "run.json"), "utf8"),
+    );
+    expect(record.cleanupError).toContain("tuatara: could not close PR #41");
+  });
+
   it("destroys the environment when preparation throws", async () => {
     const config = await makeConfig();
     let cleaned = 0;
@@ -406,6 +512,9 @@ describe("runHarness environment lifecycle", () => {
           },
           async diff() {
             return "";
+          },
+          async discardCurrentWork() {
+            return { pullRequestClosed: false, branchDeleted: false };
           },
           async merge() {
             return { merged: false };
@@ -535,6 +644,9 @@ describe("runHarness environment lifecycle", () => {
           },
           async diff() {
             return "";
+          },
+          async discardCurrentWork() {
+            return { pullRequestClosed: false, branchDeleted: false };
           },
           async merge() {
             return { merged: false };

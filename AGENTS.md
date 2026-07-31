@@ -78,8 +78,11 @@ bun start -- --help              # the full option + env reference
   barrier makes that boundary safe, and it arrives in minutes rather than the
   hours a whole rung can take; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
-  everywhere else and does not acquire a second one here. Stopping live
-  sessions exits 1. It runs on the alternate screen and gives the
+  everywhere else and does not acquire a second one here. An immediate stop
+  closes each arm's open PR for the interrupted branch and deletes that remote
+  branch before destroying its microVM, so retrying the unchecked subticket
+  starts from the same external baseline too. Stopping live sessions exits 1.
+  It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
   writes one `progress.log` per arm either way, filed beside the record it
   describes — `results/rung-NN/run/N.M/<arm>/progress.log`.
@@ -363,7 +366,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   comments + inline review comments + reactions, merged chronologically),
   `diff` (the unified diff between two commits, read from the arm's own
   checkout — the local object store still holds commits an amend or squash
-  unhooked from every ref), and
+  unhooked from every ref), `discardCurrentWork` (on an immediate human stop,
+  close the open PR for the current feature branch and delete its remote ref,
+  guarded by the recorded baseline branch so cleanup can never delete the
+  default branch), and
   `merge`. Comment list responses expose reaction counts, so identities are
   fetched only for comments with a nonzero count rather than making one extra
   API call per historical comment on every poll. For isolated arms these
@@ -374,9 +380,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   batched into single crossings: the conversation poll, the post-answer read
   (`afterAnswer` — branch head, round diff, settle-check conversation) and the
   merge tail (`finalizeMerge` — merge, state re-read, conversation capture,
-  churn refresh) are each one fixed argument-only bash program, with each
+  churn refresh), plus immediate-stop rollback, are each one fixed
+  argument-only bash program, with each
   part's failure a named gap in the JSON rather than the whole read failing.
-  The two bundles exist only on isolated arms; `land.ts` falls back to the
+  The landing bundles exist only on isolated arms; `land.ts` falls back to the
   discrete calls when a bundle is absent (host mode, the test fakes) or its
   read fails, so they are an optimization, never the only path. In the VM,
   Docker's proxy supplies
@@ -547,7 +554,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   straight back to the retry loop, which would immediately start another one —
   the opposite of stopping. In `session.ts` that signal joins the *same*
   controller the watchdog uses, so there is one teardown path and the MCP
-  client's `close()` kills the codex subprocess instead of orphaning it.
+  client's `close()` kills the codex subprocess instead of orphaning it. Once
+  both sessions are closed, an aborted harness calls `discardCurrentWork` for
+  each exact runtime arm before destroying either environment; a broad
+  prefix-matched recovery scan would be unsafe while another climb is active.
 
 - **`src/harness/environment.ts`** — the amnesic machine boundary. For every
   `runHarness` call it provisions a fresh runtime microVM, private Docker
@@ -855,7 +865,11 @@ one PR-sized step, which is what makes that affordable.
 
 Normal failures are already clean: `runHarness` destroys both ephemeral
 environments in `finally`, and the retry starts both arms from new clones. A
-host crash can strand named sandboxes after the harness process is gone;
+confirmed immediate TUI stop additionally closes any open PR on the interrupted
+branch and deletes that remote branch before the VM loses its checkout and
+credentials. A failed GitHub rollback is retained in `cleanup-error.txt` and
+`run.json.cleanupError` without preventing VM teardown. A host crash can strand
+named sandboxes after the harness process is gone;
 recovery matches the configured arm prefixes plus `vivarium-greg-*`:
 
 ```bash

@@ -111,6 +111,16 @@ export interface MergeOutcome {
   error?: string;
 }
 
+// What an immediate human stop removed from GitHub before the ephemeral
+// checkout disappeared. A branch that was never pushed has nothing to delete,
+// so `branchDeleted` is only true when a remote ref actually existed.
+export interface DiscardOutcome {
+  branch?: string;
+  pullRequest?: number;
+  pullRequestClosed: boolean;
+  branchDeleted: boolean;
+}
+
 // Everything the landing phase wants to know right after an arm's answer turn,
 // read in one piece: where the branch head ended up, what a push changed, and
 // the conversation as it stands. Each part fails independently — a missing
@@ -169,6 +179,13 @@ export interface ArmGitHub {
   // git cannot produce it; the caller records the gap rather than guessing.
   diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
+  // Roll an interrupted, unlanded subticket back to its external baseline.
+  // The caller supplies the recorded baseline branch so a missing or stale
+  // origin/HEAD can never make cleanup delete the repository's default branch.
+  // Implementations close the open PR for the checkout's current branch and
+  // delete that remote branch, while leaving the local checkout for the
+  // environment layer to destroy.
+  discardCurrentWork(baselineBranch: string): Promise<DiscardOutcome>;
   // The two bundled reads, defined only for isolated arms. Docker Sandbox
   // performs credential/template upkeep on every `sbx exec`, so a landing step
   // that makes three or four GitHub calls in sequence pays that fixed cost
@@ -518,6 +535,88 @@ jq -cn \
     refreshed: $refreshed[0]
   }'
 `;
+
+// Immediate-stop rollback in one sandbox crossing. The Codex session has
+// already been killed when this runs, so the branch cannot move underneath
+// the read. Close the PR and delete the remote ref as two independent steps:
+// an arm can push before opening its PR, and a failed close must not keep a
+// safely deletable branch alive. Errors are returned together so teardown can
+// still destroy the VM after recording exactly what GitHub cleanup missed.
+const DISCARD_WORK_SCRIPT = String.raw`
+set -uo pipefail
+
+baseline="$1"
+comment="$2"
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+pull_request=""
+closed="false"
+branch_deleted="false"
+errors=""
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+add_error() {
+  if [ -n "$errors" ]; then errors="$errors"$'\n'; fi
+  errors="$errors$1"
+}
+
+if [ -n "$branch" ] && [ "$branch" != "$baseline" ]; then
+  if gh pr list --head "$branch" --state open --limit 1 --json number \
+    >"$scratch/pr.json" 2>"$scratch/pr.err"; then
+    pull_request="$(jq -r '.[0].number // empty' "$scratch/pr.json" 2>/dev/null || true)"
+    if [ -n "$pull_request" ]; then
+      if gh pr close "$pull_request" --comment "$comment" \
+        >"$scratch/close.out" 2>"$scratch/close.err"; then
+        closed="true"
+      else
+        detail="$(tail -c 400 "$scratch/close.err" | tr -d '\0')"
+        if [ -z "$detail" ]; then detail="gh pr close exited nonzero"; fi
+        add_error "could not close pull request $pull_request: $detail"
+      fi
+    fi
+  else
+    detail="$(tail -c 400 "$scratch/pr.err" | tr -d '\0')"
+    if [ -z "$detail" ]; then detail="gh pr list exited nonzero"; fi
+    add_error "could not inspect open pull request for $branch: $detail"
+  fi
+
+  remote_ref="refs/heads/$branch"
+  git ls-remote --exit-code --heads origin "$remote_ref" \
+    >"$scratch/remote.out" 2>"$scratch/remote.err"
+  remote_code=$?
+  if [ "$remote_code" -eq 0 ]; then
+    if git push origin ":$remote_ref" \
+      >"$scratch/delete.out" 2>"$scratch/delete.err"; then
+      branch_deleted="true"
+    else
+      detail="$(tail -c 400 "$scratch/delete.err" | tr -d '\0')"
+      if [ -z "$detail" ]; then detail="git push --delete exited nonzero"; fi
+      add_error "could not delete remote branch $branch: $detail"
+    fi
+  elif [ "$remote_code" -ne 2 ]; then
+    detail="$(tail -c 400 "$scratch/remote.err" | tr -d '\0')"
+    if [ -z "$detail" ]; then detail="git ls-remote exited $remote_code"; fi
+    add_error "could not inspect remote branch $branch: $detail"
+  fi
+fi
+
+jq -cn \
+  --arg branch "$branch" \
+  --arg pullRequest "$pull_request" \
+  --argjson pullRequestClosed "$closed" \
+  --argjson branchDeleted "$branch_deleted" \
+  --arg errors "$errors" \
+  '{
+    branch: (if $branch == "" then null else $branch end),
+    pullRequest: (if $pullRequest == "" then null else ($pullRequest | tonumber) end),
+    pullRequestClosed: $pullRequestClosed,
+    branchDeleted: $branchDeleted,
+    errors: (if $errors == "" then [] else ($errors | split("\n")) end)
+  }'
+`;
+
+const INTERRUPTED_PR_COMMENT =
+  "Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.";
 
 // The fields every pull-request snapshot carries, shared by `findPullRequest`
 // and the merge bundle's churn refresh so the two reads cannot drift.
@@ -893,6 +992,168 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         );
       }
       return result.stdout;
+    },
+
+    async discardCurrentWork(baselineBranch) {
+      if (arm.sandboxName) {
+        const result = await run("bash", [
+          "-c",
+          DISCARD_WORK_SCRIPT,
+          "vivarium-discard-work",
+          baselineBranch,
+          INTERRUPTED_PR_COMMENT,
+        ]);
+        if (result.code !== 0) {
+          throw new Error(
+            `could not discard interrupted work in ${checkoutLocation}: ${
+              result.stderr.trim() ||
+              result.stdout.trim() ||
+              `bash exited ${result.code}`
+            }`,
+          );
+        }
+        const parsed = parseLastJsonLine<
+          Partial<DiscardOutcome> & { errors?: unknown }
+        >(result.stdout);
+        if (
+          !parsed ||
+          typeof parsed.pullRequestClosed !== "boolean" ||
+          typeof parsed.branchDeleted !== "boolean" ||
+          !Array.isArray(parsed.errors)
+        ) {
+          throw new Error(
+            `could not parse interrupted-work cleanup in ${checkoutLocation}`,
+          );
+        }
+        const errors = parsed.errors.filter(
+          (entry): entry is string =>
+            typeof entry === "string" && entry.length > 0,
+        );
+        if (errors.length > 0) {
+          throw new Error(
+            `interrupted-work cleanup was incomplete in ${checkoutLocation}:\n${errors.join("\n")}`,
+          );
+        }
+        return {
+          branch:
+            typeof parsed.branch === "string" ? parsed.branch : undefined,
+          pullRequest:
+            typeof parsed.pullRequest === "number"
+              ? parsed.pullRequest
+              : undefined,
+          pullRequestClosed: parsed.pullRequestClosed,
+          branchDeleted: parsed.branchDeleted,
+        };
+      }
+
+      const branch = await api.currentBranch();
+      if (!branch || branch === baselineBranch) {
+        return {
+          branch,
+          pullRequestClosed: false,
+          branchDeleted: false,
+        };
+      }
+
+      const errors: string[] = [];
+      let pullRequest: number | undefined;
+      let pullRequestClosed = false;
+      let branchDeleted = false;
+      const listed = await gh([
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--limit",
+        "1",
+        "--json",
+        "number",
+      ]);
+      if (listed.code === 0) {
+        const candidate = parseJson<Array<{ number?: unknown }>>(listed.stdout)
+          ?.[0]?.number;
+        if (typeof candidate === "number") pullRequest = candidate;
+        if (pullRequest !== undefined) {
+          const closed = await gh([
+            "pr",
+            "close",
+            String(pullRequest),
+            "--comment",
+            INTERRUPTED_PR_COMMENT,
+          ]);
+          if (closed.code === 0) {
+            pullRequestClosed = true;
+          } else {
+            errors.push(
+              `could not close pull request ${pullRequest}: ${
+                closed.stderr.trim() ||
+                closed.stdout.trim() ||
+                `gh exited ${closed.code}`
+              }`,
+            );
+          }
+        }
+      } else {
+        errors.push(
+          `could not inspect open pull request for ${branch}: ${
+            listed.stderr.trim() ||
+            listed.stdout.trim() ||
+            `gh exited ${listed.code}`
+          }`,
+        );
+      }
+
+      const credentials = credentialArgs(arm.ghToken);
+      const remoteRef = `refs/heads/${branch}`;
+      const remote = await git([
+        ...credentials,
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        "origin",
+        remoteRef,
+      ]);
+      if (remote.code === 0 && remote.stdout.trim()) {
+        const deleted = await git([
+          ...credentials,
+          "push",
+          "origin",
+          `:${remoteRef}`,
+        ]);
+        if (deleted.code === 0) {
+          branchDeleted = true;
+        } else {
+          errors.push(
+            `could not delete remote branch ${branch}: ${
+              deleted.stderr.trim() ||
+              deleted.stdout.trim() ||
+              `git exited ${deleted.code}`
+            }`,
+          );
+        }
+      } else if (remote.code !== 0 && remote.code !== 2) {
+        errors.push(
+          `could not inspect remote branch ${branch}: ${
+            remote.stderr.trim() ||
+            remote.stdout.trim() ||
+            `git exited ${remote.code}`
+          }`,
+        );
+      }
+
+      if (errors.length > 0) {
+        throw new Error(
+          `interrupted-work cleanup was incomplete in ${checkoutLocation}:\n${errors.join("\n")}`,
+        );
+      }
+      return {
+        branch,
+        pullRequest,
+        pullRequestClosed,
+        branchDeleted,
+      };
     },
 
     async checkRuns(pullRequest) {
