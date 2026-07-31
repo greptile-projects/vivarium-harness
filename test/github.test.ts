@@ -1026,13 +1026,9 @@ describe("discarding interrupted work", () => {
       },
     });
 
-    expect(
-      await armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
-    ).toEqual({
-      branch: "subticket-6-5",
-      pullRequestClosed: false,
-      branchDeleted: false,
-    });
+    await expect(
+      armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).rejects.toThrow(/no session push was recorded/);
     expect(calls.some((call) => call.args.includes("close"))).toBe(false);
   });
 

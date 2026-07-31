@@ -651,17 +651,26 @@ if [ -n "$branch" ]; then
     >"$scratch/pr.json" 2>"$scratch/pr.err"; then
     jq -c \
       --arg slug "$repo_slug" \
+      '[.[] | select(.headRepository.nameWithOwner == $slug)]' \
+      "$scratch/pr.json" >"$scratch/repo-prs.json" 2>/dev/null ||
+      printf '[]' >"$scratch/repo-prs.json"
+    jq -c \
       --arg sha "$pushed_sha" \
-      '[.[] | select(
-        .headRepository.nameWithOwner == $slug and
-        .headRefOid == $sha
-      )]' "$scratch/pr.json" >"$scratch/owned-prs.json" 2>/dev/null ||
+      '[.[] | select(.headRefOid == $sha)]' \
+      "$scratch/repo-prs.json" >"$scratch/owned-prs.json" 2>/dev/null ||
       printf '[]' >"$scratch/owned-prs.json"
+    repo_pr_count="$(jq 'length' "$scratch/repo-prs.json")"
     pr_count="$(jq 'length' "$scratch/owned-prs.json")"
     if [ "$pr_count" -gt 1 ]; then
       add_error "interrupted-work ownership is ambiguous across $pr_count pull requests for $branch"
     elif [ "$pr_count" -eq 1 ]; then
       pull_request="$(jq -r '.[0].number' "$scratch/owned-prs.json")"
+    elif [ "$repo_pr_count" -gt 0 ]; then
+      if [ -z "$pushed_sha" ]; then
+        add_error "could not prove ownership of an open pull request for $branch: no session push was recorded"
+      else
+        add_error "the open pull request for $branch no longer matches this session's push; left it untouched"
+      fi
     fi
   else
     detail="$(tail -c 400 "$scratch/pr.err" | tr -d '\0')"
@@ -1332,11 +1341,13 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             `could not parse open pull requests for ${branch}`,
           );
         } else {
-          const owned = candidates.filter(
+          const inRepository = candidates.filter(
             (candidate) =>
               typeof candidate.number === "number" &&
-              candidate.headRefOid === pushedSha &&
               candidate.headRepository?.nameWithOwner === baseline.slug,
+          );
+          const owned = inRepository.filter(
+            (candidate) => candidate.headRefOid === pushedSha,
           );
           if (owned.length > 1) {
             errors.push(
@@ -1344,6 +1355,12 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             );
           } else if (owned.length === 1) {
             pullRequest = owned[0]!.number as number;
+          } else if (inRepository.length > 0) {
+            errors.push(
+              pushedSha
+                ? `the open pull request for ${branch} no longer matches this session's push; left it untouched`
+                : `could not prove ownership of an open pull request for ${branch}: no session push was recorded`,
+            );
           }
         }
       } else {
