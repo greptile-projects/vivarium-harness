@@ -123,12 +123,13 @@ function fakeGitHub(options: {
     async isGitHubCheckout() {
       return options.isCheckout ?? true;
     },
-    async syncToBaseline() {
+    async syncToBaseline(workBranch) {
       calls.push("sync");
       return {
         slug: "org/repo",
         branch: "main",
         sha: "abc1234def",
+        workBranch,
         localBranches: ["main"],
         remoteBranches: ["main"],
       };
@@ -219,10 +220,13 @@ const landArm = async (
 describe("prepareArm", () => {
   it("resets the checkout to the shared baseline", async () => {
     const github = fakeGitHub({});
-    const baseline = await prepareArm({
-      github,
-      note: () => {},
-    });
+    const baseline = await prepareArm(
+      {
+        github,
+        note: () => {},
+      },
+      "vivarium/test-run",
+    );
 
     expect(github.calls).toEqual(["sync"]);
     expect(baseline?.sha).toBe("abc1234def");
@@ -230,10 +234,13 @@ describe("prepareArm", () => {
 
   it("skips anything that is not a GitHub checkout", async () => {
     const github = fakeGitHub({ isCheckout: false });
-    const baseline = await prepareArm({
-      github,
-      note: () => {},
-    });
+    const baseline = await prepareArm(
+      {
+        github,
+        note: () => {},
+      },
+      "vivarium/test-run",
+    );
 
     expect(baseline).toBeUndefined();
     expect(github.calls).toEqual([]);

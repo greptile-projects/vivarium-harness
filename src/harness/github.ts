@@ -45,9 +45,11 @@ export interface Baseline {
   slug?: string;
   branch: string;
   sha: string;
-  // Branch refs present before the worker starts. Immediate-stop rollback uses
-  // this ownership boundary instead of trusting whichever branch happens to
-  // be checked out after an interrupted session.
+  // Created and checked out by the harness before Codex starts. This explicit,
+  // run-unique identity is the only branch immediate-stop cleanup may mutate.
+  workBranch: string;
+  // Branch refs present before the harness creates `workBranch`. They prove
+  // that its supposedly run-unique name did not predate this session.
   localBranches: string[];
   remoteBranches: string[];
 }
@@ -157,7 +159,7 @@ export interface ArmGitHub {
   // False for anything that is not a GitHub checkout — a scratch dir, a smoke
   // run against a non-clone. Landing is skipped rather than failed.
   isGitHubCheckout(): Promise<boolean>;
-  syncToBaseline(): Promise<Baseline>;
+  syncToBaseline(workBranch: string): Promise<Baseline>;
   currentBranch(): Promise<string | undefined>;
   findPullRequest(hint: {
     url?: string;
@@ -185,11 +187,10 @@ export interface ArmGitHub {
   diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
   // Roll an interrupted, unlanded subticket back to its external baseline.
-  // The recorded pre-session branch refs and the new branch's creation reflog
-  // establish ownership without trusting the current checkout, which may be
-  // detached or sitting on unrelated work. Implementations close/delete only
-  // that owned branch, while leaving the local checkout for the environment
-  // layer to destroy.
+  // The harness-created work branch establishes ownership without trusting the
+  // current checkout, which may be detached or sitting on unrelated work.
+  // Implementations close/delete only that exact branch, while leaving the
+  // local checkout for the environment layer to destroy.
   discardCurrentWork(baseline: Baseline): Promise<DiscardOutcome>;
   // The two bundled reads, defined only for isolated arms. Docker Sandbox
   // performs credential/template upkeep on every `sbx exec`, so a landing step
@@ -348,12 +349,14 @@ interface ConversationBundle {
   reactions?: BundledReaction[];
 }
 
-// Extend the baked baseline reset with the ownership snapshot needed by
-// immediate-stop rollback. Keeping the wrapper here means an existing sandbox
-// template gains the safety rule immediately; no image rebuild is required.
+// Extend the baked baseline reset by snapshotting existing refs, rejecting a
+// colliding name, and creating the exact work branch immediate-stop rollback
+// will own. Keeping the wrapper here means an existing sandbox template gains
+// the safety rule immediately; no image rebuild is required.
 const ISOLATED_BASELINE_SCRIPT = String.raw`
 set -euo pipefail
 
+work_branch="$1"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
@@ -367,11 +370,34 @@ git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin |
   sed '/^HEAD$/d' |
   jq -Rsc 'split("\n") | map(select(length > 0))' >"$scratch/remote.json"
 
+git check-ref-format --branch "$work_branch" >/dev/null
+if jq -e --arg branch "$work_branch" 'index($branch) != null' \
+  "$scratch/local.json" >/dev/null ||
+  jq -e --arg branch "$work_branch" 'index($branch) != null' \
+    "$scratch/remote.json" >/dev/null; then
+  echo "work branch already exists: $work_branch" >&2
+  exit 1
+fi
+if git ls-remote --exit-code --heads origin "refs/heads/$work_branch" \
+  >"$scratch/work-remote.out" 2>"$scratch/work-remote.err"; then
+  echo "work branch already exists on origin: $work_branch" >&2
+  exit 1
+else
+  remote_code=$?
+  if [ "$remote_code" -ne 2 ]; then
+    cat "$scratch/work-remote.err" >&2
+    exit "$remote_code"
+  fi
+fi
+git checkout -q -b "$work_branch"
+
 jq -cn \
+  --arg workBranch "$work_branch" \
   --slurpfile baseline "$scratch/baseline.json" \
   --slurpfile local "$scratch/local.json" \
   --slurpfile remote "$scratch/remote.json" \
   '$baseline[0] + {
+    workBranch: $workBranch,
     localBranches: $local[0],
     remoteBranches: $remote[0]
   }'
@@ -584,12 +610,11 @@ const DISCARD_WORK_SCRIPT = String.raw`
 set -uo pipefail
 
 baseline_branch="$1"
-baseline_sha="$2"
+branch="$2"
 baseline_local="$3"
 baseline_remote="$4"
 repo_slug="$5"
 comment="$6"
-branch=""
 pull_request=""
 closed="false"
 branch_deleted="false"
@@ -602,42 +627,21 @@ add_error() {
   errors="$errors$1"
 }
 
-git for-each-ref --format='%(refname:short)' refs/heads |
-while IFS= read -r candidate; do
-  [ -n "$candidate" ] || continue
-  [ "$candidate" != "$baseline_branch" ] || continue
-  if printf '%s' "$baseline_local" |
-    jq -e --arg branch "$candidate" 'index($branch) != null' >/dev/null 2>&1; then
-    continue
-  fi
-  if printf '%s' "$baseline_remote" |
-    jq -e --arg branch "$candidate" 'index($branch) != null' >/dev/null 2>&1; then
-    continue
-  fi
-
-  first="$(git reflog show --format='%H%x09%gs' \
-    "refs/heads/$candidate" 2>/dev/null | tail -n 1 || true)"
-  first_sha="$(printf '%s' "$first" | cut -f1)"
-  first_subject="$(printf '%s' "$first" | cut -f2-)"
-  [ "$first_sha" = "$baseline_sha" ] || continue
-  case "$first_subject" in
-    "branch: Created from origin/$baseline_branch"|"branch: Created from refs/remotes/origin/$baseline_branch")
-      ;;
-    "branch: Created from origin/"* | "branch: Created from refs/remotes/"*)
-      continue
-      ;;
-    "branch: Created from "*) ;;
-    *) continue ;;
-  esac
-  printf '%s\n' "$candidate"
-done >"$scratch/candidates"
-
-candidate_count="$(wc -l <"$scratch/candidates" | tr -d ' ')"
-if [ "$candidate_count" -gt 1 ]; then
-  branches="$(paste -sd, "$scratch/candidates")"
-  add_error "interrupted-work ownership is ambiguous across branches: $branches"
-elif [ "$candidate_count" -eq 1 ]; then
-  branch="$(sed -n '1p' "$scratch/candidates")"
+invalid_branch="false"
+if [ -z "$branch" ] ||
+  [ "$branch" = "$baseline_branch" ] ||
+  ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+  invalid_branch="true"
+elif printf '%s' "$baseline_local" |
+  jq -e --arg branch "$branch" 'index($branch) != null' >/dev/null 2>&1; then
+  invalid_branch="true"
+elif printf '%s' "$baseline_remote" |
+  jq -e --arg branch "$branch" 'index($branch) != null' >/dev/null 2>&1; then
+  invalid_branch="true"
+fi
+if [ "$invalid_branch" = "true" ]; then
+  add_error "recorded work branch is not a unique post-baseline branch: $branch"
+  branch=""
 fi
 
 if [ -n "$branch" ]; then
@@ -939,56 +943,6 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     };
   };
 
-  const sessionOwnedBranch = async (
-    baseline: Baseline,
-  ): Promise<string | undefined> => {
-    const snapshot = await branchSnapshot();
-    const candidates: string[] = [];
-    for (const branch of snapshot.localBranches) {
-      if (
-        branch === baseline.branch ||
-        baseline.localBranches.includes(branch) ||
-        baseline.remoteBranches.includes(branch)
-      ) {
-        continue;
-      }
-      const reflog = await git([
-        "reflog",
-        "show",
-        "--format=%H%x09%gs",
-        `refs/heads/${branch}`,
-      ]);
-      if (reflog.code !== 0) continue;
-      const entries = reflog.stdout.trim().split(/\r?\n/);
-      const first = entries.at(-1) ?? "";
-      const separator = first.indexOf("\t");
-      if (separator < 0) continue;
-      const createdSha = first.slice(0, separator);
-      const subject = first.slice(separator + 1);
-      const remoteBaselineSources = new Set([
-        `branch: Created from origin/${baseline.branch}`,
-        `branch: Created from refs/remotes/origin/${baseline.branch}`,
-      ]);
-      const createdFromRemote = subject.startsWith(
-        "branch: Created from origin/",
-      ) ||
-        subject.startsWith("branch: Created from refs/remotes/");
-      if (
-        createdSha === baseline.sha &&
-        subject.startsWith("branch: Created from ") &&
-        (!createdFromRemote || remoteBaselineSources.has(subject))
-      ) {
-        candidates.push(branch);
-      }
-    }
-    if (candidates.length > 1) {
-      throw new Error(
-        `interrupted-work ownership is ambiguous across branches: ${candidates.join(",")}`,
-      );
-    }
-    return candidates[0];
-  };
-
   const sessionPushedSha = async (
     branch: string,
   ): Promise<string | undefined> => {
@@ -1036,12 +990,13 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // (a symlink on the host, a read-only mount in the microVM — deleting it
     // blinds the arm to the ladder). The `-x` on the clean below is deliberate;
     // see its comment.
-    async syncToBaseline() {
+    async syncToBaseline(workBranch) {
       if (arm.sandboxName) {
         const result = await run("bash", [
           "-ceu",
           ISOLATED_BASELINE_SCRIPT,
           "vivarium-baseline",
+          workBranch,
         ]);
         if (result.code !== 0) {
           throw new Error(
@@ -1052,6 +1007,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           remote?: string;
           branch?: string;
           sha?: string;
+          workBranch?: string;
           localBranches?: unknown;
           remoteBranches?: unknown;
         }>(result.stdout);
@@ -1061,6 +1017,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         if (
           !baseline?.branch ||
           !baseline.sha ||
+          baseline.workBranch !== workBranch ||
           !slug ||
           !Array.isArray(baseline.localBranches) ||
           !baseline.localBranches.every(
@@ -1081,6 +1038,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           slug,
           branch: baseline.branch,
           sha: baseline.sha,
+          workBranch,
           localBranches: baseline.localBranches,
           remoteBranches: baseline.remoteBranches,
         };
@@ -1142,7 +1100,53 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
 
       const head = await git(["rev-parse", "HEAD"]);
       const snapshot = await branchSnapshot();
-      return { slug, branch, sha: head.stdout.trim(), ...snapshot };
+      if (
+        snapshot.localBranches.includes(workBranch) ||
+        snapshot.remoteBranches.includes(workBranch)
+      ) {
+        throw new Error(
+          `work branch already exists in ${checkoutLocation}: ${workBranch}`,
+        );
+      }
+      const workRemote = await git([
+        ...credentials,
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        "origin",
+        `refs/heads/${workBranch}`,
+      ]);
+      if (workRemote.code === 0) {
+        throw new Error(
+          `work branch already exists in ${checkoutLocation}: ${workBranch}`,
+        );
+      }
+      if (workRemote.code !== 2) {
+        throw new Error(
+          `could not verify work branch ${workBranch} is unused in ${checkoutLocation}: ${
+            workRemote.stderr.trim() ||
+            workRemote.stdout.trim() ||
+            `git ls-remote exited ${workRemote.code}`
+          }`,
+        );
+      }
+      const started = await git(["checkout", "-b", workBranch]);
+      if (started.code !== 0) {
+        throw new Error(
+          `could not create work branch ${workBranch} in ${checkoutLocation}: ${
+            started.stderr.trim() ||
+            started.stdout.trim() ||
+            "git checkout -b failed"
+          }`,
+        );
+      }
+      return {
+        slug,
+        branch,
+        sha: head.stdout.trim(),
+        workBranch,
+        ...snapshot,
+      };
     },
 
     async currentBranch() {
@@ -1254,7 +1258,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           DISCARD_WORK_SCRIPT,
           "vivarium-discard-work",
           baseline.branch,
-          baseline.sha,
+          baseline.workBranch,
           JSON.stringify(baseline.localBranches),
           JSON.stringify(baseline.remoteBranches),
           baseline.slug ?? "",
@@ -1303,12 +1307,16 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         };
       }
 
-      const branch = await sessionOwnedBranch(baseline);
-      if (!branch) {
-        return {
-          pullRequestClosed: false,
-          branchDeleted: false,
-        };
+      const branch = baseline.workBranch;
+      if (
+        !branch ||
+        branch === baseline.branch ||
+        baseline.localBranches.includes(branch) ||
+        baseline.remoteBranches.includes(branch)
+      ) {
+        throw new Error(
+          `recorded work branch is not a unique post-baseline branch: ${branch}`,
+        );
       }
 
       const errors: string[] = [];

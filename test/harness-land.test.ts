@@ -70,12 +70,13 @@ function fakeGitHub(
     async isGitHubCheckout() {
       return true;
     },
-    async syncToBaseline() {
+    async syncToBaseline(workBranch) {
       state.synced.push(arm.name);
       return {
         slug: `org/${arm.name}`,
         branch: "main",
         sha: `sha-${arm.name}`,
+        workBranch,
         localBranches: ["main"],
         remoteBranches: ["main"],
       };
@@ -204,6 +205,11 @@ describe("runHarness landing", () => {
     );
     expect(record.schemaVersion).toBe(4);
     expect(record.baselines.tuatara.sha).toBe("sha-tuatara");
+    expect(record.baselines.tuatara.workBranch).toMatch(/^vivarium\//);
+    expect(record.baselines.tuatara.workBranch).toBe(
+      record.baselines.komodo.workBranch,
+    );
+    expect(record.baselines.tuatara.workBranch).not.toBe("main");
     const landing = record.arms.tuatara.landing;
     expect(landing.status).toBe("merged");
     expect(landing.reviewRounds).toHaveLength(1);

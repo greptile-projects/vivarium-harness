@@ -33,7 +33,7 @@ Read ALL relevant context and documentation before making changes. Implement the
 An example of an append to \`LOG.md\`: \`2026-07-26T22:57:40Z: Created this repository log; future agents should append concise context for whoever works here next.\`
 
 ## PR Instructions
-Your checkout is on the repository's default branch, at the commit the last piece of work landed on. You will need to checkout a new branch, create commits on it, and push it to GitHub using the \`gh\` CLI. Do **not** merge the PR yourself, it will be merged by the agent orchestrator.
+Your checkout is already on a fresh, dedicated work branch created by the orchestrator at the commit the last piece of work landed on. Keep using this current branch: do not create, rename, or switch branches. Create commits on it and push it to GitHub using the \`gh\` CLI. Do **not** merge the PR yourself, it will be merged by the agent orchestrator.
 
 When you create a PR, its title MUST begin with the literal prefix \`[codex] \` — the bracketed marker exactly as written, followed by one space, before anything else. Example: \`[codex] nuked the codebase\`.
 

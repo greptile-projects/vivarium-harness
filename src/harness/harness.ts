@@ -291,6 +291,7 @@ export async function runHarness(
   }
   const prompt = workerPrompt(config.ticket);
   const artifacts = await RunArtifacts.create(config, prompt);
+  const workBranch = `vivarium/${artifacts.runId}`;
   let runner = deps.runner;
   const github = deps.github ?? gitHubForArm;
   const environmentFactory = deps.environment ?? provisionArmEnvironment;
@@ -309,15 +310,19 @@ export async function runHarness(
   try {
     environment = await environmentFactory(config, artifacts.runId, note);
     runtimeConfig = environment.config;
-    // Both checkouts go back to origin's default branch *before* either session
-    // starts: a subticket has to begin where the last one landed, and doing it
-    // up front means a sync failure costs nothing already in flight.
+    // Both checkouts get the same run-unique branch name from origin's default
+    // branch *before* either session starts. Besides keeping their starting
+    // points aligned, this gives immediate-stop rollback an explicit identity
+    // no concurrent branch can impersonate after the baseline snapshot.
     for (const arm of runtimeConfig.arms) {
       phase(arm.name, "preparing");
-      const baseline = await prepareArm({
-        github: github(arm),
-        note: (text) => note(arm.name, text),
-      });
+      const baseline = await prepareArm(
+        {
+          github: github(arm),
+          note: (text) => note(arm.name, text),
+        },
+        workBranch,
+      );
       if (baseline) baselines[arm.name] = baseline;
     }
     await artifacts.recordBaselines(baselines);
