@@ -45,6 +45,13 @@ export interface Baseline {
   slug?: string;
   branch: string;
   sha: string;
+  // Created and checked out by the harness before Codex starts. This explicit,
+  // run-unique identity is the only branch immediate-stop cleanup may mutate.
+  workBranch: string;
+  // Branch refs present before the harness creates `workBranch`. They prove
+  // that its supposedly run-unique name did not predate this session.
+  localBranches: string[];
+  remoteBranches: string[];
 }
 
 export interface PullRequestRef {
@@ -111,6 +118,16 @@ export interface MergeOutcome {
   error?: string;
 }
 
+// What an immediate human stop removed from GitHub before the ephemeral
+// checkout disappeared. A branch that was never pushed has nothing to delete,
+// so `branchDeleted` is only true when a remote ref actually existed.
+export interface DiscardOutcome {
+  branch?: string;
+  pullRequest?: number;
+  pullRequestClosed: boolean;
+  branchDeleted: boolean;
+}
+
 // Everything the landing phase wants to know right after an arm's answer turn,
 // read in one piece: where the branch head ended up, what a push changed, and
 // the conversation as it stands. Each part fails independently — a missing
@@ -142,7 +159,7 @@ export interface ArmGitHub {
   // False for anything that is not a GitHub checkout — a scratch dir, a smoke
   // run against a non-clone. Landing is skipped rather than failed.
   isGitHubCheckout(): Promise<boolean>;
-  syncToBaseline(): Promise<Baseline>;
+  syncToBaseline(workBranch: string): Promise<Baseline>;
   currentBranch(): Promise<string | undefined>;
   findPullRequest(hint: {
     url?: string;
@@ -169,6 +186,12 @@ export interface ArmGitHub {
   // git cannot produce it; the caller records the gap rather than guessing.
   diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
+  // Roll an interrupted, unlanded subticket back to its external baseline.
+  // The harness-created work branch establishes ownership without trusting the
+  // current checkout, which may be detached or sitting on unrelated work.
+  // Implementations close/delete only that exact branch, while leaving the
+  // local checkout for the environment layer to destroy.
+  discardCurrentWork(baseline: Baseline): Promise<DiscardOutcome>;
   // The two bundled reads, defined only for isolated arms. Docker Sandbox
   // performs credential/template upkeep on every `sbx exec`, so a landing step
   // that makes three or four GitHub calls in sequence pays that fixed cost
@@ -325,6 +348,60 @@ interface ConversationBundle {
   inlineComments?: GhReviewComment[];
   reactions?: BundledReaction[];
 }
+
+// Extend the baked baseline reset by snapshotting existing refs, rejecting a
+// colliding name, and creating the exact work branch immediate-stop rollback
+// will own. Keeping the wrapper here means an existing sandbox template gains
+// the safety rule immediately; no image rebuild is required.
+const ISOLATED_BASELINE_SCRIPT = String.raw`
+set -euo pipefail
+
+work_branch="$1"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+vivarium-sync >"$scratch/baseline.raw"
+tail -n 1 "$scratch/baseline.raw" >"$scratch/baseline.json"
+jq -e 'type == "object"' "$scratch/baseline.json" >/dev/null
+
+git for-each-ref --format='%(refname:short)' refs/heads |
+  jq -Rsc 'split("\n") | map(select(length > 0))' >"$scratch/local.json"
+git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin |
+  sed '/^HEAD$/d' |
+  jq -Rsc 'split("\n") | map(select(length > 0))' >"$scratch/remote.json"
+
+git check-ref-format --branch "$work_branch" >/dev/null
+if jq -e --arg branch "$work_branch" 'index($branch) != null' \
+  "$scratch/local.json" >/dev/null ||
+  jq -e --arg branch "$work_branch" 'index($branch) != null' \
+    "$scratch/remote.json" >/dev/null; then
+  echo "work branch already exists: $work_branch" >&2
+  exit 1
+fi
+if git ls-remote --exit-code --heads origin "refs/heads/$work_branch" \
+  >"$scratch/work-remote.out" 2>"$scratch/work-remote.err"; then
+  echo "work branch already exists on origin: $work_branch" >&2
+  exit 1
+else
+  remote_code=$?
+  if [ "$remote_code" -ne 2 ]; then
+    cat "$scratch/work-remote.err" >&2
+    exit "$remote_code"
+  fi
+fi
+git checkout -q -b "$work_branch"
+
+jq -cn \
+  --arg workBranch "$work_branch" \
+  --slurpfile baseline "$scratch/baseline.json" \
+  --slurpfile local "$scratch/local.json" \
+  --slurpfile remote "$scratch/remote.json" \
+  '$baseline[0] + {
+    workBranch: $workBranch,
+    localBranches: $local[0],
+    remoteBranches: $remote[0]
+  }'
+`;
 
 // One review poll used to cross the sandbox control plane once for `gh pr
 // view`, once for the origin URL, once for each comment collection, and once
@@ -519,6 +596,157 @@ jq -cn \
   }'
 `;
 
+// Immediate-stop rollback in one sandbox crossing. The Codex session has
+// already been killed when this runs, so its local refs cannot move underneath
+// the read. The remote still can: a collaborator may advance or recreate the
+// branch at any moment. The remote-tracking reflog records the last object this
+// session pushed, and a matching force-with-lease makes deletion the ownership
+// check rather than a racy read followed by an unconditional mutation. A PR
+// must match both that object and the recorded repository, and only after the
+// ref check succeeds (or the ref is already absent) may it close. Errors are
+// returned together so teardown can still destroy the VM after recording
+// exactly what GitHub cleanup missed.
+const DISCARD_WORK_SCRIPT = String.raw`
+set -uo pipefail
+
+baseline_branch="$1"
+branch="$2"
+baseline_local="$3"
+baseline_remote="$4"
+repo_slug="$5"
+comment="$6"
+pull_request=""
+closed="false"
+branch_deleted="false"
+errors=""
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+add_error() {
+  if [ -n "$errors" ]; then errors="$errors"$'\n'; fi
+  errors="$errors$1"
+}
+
+invalid_branch="false"
+if [ -z "$branch" ] ||
+  [ "$branch" = "$baseline_branch" ] ||
+  ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+  invalid_branch="true"
+elif printf '%s' "$baseline_local" |
+  jq -e --arg branch "$branch" 'index($branch) != null' >/dev/null 2>&1; then
+  invalid_branch="true"
+elif printf '%s' "$baseline_remote" |
+  jq -e --arg branch "$branch" 'index($branch) != null' >/dev/null 2>&1; then
+  invalid_branch="true"
+fi
+if [ "$invalid_branch" = "true" ]; then
+  add_error "recorded work branch is not a unique post-baseline branch: $branch"
+  branch=""
+fi
+
+if [ -n "$branch" ]; then
+  remote_ref="refs/heads/$branch"
+  pushed_sha="$(git reflog show --format='%H%x09%gs' \
+    "refs/remotes/origin/$branch" 2>/dev/null |
+    awk -F '\t' '$2 == "update by push" { print $1; exit }' || true)"
+
+  if gh pr list --head "$branch" --state open --limit 100 \
+    --json number,headRefOid,headRepository \
+    >"$scratch/pr.json" 2>"$scratch/pr.err"; then
+    jq -c \
+      --arg slug "$repo_slug" \
+      '[.[] | select(.headRepository.nameWithOwner == $slug)]' \
+      "$scratch/pr.json" >"$scratch/repo-prs.json" 2>/dev/null ||
+      printf '[]' >"$scratch/repo-prs.json"
+    jq -c \
+      --arg sha "$pushed_sha" \
+      '[.[] | select(.headRefOid == $sha)]' \
+      "$scratch/repo-prs.json" >"$scratch/owned-prs.json" 2>/dev/null ||
+      printf '[]' >"$scratch/owned-prs.json"
+    repo_pr_count="$(jq 'length' "$scratch/repo-prs.json")"
+    pr_count="$(jq 'length' "$scratch/owned-prs.json")"
+    if [ "$pr_count" -gt 1 ]; then
+      add_error "interrupted-work ownership is ambiguous across $pr_count pull requests for $branch"
+    elif [ "$pr_count" -eq 1 ]; then
+      pull_request="$(jq -r '.[0].number' "$scratch/owned-prs.json")"
+    elif [ "$repo_pr_count" -gt 0 ]; then
+      if [ -z "$pushed_sha" ]; then
+        add_error "could not prove ownership of an open pull request for $branch: no session push was recorded"
+      else
+        add_error "the open pull request for $branch no longer matches this session's push; left it untouched"
+      fi
+    fi
+  else
+    detail="$(tail -c 400 "$scratch/pr.err" | tr -d '\0')"
+    if [ -z "$detail" ]; then detail="gh pr list exited nonzero"; fi
+    add_error "could not inspect open pull request for $branch: $detail"
+  fi
+
+  git ls-remote --exit-code --heads origin "$remote_ref" \
+    >"$scratch/remote.out" 2>"$scratch/remote.err"
+  remote_code=$?
+  safe_to_close="false"
+  if [ "$remote_code" -eq 0 ]; then
+    remote_sha="$(awk 'NR == 1 { print $1 }' "$scratch/remote.out")"
+    if [ -z "$pushed_sha" ]; then
+      add_error "could not prove ownership of remote branch $branch: no session push was recorded"
+    elif [ "$remote_sha" != "$pushed_sha" ]; then
+      add_error "remote branch $branch changed after this session pushed it; left it and its pull request untouched"
+    else
+      if git push \
+        "--force-with-lease=$remote_ref:$pushed_sha" \
+        origin ":$remote_ref" \
+        >"$scratch/delete.out" 2>"$scratch/delete.err"; then
+        branch_deleted="true"
+        safe_to_close="true"
+      else
+        detail="$(tail -c 400 "$scratch/delete.err" | tr -d '\0')"
+        if [ -z "$detail" ]; then detail="leased git push --delete exited nonzero"; fi
+        add_error "could not safely delete remote branch $branch: $detail"
+      fi
+    fi
+  elif [ "$remote_code" -eq 2 ]; then
+    if [ -n "$pushed_sha" ] || [ -z "$pull_request" ]; then
+      safe_to_close="true"
+    else
+      add_error "could not prove ownership of pull request $pull_request: no session push was recorded"
+    fi
+  elif [ "$remote_code" -ne 2 ]; then
+    detail="$(tail -c 400 "$scratch/remote.err" | tr -d '\0')"
+    if [ -z "$detail" ]; then detail="git ls-remote exited $remote_code"; fi
+    add_error "could not inspect remote branch $branch: $detail"
+  fi
+
+  if [ "$safe_to_close" = "true" ] && [ -n "$pull_request" ]; then
+    if gh pr close "$pull_request" --comment "$comment" \
+      >"$scratch/close.out" 2>"$scratch/close.err"; then
+      closed="true"
+    else
+      detail="$(tail -c 400 "$scratch/close.err" | tr -d '\0')"
+      if [ -z "$detail" ]; then detail="gh pr close exited nonzero"; fi
+      add_error "could not close pull request $pull_request: $detail"
+    fi
+  fi
+fi
+
+jq -cn \
+  --arg branch "$branch" \
+  --arg pullRequest "$pull_request" \
+  --argjson pullRequestClosed "$closed" \
+  --argjson branchDeleted "$branch_deleted" \
+  --arg errors "$errors" \
+  '{
+    branch: (if $branch == "" then null else $branch end),
+    pullRequest: (if $pullRequest == "" then null else ($pullRequest | tonumber) end),
+    pullRequestClosed: $pullRequestClosed,
+    branchDeleted: $branchDeleted,
+    errors: (if $errors == "" then [] else ($errors | split("\n")) end)
+  }'
+`;
+
+const INTERRUPTED_PR_COMMENT =
+  "Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.";
+
 // The fields every pull-request snapshot carries, shared by `findPullRequest`
 // and the merge bundle's churn refresh so the two reads cannot drift.
 const PULL_REQUEST_FIELDS =
@@ -683,6 +911,59 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     return result.stdout.trim().replace(/^origin\//, "") || "main";
   };
 
+  const branchSnapshot = async (): Promise<{
+    localBranches: string[];
+    remoteBranches: string[];
+  }> => {
+    const [local, remoteBranches] = await Promise.all([
+      git(["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
+      git([
+        "for-each-ref",
+        "--format=%(refname:strip=3)",
+        "refs/remotes/origin",
+      ]),
+    ]);
+    if (local.code !== 0 || remoteBranches.code !== 0) {
+      throw new Error(
+        `could not snapshot branches in ${checkoutLocation}: ${
+          local.stderr.trim() ||
+          remoteBranches.stderr.trim() ||
+          "git for-each-ref failed"
+        }`,
+      );
+    }
+    const lines = (value: string): string[] =>
+      value
+        .trim()
+        .split(/\r?\n/)
+        .filter((branch) => branch.length > 0 && branch !== "HEAD");
+    return {
+      localBranches: lines(local.stdout),
+      remoteBranches: lines(remoteBranches.stdout),
+    };
+  };
+
+  const sessionPushedSha = async (
+    branch: string,
+  ): Promise<string | undefined> => {
+    const reflog = await git([
+      "reflog",
+      "show",
+      "--format=%H%x09%gs",
+      `refs/remotes/origin/${branch}`,
+    ]);
+    if (reflog.code !== 0) return undefined;
+    for (const entry of reflog.stdout.trim().split(/\r?\n/)) {
+      const separator = entry.indexOf("\t");
+      if (separator < 0 || entry.slice(separator + 1) !== "update by push") {
+        continue;
+      }
+      const sha = entry.slice(0, separator);
+      return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(sha) ? sha : undefined;
+    }
+    return undefined;
+  };
+
   const api: ArmGitHub = {
     async isGitHubCheckout() {
       if (arm.sandboxName) {
@@ -709,9 +990,14 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // (a symlink on the host, a read-only mount in the microVM — deleting it
     // blinds the arm to the ladder). The `-x` on the clean below is deliberate;
     // see its comment.
-    async syncToBaseline() {
+    async syncToBaseline(workBranch) {
       if (arm.sandboxName) {
-        const result = await run("vivarium-sync", []);
+        const result = await run("bash", [
+          "-ceu",
+          ISOLATED_BASELINE_SCRIPT,
+          "vivarium-baseline",
+          workBranch,
+        ]);
         if (result.code !== 0) {
           throw new Error(
             `baseline sync failed in ${checkoutLocation}: ${result.stderr.trim() || result.stdout.trim()}`,
@@ -721,18 +1007,41 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           remote?: string;
           branch?: string;
           sha?: string;
+          workBranch?: string;
+          localBranches?: unknown;
+          remoteBranches?: unknown;
         }>(result.stdout);
         const slug = baseline?.remote
           ? slugFromRemote(baseline.remote)
           : undefined;
-        if (!baseline?.branch || !baseline.sha || !slug) {
+        if (
+          !baseline?.branch ||
+          !baseline.sha ||
+          baseline.workBranch !== workBranch ||
+          !slug ||
+          !Array.isArray(baseline.localBranches) ||
+          !baseline.localBranches.every(
+            (branch): branch is string => typeof branch === "string",
+          ) ||
+          !Array.isArray(baseline.remoteBranches) ||
+          !baseline.remoteBranches.every(
+            (branch): branch is string => typeof branch === "string",
+          )
+        ) {
           const detail =
             result.stdout.trim() || result.stderr.trim() || "empty output";
           throw new Error(
             `baseline sync returned invalid state in ${checkoutLocation}: ${detail}`,
           );
         }
-        return { slug, branch: baseline.branch, sha: baseline.sha };
+        return {
+          slug,
+          branch: baseline.branch,
+          sha: baseline.sha,
+          workBranch,
+          localBranches: baseline.localBranches,
+          remoteBranches: baseline.remoteBranches,
+        };
       }
 
       const url = await remote();
@@ -790,7 +1099,54 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       }
 
       const head = await git(["rev-parse", "HEAD"]);
-      return { slug, branch, sha: head.stdout.trim() };
+      const snapshot = await branchSnapshot();
+      if (
+        snapshot.localBranches.includes(workBranch) ||
+        snapshot.remoteBranches.includes(workBranch)
+      ) {
+        throw new Error(
+          `work branch already exists in ${checkoutLocation}: ${workBranch}`,
+        );
+      }
+      const workRemote = await git([
+        ...credentials,
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        "origin",
+        `refs/heads/${workBranch}`,
+      ]);
+      if (workRemote.code === 0) {
+        throw new Error(
+          `work branch already exists in ${checkoutLocation}: ${workBranch}`,
+        );
+      }
+      if (workRemote.code !== 2) {
+        throw new Error(
+          `could not verify work branch ${workBranch} is unused in ${checkoutLocation}: ${
+            workRemote.stderr.trim() ||
+            workRemote.stdout.trim() ||
+            `git ls-remote exited ${workRemote.code}`
+          }`,
+        );
+      }
+      const started = await git(["checkout", "-b", workBranch]);
+      if (started.code !== 0) {
+        throw new Error(
+          `could not create work branch ${workBranch} in ${checkoutLocation}: ${
+            started.stderr.trim() ||
+            started.stdout.trim() ||
+            "git checkout -b failed"
+          }`,
+        );
+      }
+      return {
+        slug,
+        branch,
+        sha: head.stdout.trim(),
+        workBranch,
+        ...snapshot,
+      };
     },
 
     async currentBranch() {
@@ -893,6 +1249,234 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         );
       }
       return result.stdout;
+    },
+
+    async discardCurrentWork(baseline) {
+      if (arm.sandboxName) {
+        const result = await run("bash", [
+          "-c",
+          DISCARD_WORK_SCRIPT,
+          "vivarium-discard-work",
+          baseline.branch,
+          baseline.workBranch,
+          JSON.stringify(baseline.localBranches),
+          JSON.stringify(baseline.remoteBranches),
+          baseline.slug ?? "",
+          INTERRUPTED_PR_COMMENT,
+        ]);
+        if (result.code !== 0) {
+          throw new Error(
+            `could not discard interrupted work in ${checkoutLocation}: ${
+              result.stderr.trim() ||
+              result.stdout.trim() ||
+              `bash exited ${result.code}`
+            }`,
+          );
+        }
+        const parsed = parseLastJsonLine<
+          Partial<DiscardOutcome> & { errors?: unknown }
+        >(result.stdout);
+        if (
+          !parsed ||
+          typeof parsed.pullRequestClosed !== "boolean" ||
+          typeof parsed.branchDeleted !== "boolean" ||
+          !Array.isArray(parsed.errors)
+        ) {
+          throw new Error(
+            `could not parse interrupted-work cleanup in ${checkoutLocation}`,
+          );
+        }
+        const errors = parsed.errors.filter(
+          (entry): entry is string =>
+            typeof entry === "string" && entry.length > 0,
+        );
+        if (errors.length > 0) {
+          throw new Error(
+            `interrupted-work cleanup was incomplete in ${checkoutLocation}:\n${errors.join("\n")}`,
+          );
+        }
+        return {
+          branch:
+            typeof parsed.branch === "string" ? parsed.branch : undefined,
+          pullRequest:
+            typeof parsed.pullRequest === "number"
+              ? parsed.pullRequest
+              : undefined,
+          pullRequestClosed: parsed.pullRequestClosed,
+          branchDeleted: parsed.branchDeleted,
+        };
+      }
+
+      const branch = baseline.workBranch;
+      if (
+        !branch ||
+        branch === baseline.branch ||
+        baseline.localBranches.includes(branch) ||
+        baseline.remoteBranches.includes(branch)
+      ) {
+        throw new Error(
+          `recorded work branch is not a unique post-baseline branch: ${branch}`,
+        );
+      }
+
+      const errors: string[] = [];
+      let pullRequest: number | undefined;
+      let pullRequestClosed = false;
+      let branchDeleted = false;
+      const pushedSha = await sessionPushedSha(branch);
+      const listed = await gh([
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number,headRefOid,headRepository",
+      ]);
+      if (listed.code === 0) {
+        const candidates = parseJson<
+          Array<{
+            number?: unknown;
+            headRefOid?: unknown;
+            headRepository?: { nameWithOwner?: unknown };
+          }>
+        >(listed.stdout);
+        if (!candidates) {
+          errors.push(
+            `could not parse open pull requests for ${branch}`,
+          );
+        } else {
+          const inRepository = candidates.filter(
+            (candidate) =>
+              typeof candidate.number === "number" &&
+              candidate.headRepository?.nameWithOwner === baseline.slug,
+          );
+          const owned = inRepository.filter(
+            (candidate) => candidate.headRefOid === pushedSha,
+          );
+          if (owned.length > 1) {
+            errors.push(
+              `interrupted-work ownership is ambiguous across ${owned.length} pull requests for ${branch}`,
+            );
+          } else if (owned.length === 1) {
+            pullRequest = owned[0]!.number as number;
+          } else if (inRepository.length > 0) {
+            errors.push(
+              pushedSha
+                ? `the open pull request for ${branch} no longer matches this session's push; left it untouched`
+                : `could not prove ownership of an open pull request for ${branch}: no session push was recorded`,
+            );
+          }
+        }
+      } else {
+        errors.push(
+          `could not inspect open pull request for ${branch}: ${
+            listed.stderr.trim() ||
+            listed.stdout.trim() ||
+            `gh exited ${listed.code}`
+          }`,
+        );
+      }
+
+      const credentials = credentialArgs(arm.ghToken);
+      const remoteRef = `refs/heads/${branch}`;
+      const remote = await git([
+        ...credentials,
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        "origin",
+        remoteRef,
+      ]);
+      let safeToClose = false;
+      if (remote.code === 0) {
+        const remoteSha = remote.stdout.trim().split(/\s+/, 1)[0];
+        if (!remoteSha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(remoteSha)) {
+          errors.push(
+            `could not inspect remote branch ${branch}: git ls-remote returned an invalid object ID`,
+          );
+        } else if (!pushedSha) {
+          errors.push(
+            `could not prove ownership of remote branch ${branch}: no session push was recorded`,
+          );
+        } else if (remoteSha !== pushedSha) {
+          errors.push(
+            `remote branch ${branch} changed after this session pushed it; left it and its pull request untouched`,
+          );
+        } else {
+          const deleted = await git([
+            ...credentials,
+            "push",
+            `--force-with-lease=${remoteRef}:${pushedSha}`,
+            "origin",
+            `:${remoteRef}`,
+          ]);
+          if (deleted.code === 0) {
+            branchDeleted = true;
+            safeToClose = true;
+          } else {
+            errors.push(
+              `could not safely delete remote branch ${branch}: ${
+                deleted.stderr.trim() ||
+                deleted.stdout.trim() ||
+                `git exited ${deleted.code}`
+              }`,
+            );
+          }
+        }
+      } else if (remote.code === 2) {
+        if (pushedSha || pullRequest === undefined) {
+          safeToClose = true;
+        } else {
+          errors.push(
+            `could not prove ownership of pull request ${pullRequest}: no session push was recorded`,
+          );
+        }
+      } else {
+        errors.push(
+          `could not inspect remote branch ${branch}: ${
+            remote.stderr.trim() ||
+            remote.stdout.trim() ||
+            `git exited ${remote.code}`
+          }`,
+        );
+      }
+
+      if (safeToClose && pullRequest !== undefined) {
+        const closed = await gh([
+          "pr",
+          "close",
+          String(pullRequest),
+          "--comment",
+          INTERRUPTED_PR_COMMENT,
+        ]);
+        if (closed.code === 0) {
+          pullRequestClosed = true;
+        } else {
+          errors.push(
+            `could not close pull request ${pullRequest}: ${
+              closed.stderr.trim() ||
+              closed.stdout.trim() ||
+              `gh exited ${closed.code}`
+            }`,
+          );
+        }
+      }
+
+      if (errors.length > 0) {
+        throw new Error(
+          `interrupted-work cleanup was incomplete in ${checkoutLocation}:\n${errors.join("\n")}`,
+        );
+      }
+      return {
+        branch,
+        pullRequest,
+        pullRequestClosed,
+        branchDeleted,
+      };
     },
 
     async checkRuns(pullRequest) {

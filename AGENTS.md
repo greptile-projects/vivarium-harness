@@ -78,8 +78,12 @@ bun start -- --help              # the full option + env reference
   barrier makes that boundary safe, and it arrives in minutes rather than the
   hours a whole rung can take; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
-  everywhere else and does not acquire a second one here. Stopping live
-  sessions exits 1. It runs on the alternate screen and gives the
+  everywhere else and does not acquire a second one here. An immediate stop
+  closes each arm's open PR for its session-owned interrupted branch and
+  deletes that remote branch before destroying its microVM, so retrying the
+  unchecked subticket starts from the same external baseline too. Stopping
+  live sessions exits 1.
+  It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
   writes one `progress.log` per arm either way, filed beside the record it
   describes — `results/rung-NN/run/N.M/<arm>/progress.log`.
@@ -278,8 +282,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   rewritten freely, so pinning phrases would only manufacture churn.
   `workerPrompt(ticket)` builds
   the single autonomous
-  worker instruction, and it asks for a branch, a pushed commit, a pull request
-  opened with `gh`, and a closing `PR: <url>` line. It also fixes the pull
+  worker instruction, and it tells the worker to remain on the dedicated
+  branch the harness already created, push its commits, open a pull request
+  with `gh`, and end with a `PR: <url>` line. It also fixes the pull
   request **title** as `[codex] <description>`: Greptile keys off that marker to
   treat a pull request as agent-authored, and `mirror_sync.sh` already forces it
   on every mirror PR, so without it here Komodo's counterfactual reviews would
@@ -346,7 +351,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
 - **`src/harness/github.ts`** — everything the harness does to git and GitHub *outside*
   Codex, bound per arm (`armGitHub(arm, exec)` → `ArmGitHub`) so a caller never
   passes a repo or a token around: `syncToBaseline` (fetch + `checkout -f -B`
-  onto origin's default branch, then `clean -fdx -e node_modules -e LADDER.md`
+  onto origin's default branch, then `clean -fdx -e node_modules -e LADDER.md`,
+  snapshot the existing refs, verify the work-branch name is absent locally
+  and on origin, and create the run-unique work branch before returning
   — `checkout -f` only restores *tracked* files, so without the clean a scratch
   file one arm dropped rides into the next subticket while the other arm starts
   clean, which is an input differing between the arms in an experiment built on
@@ -363,7 +370,15 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   comments + inline review comments + reactions, merged chronologically),
   `diff` (the unified diff between two commits, read from the arm's own
   checkout — the local object store still holds commits an amend or squash
-  unhooked from every ref), and
+  unhooked from every ref), `discardCurrentWork` (on an immediate human stop,
+  use the exact run-unique work branch the harness created and recorded before
+  Codex started — never a branch inferred afterward from checkout or reflog
+  state. Its remote-tracking reflog supplies the last object the session itself
+  pushed; cleanup deletes only under an exact `--force-with-lease` for that
+  object and recognizes a PR only when its head repository and SHA match that
+  push, then closes it only after the lease succeeds or the remote ref is
+  already absent),
+  and
   `merge`. Comment list responses expose reaction counts, so identities are
   fetched only for comments with a nonzero count rather than making one extra
   API call per historical comment on every poll. For isolated arms these
@@ -374,9 +389,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   batched into single crossings: the conversation poll, the post-answer read
   (`afterAnswer` — branch head, round diff, settle-check conversation) and the
   merge tail (`finalizeMerge` — merge, state re-read, conversation capture,
-  churn refresh) are each one fixed argument-only bash program, with each
+  churn refresh), plus immediate-stop rollback, are each one fixed
+  argument-only bash program, with each
   part's failure a named gap in the JSON rather than the whole read failing.
-  The two bundles exist only on isolated arms; `land.ts` falls back to the
+  The landing bundles exist only on isolated arms; `land.ts` falls back to the
   discrete calls when a bundle is absent (host mode, the test fakes) or its
   read fails, so they are an optimization, never the only path. In the VM,
   Docker's proxy supplies
@@ -388,8 +404,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
 
 - **`src/harness/land.ts`** — what happens to an arm's work *after* its session says it
   is done, and the piece that makes this an experiment rather than two agents
-  writing into the void. `prepareArm` puts the checkout back on the shared
-  baseline before a subticket starts; `reviewArm` finds the pull request and
+  writing into the void. `prepareArm` puts the checkout on a run-unique,
+  harness-created work branch from the shared baseline before a subticket
+  starts; `reviewArm` finds the pull request and
   runs the review rounds (all reversible — it never touches either main), and
   `mergeArm` performs the one irreversible step, with the harness holding a
   barrier between them. Both arms take the identical path: the reviewed
@@ -506,9 +523,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   which halts Greg and leaves the box unchecked.
 
 - **`src/harness/harness.ts`** — the orchestrator, and the run is four phases:
-  **prepare** (both checkouts synced to origin's default branch, sequentially,
-  before either session starts — so a sync failure costs nothing already in
-  flight, and every subticket begins where the last one merged), **build** (both
+  **prepare** (both checkouts synced to origin's default branch and moved onto
+  the same run-unique branch name, sequentially, before either session starts —
+  so a sync failure costs nothing already in flight, every subticket begins
+  where the last one merged, and cleanup has explicit ownership), **build** (both
   arms concurrently with `Promise.all`), **review** (`reviewArm` per arm, on the
   same thread and the same event sinks, so the live view keeps watching one
   continuous arm through the review wait), and **merge** (`mergeArm`).
@@ -547,7 +565,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   straight back to the retry loop, which would immediately start another one —
   the opposite of stopping. In `session.ts` that signal joins the *same*
   controller the watchdog uses, so there is one teardown path and the MCP
-  client's `close()` kills the codex subprocess instead of orphaning it.
+  client's `close()` kills the codex subprocess instead of orphaning it. Once
+  both sessions are closed, an aborted harness calls `discardCurrentWork` for
+  each exact runtime arm before destroying either environment; a broad
+  prefix-matched recovery scan would be unsafe while another climb is active.
 
 - **`src/harness/environment.ts`** — the amnesic machine boundary. For every
   `runHarness` call it provisions a fresh runtime microVM, private Docker
@@ -622,7 +643,10 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   partial / not-found / copy-failed / no-thread-id; `transcriptError` preserves
   the exporter failure without changing the arm's result.
   `recordBaselines` writes the commit each arm started from (they should match;
-  when they do not, that *is* the finding). `recordLanding` writes the arm's
+  when they do not, that *is* the finding), the local/remote branch refs present
+  before either worker starts, and the run-unique work branch created by the
+  harness. That explicit work branch — not post-hoc reflog inference — is the
+  ownership boundary for interrupted cleanup. `recordLanding` writes the arm's
   landing into `run.json` — pull request, every review round with what the
   reviewer said and what the arm answered, the merge — replaces the arm's final
   result (a session that opened no pull request is a failed arm), and
@@ -855,7 +879,21 @@ one PR-sized step, which is what makes that affordable.
 
 Normal failures are already clean: `runHarness` destroys both ephemeral
 environments in `finally`, and the retry starts both arms from new clones. A
-host crash can strand named sandboxes after the harness process is gone;
+confirmed immediate TUI stop additionally closes any open PR on the
+session-owned interrupted branch and deletes that remote branch before the VM
+loses its checkout and credentials. Before either worker starts, the harness
+creates the same run-unique branch name in both private checkouts and records
+it with each baseline; the worker is instructed to stay on it. Cleanup targets
+only that identifier, independent of the current `HEAD`, so pre-existing or
+concurrently-created branches cannot qualify by imitating reflog history. Its
+remote ref is removed only when the remote-tracking reflog proves what object
+this session pushed and an exact force-with-lease still matches it; a
+collaborator-advanced or recreated ref, and its PR, are left untouched. PR
+selection also requires the recorded repository and pushed object, so a
+same-named fork PR is never a cleanup target. A failed GitHub rollback is
+retained in `cleanup-error.txt` and
+`run.json.cleanupError` without preventing VM teardown. A host crash can strand
+named sandboxes after the harness process is gone;
 recovery matches the configured arm prefixes plus `vivarium-greg-*`:
 
 ```bash

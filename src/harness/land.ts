@@ -317,21 +317,23 @@ export function landingSummary(record: LandingRecord): string {
   }
 }
 
-// Put an arm's checkout back on origin's default branch before it starts, so
-// every subticket begins from the commit the previous one merged. Returns
-// undefined for a checkout that is not a GitHub clone.
+// Put an arm on a fresh harness-owned work branch from origin's default branch
+// before Codex starts, so every subticket begins from the commit the previous
+// one merged and cleanup has an explicit branch identity. Returns undefined
+// for a checkout that is not a GitHub clone.
 export async function prepareArm(
   deps: Pick<LandDeps, "github" | "note">,
+  workBranch: string,
 ): Promise<Baseline | undefined> {
   if (!(await deps.github.isGitHubCheckout())) {
     deps.note("not a GitHub checkout — skipping baseline sync");
     return undefined;
   }
-  const baseline = await deps.github.syncToBaseline();
+  const baseline = await deps.github.syncToBaseline(workBranch);
   deps.note(
     `baseline ${baseline.branch} @ ${baseline.sha.slice(0, 7)}${
       baseline.slug ? ` (${baseline.slug})` : ""
-    }`,
+    }; work branch ${baseline.workBranch}`,
   );
   return baseline;
 }
