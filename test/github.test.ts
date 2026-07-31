@@ -37,6 +37,15 @@ const recordedBaseline = (
   ...overrides,
 });
 
+const pullRequestAt = (sha: string): string =>
+  JSON.stringify([
+    {
+      number: 41,
+      headRefOid: sha,
+      headRepository: { nameWithOwner: "org/repo" },
+    },
+  ]);
+
 // Records every spawn so a test can assert on argv and env — nothing here runs
 // git or gh.
 function recorder(replies: Record<string, CommandResult> = {}) {
@@ -836,16 +845,20 @@ describe("headSha", () => {
 
 describe("discarding interrupted work", () => {
   test("closes the owned PR and branch even from detached HEAD", async () => {
+    const pushedSha = "a".repeat(40);
     const { calls, exec } = recorder({
       "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
       "git for-each-ref refs/remotes/origin": ok("main\n"),
       "git reflog show refs/heads/subticket-6-5": ok(
         "base1234\tbranch: Created from HEAD\n",
       ),
-      "gh pr list": ok('[{"number":41}]\n'),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
+      "gh pr list": ok(`${pullRequestAt(pushedSha)}\n`),
       "gh pr close 41": ok("closed\n"),
       "git ls-remote origin refs/heads/subticket-6-5": ok(
-        `${"a".repeat(40)}\trefs/heads/subticket-6-5\n`,
+        `${pushedSha}\trefs/heads/subticket-6-5\n`,
       ),
       "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
     });
@@ -876,9 +889,214 @@ describe("discarding interrupted work", () => {
         call.command === "git" &&
         call.args.includes(":refs/heads/subticket-6-5"),
     );
+    expect(deletion?.args).toContain(
+      `--force-with-lease=refs/heads/subticket-6-5:${pushedSha}`,
+    );
     expect(deletion?.env?.[GIT_TOKEN_ENV]).toBe(TOKEN);
     expect(calls.flatMap((call) => call.args).join(" ")).not.toContain(TOKEN);
     expect(calls.some((call) => call.args.includes("rev-parse"))).toBe(false);
+    expect(calls.indexOf(deletion!)).toBeLessThan(calls.indexOf(closed!));
+  });
+
+  test("owns a new branch created from the recorded origin baseline", async () => {
+    const pushedSha = "a".repeat(40);
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from origin/main\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
+      "gh pr list": ok(`${pullRequestAt(pushedSha)}\n`),
+      "gh pr close 41": ok("closed\n"),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${pushedSha}\trefs/heads/subticket-6-5\n`,
+      ),
+      "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
+    });
+
+    expect(
+      await armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).toEqual({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: true,
+      branchDeleted: true,
+    });
+    expect(calls.some((call) => call.args.includes("close"))).toBe(true);
+  });
+
+  test("never closes a same-named pull request from another repository", async () => {
+    const pushedSha = "a".repeat(40);
+    const foreignPr = JSON.stringify([
+      {
+        number: 99,
+        headRefOid: pushedSha,
+        headRepository: { nameWithOwner: "someone/fork" },
+      },
+    ]);
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
+      "gh pr list": ok(`${foreignPr}\n`),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${pushedSha}\trefs/heads/subticket-6-5\n`,
+      ),
+      "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
+    });
+
+    expect(
+      await armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).toEqual({
+      branch: "subticket-6-5",
+      pullRequestClosed: false,
+      branchDeleted: true,
+    });
+    expect(calls.some((call) => call.args.includes("close"))).toBe(false);
+  });
+
+  test("preserves a session branch replaced by a collaborator", async () => {
+    const pushedSha = "a".repeat(40);
+    const collaboratorSha = "b".repeat(40);
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
+      "gh pr list": ok(`${pullRequestAt(pushedSha)}\n`),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${collaboratorSha}\trefs/heads/subticket-6-5\n`,
+      ),
+    });
+
+    await expect(
+      armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).rejects.toThrow(/changed after this session pushed it/);
+    expect(calls.some((call) => call.args.includes("close"))).toBe(false);
+    expect(calls.some((call) => call.args.includes("push"))).toBe(false);
+  });
+
+  test("preserves a remote branch when no session push can be proven", async () => {
+    const remoteSha = "a".repeat(40);
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(""),
+      "gh pr list": ok(`${pullRequestAt(remoteSha)}\n`),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${remoteSha}\trefs/heads/subticket-6-5\n`,
+      ),
+    });
+
+    await expect(
+      armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).rejects.toThrow(/no session push was recorded/);
+    expect(calls.some((call) => call.args.includes("close"))).toBe(false);
+    expect(calls.some((call) => call.args.includes("push"))).toBe(false);
+  });
+
+  test("does not close an orphaned PR without a session push record", async () => {
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(""),
+      "gh pr list": ok(`${pullRequestAt("a".repeat(40))}\n`),
+      "git ls-remote origin refs/heads/subticket-6-5": {
+        code: 2,
+        stdout: "",
+        stderr: "",
+      },
+    });
+
+    expect(
+      await armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).toEqual({
+      branch: "subticket-6-5",
+      pullRequestClosed: false,
+      branchDeleted: false,
+    });
+    expect(calls.some((call) => call.args.includes("close"))).toBe(false);
+  });
+
+  test("closes the owned PR when its session-pushed branch is already absent", async () => {
+    const pushedSha = "a".repeat(40);
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
+      "gh pr list": ok(`${pullRequestAt(pushedSha)}\n`),
+      "gh pr close 41": ok("closed\n"),
+      "git ls-remote origin refs/heads/subticket-6-5": {
+        code: 2,
+        stdout: "",
+        stderr: "",
+      },
+    });
+
+    expect(
+      await armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).toEqual({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: true,
+      branchDeleted: false,
+    });
+    expect(calls.some((call) => call.args.includes("push"))).toBe(false);
+  });
+
+  test("a lease race preserves the PR when the remote moves during cleanup", async () => {
+    const pushedSha = "a".repeat(40);
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
+      "gh pr list": ok(`${pullRequestAt(pushedSha)}\n`),
+      "git ls-remote origin refs/heads/subticket-6-5": ok(
+        `${pushedSha}\trefs/heads/subticket-6-5\n`,
+      ),
+      "git push origin :refs/heads/subticket-6-5": {
+        code: 1,
+        stdout: "",
+        stderr: "stale info",
+      },
+    });
+
+    await expect(
+      armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
+    ).rejects.toThrow(/could not safely delete remote branch.*stale info/);
+    expect(calls.some((call) => call.args.includes("close"))).toBe(false);
+    const deletion = calls.find((call) => call.args.includes("push"));
+    expect(deletion?.args).toContain(
+      `--force-with-lease=refs/heads/subticket-6-5:${pushedSha}`,
+    );
   });
 
   test("never touches the recorded baseline branch", async () => {
@@ -915,15 +1133,19 @@ describe("discarding interrupted work", () => {
   });
 
   test("still deletes a pushed branch that has no PR", async () => {
+    const pushedSha = "a".repeat(40);
     const { calls, exec } = recorder({
       "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
       "git for-each-ref refs/remotes/origin": ok("main\n"),
       "git reflog show refs/heads/subticket-6-5": ok(
         "base1234\tbranch: Created from HEAD\n",
       ),
+      "git reflog show refs/remotes/origin/subticket-6-5": ok(
+        `${pushedSha}\tupdate by push\n`,
+      ),
       "gh pr list": ok("[]\n"),
       "git ls-remote origin refs/heads/subticket-6-5": ok(
-        `${"a".repeat(40)}\trefs/heads/subticket-6-5\n`,
+        `${pushedSha}\trefs/heads/subticket-6-5\n`,
       ),
       "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
     });
@@ -1102,11 +1324,12 @@ describe("the bundled landing reads", () => {
       branchDeleted: true,
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.args.slice(-5)).toEqual([
+    expect(calls[0]?.args.slice(-6)).toEqual([
       "main",
       "base1234",
       '["main"]',
       '["main"]',
+      "org/repo",
       "Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.",
     ]);
     expect(JSON.stringify(calls)).not.toContain(TOKEN);
@@ -1122,7 +1345,7 @@ describe("the bundled landing reads", () => {
         pullRequest: 41,
         pullRequestClosed: true,
         branchDeleted: false,
-        errors: ["could not delete remote branch subticket-6-5: denied"],
+        errors: ["could not safely delete remote branch subticket-6-5: denied"],
       }),
     );
     const github = armGitHub(isolated(), exec);
@@ -1130,7 +1353,7 @@ describe("the bundled landing reads", () => {
     await expect(
       github.discardCurrentWork(recordedBaseline()),
     ).rejects.toThrow(
-      /could not delete remote branch subticket-6-5/,
+      /could not safely delete remote branch subticket-6-5/,
     );
   });
 
@@ -1247,7 +1470,9 @@ describe("the bundled scripts, executed", () => {
       `#!/usr/bin/env bash
 args="$*"
 case "$args" in
-  "pr list --head subticket-6-5 --state open --limit 1 --json number") echo '[{"number":41}]' ;;
+  "pr list --head subticket-6-5 --state open --limit 100 --json number,headRefOid,headRepository")
+    echo '[{"number":41,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"nameWithOwner":"org/repo"}}]'
+    ;;
   "pr close 41 --comment Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.") exit 0 ;;
   "pr view 7 --json headRefOid") printf '{"headRefOid":"%s"}\\n' "$GH_STUB_SHA" ;;
   "pr view 7 --json reviews") echo '{"reviews":[]}' ;;
@@ -1274,9 +1499,43 @@ case "$1" in
         ;;
     esac
     ;;
-  reflog) printf 'base1234\\tbranch: Created from HEAD\\n' ;;
-  ls-remote) printf '%s\\trefs/heads/subticket-6-5\\n' aaaaaaaa ;;
-  push) exit 0 ;;
+  reflog)
+    case "$*" in
+      *"refs/remotes/origin/subticket-6-5"*)
+        printf '%s\\tupdate by push\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        ;;
+      *)
+        if [ "$GH_STUB_MODE" = "origin" ]; then
+          printf 'base1234\\tbranch: Created from origin/main\\n'
+        else
+          printf 'base1234\\tbranch: Created from HEAD\\n'
+        fi
+        ;;
+    esac
+    ;;
+  ls-remote)
+    if [ "$GH_STUB_MODE" = "replaced" ]; then
+      sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    else
+      sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    fi
+    printf '%s\\trefs/heads/subticket-6-5\\n' "$sha"
+    ;;
+  push)
+    case "$*" in
+      *"--force-with-lease=refs/heads/subticket-6-5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"*)
+        if [ "$GH_STUB_MODE" = "lease-race" ]; then
+          echo "stale info" >&2
+          exit 1
+        fi
+        exit 0
+        ;;
+      *)
+        echo "unsafe delete: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   diff) printf 'STUBDIFF %s\\n' "$2" ;;
   *) exit 1 ;;
 esac
@@ -1345,6 +1604,57 @@ esac
       branchDeleted: true,
       errors: [],
     });
+  });
+
+  test("discardCurrentWork accepts a branch created from origin/main", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.discardCurrentWork(recordedBaseline()),
+    );
+    const parsed = runScript(scriptAndArgs, "", "origin");
+
+    expect(parsed).toMatchObject({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: true,
+      branchDeleted: true,
+      errors: [],
+    });
+  });
+
+  test("discardCurrentWork preserves a collaborator-replaced branch and PR", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.discardCurrentWork(recordedBaseline()),
+    );
+    const parsed = runScript(scriptAndArgs, "", "replaced");
+
+    expect(parsed).toMatchObject({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: false,
+      branchDeleted: false,
+    });
+    expect(parsed.errors).toEqual([
+      "remote branch subticket-6-5 changed after this session pushed it; left it and its pull request untouched",
+    ]);
+  });
+
+  test("discardCurrentWork preserves the PR when its deletion lease loses a race", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.discardCurrentWork(recordedBaseline()),
+    );
+    const parsed = runScript(scriptAndArgs, "", "lease-race");
+
+    expect(parsed).toMatchObject({
+      branch: "subticket-6-5",
+      pullRequest: 41,
+      pullRequestClosed: false,
+      branchDeleted: false,
+    });
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0]).toContain(
+      "could not safely delete remote branch subticket-6-5",
+    );
+    expect(parsed.errors[0]).toContain("stale info");
   });
 
   test("discardCurrentWork leaves a pre-existing feature branch untouched", async () => {

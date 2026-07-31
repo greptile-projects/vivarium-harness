@@ -571,11 +571,15 @@ jq -cn \
 `;
 
 // Immediate-stop rollback in one sandbox crossing. The Codex session has
-// already been killed when this runs, so the branch cannot move underneath
-// the read. Close the PR and delete the remote ref as two independent steps:
-// an arm can push before opening its PR, and a failed close must not keep a
-// safely deletable branch alive. Errors are returned together so teardown can
-// still destroy the VM after recording exactly what GitHub cleanup missed.
+// already been killed when this runs, so its local refs cannot move underneath
+// the read. The remote still can: a collaborator may advance or recreate the
+// branch at any moment. The remote-tracking reflog records the last object this
+// session pushed, and a matching force-with-lease makes deletion the ownership
+// check rather than a racy read followed by an unconditional mutation. A PR
+// must match both that object and the recorded repository, and only after the
+// ref check succeeds (or the ref is already absent) may it close. Errors are
+// returned together so teardown can still destroy the VM after recording
+// exactly what GitHub cleanup missed.
 const DISCARD_WORK_SCRIPT = String.raw`
 set -uo pipefail
 
@@ -583,7 +587,8 @@ baseline_branch="$1"
 baseline_sha="$2"
 baseline_local="$3"
 baseline_remote="$4"
-comment="$5"
+repo_slug="$5"
+comment="$6"
 branch=""
 pull_request=""
 closed="false"
@@ -616,7 +621,9 @@ while IFS= read -r candidate; do
   first_subject="$(printf '%s' "$first" | cut -f2-)"
   [ "$first_sha" = "$baseline_sha" ] || continue
   case "$first_subject" in
-    "branch: Created from refs/remotes/"* | "branch: Created from origin/"*)
+    "branch: Created from origin/$baseline_branch"|"branch: Created from refs/remotes/origin/$baseline_branch")
+      ;;
+    "branch: Created from origin/"* | "branch: Created from refs/remotes/"*)
       continue
       ;;
     "branch: Created from "*) ;;
@@ -634,18 +641,27 @@ elif [ "$candidate_count" -eq 1 ]; then
 fi
 
 if [ -n "$branch" ]; then
-  if gh pr list --head "$branch" --state open --limit 1 --json number \
+  remote_ref="refs/heads/$branch"
+  pushed_sha="$(git reflog show --format='%H%x09%gs' \
+    "refs/remotes/origin/$branch" 2>/dev/null |
+    awk -F '\t' '$2 == "update by push" { print $1; exit }' || true)"
+
+  if gh pr list --head "$branch" --state open --limit 100 \
+    --json number,headRefOid,headRepository \
     >"$scratch/pr.json" 2>"$scratch/pr.err"; then
-    pull_request="$(jq -r '.[0].number // empty' "$scratch/pr.json" 2>/dev/null || true)"
-    if [ -n "$pull_request" ]; then
-      if gh pr close "$pull_request" --comment "$comment" \
-        >"$scratch/close.out" 2>"$scratch/close.err"; then
-        closed="true"
-      else
-        detail="$(tail -c 400 "$scratch/close.err" | tr -d '\0')"
-        if [ -z "$detail" ]; then detail="gh pr close exited nonzero"; fi
-        add_error "could not close pull request $pull_request: $detail"
-      fi
+    jq -c \
+      --arg slug "$repo_slug" \
+      --arg sha "$pushed_sha" \
+      '[.[] | select(
+        .headRepository.nameWithOwner == $slug and
+        .headRefOid == $sha
+      )]' "$scratch/pr.json" >"$scratch/owned-prs.json" 2>/dev/null ||
+      printf '[]' >"$scratch/owned-prs.json"
+    pr_count="$(jq 'length' "$scratch/owned-prs.json")"
+    if [ "$pr_count" -gt 1 ]; then
+      add_error "interrupted-work ownership is ambiguous across $pr_count pull requests for $branch"
+    elif [ "$pr_count" -eq 1 ]; then
+      pull_request="$(jq -r '.[0].number' "$scratch/owned-prs.json")"
     fi
   else
     detail="$(tail -c 400 "$scratch/pr.err" | tr -d '\0')"
@@ -653,23 +669,50 @@ if [ -n "$branch" ]; then
     add_error "could not inspect open pull request for $branch: $detail"
   fi
 
-  remote_ref="refs/heads/$branch"
   git ls-remote --exit-code --heads origin "$remote_ref" \
     >"$scratch/remote.out" 2>"$scratch/remote.err"
   remote_code=$?
+  safe_to_close="false"
   if [ "$remote_code" -eq 0 ]; then
-    if git push origin ":$remote_ref" \
-      >"$scratch/delete.out" 2>"$scratch/delete.err"; then
-      branch_deleted="true"
+    remote_sha="$(awk 'NR == 1 { print $1 }' "$scratch/remote.out")"
+    if [ -z "$pushed_sha" ]; then
+      add_error "could not prove ownership of remote branch $branch: no session push was recorded"
+    elif [ "$remote_sha" != "$pushed_sha" ]; then
+      add_error "remote branch $branch changed after this session pushed it; left it and its pull request untouched"
     else
-      detail="$(tail -c 400 "$scratch/delete.err" | tr -d '\0')"
-      if [ -z "$detail" ]; then detail="git push --delete exited nonzero"; fi
-      add_error "could not delete remote branch $branch: $detail"
+      if git push \
+        "--force-with-lease=$remote_ref:$pushed_sha" \
+        origin ":$remote_ref" \
+        >"$scratch/delete.out" 2>"$scratch/delete.err"; then
+        branch_deleted="true"
+        safe_to_close="true"
+      else
+        detail="$(tail -c 400 "$scratch/delete.err" | tr -d '\0')"
+        if [ -z "$detail" ]; then detail="leased git push --delete exited nonzero"; fi
+        add_error "could not safely delete remote branch $branch: $detail"
+      fi
+    fi
+  elif [ "$remote_code" -eq 2 ]; then
+    if [ -n "$pushed_sha" ] || [ -z "$pull_request" ]; then
+      safe_to_close="true"
+    else
+      add_error "could not prove ownership of pull request $pull_request: no session push was recorded"
     fi
   elif [ "$remote_code" -ne 2 ]; then
     detail="$(tail -c 400 "$scratch/remote.err" | tr -d '\0')"
     if [ -z "$detail" ]; then detail="git ls-remote exited $remote_code"; fi
     add_error "could not inspect remote branch $branch: $detail"
+  fi
+
+  if [ "$safe_to_close" = "true" ] && [ -n "$pull_request" ]; then
+    if gh pr close "$pull_request" --comment "$comment" \
+      >"$scratch/close.out" 2>"$scratch/close.err"; then
+      closed="true"
+    else
+      detail="$(tail -c 400 "$scratch/close.err" | tr -d '\0')"
+      if [ -z "$detail" ]; then detail="gh pr close exited nonzero"; fi
+      add_error "could not close pull request $pull_request: $detail"
+    fi
   fi
 fi
 
@@ -913,11 +956,18 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       if (separator < 0) continue;
       const createdSha = first.slice(0, separator);
       const subject = first.slice(separator + 1);
+      const remoteBaselineSources = new Set([
+        `branch: Created from origin/${baseline.branch}`,
+        `branch: Created from refs/remotes/origin/${baseline.branch}`,
+      ]);
+      const createdFromRemote = subject.startsWith(
+        "branch: Created from origin/",
+      ) ||
+        subject.startsWith("branch: Created from refs/remotes/");
       if (
         createdSha === baseline.sha &&
         subject.startsWith("branch: Created from ") &&
-        !subject.startsWith("branch: Created from origin/") &&
-        !subject.startsWith("branch: Created from refs/remotes/")
+        (!createdFromRemote || remoteBaselineSources.has(subject))
       ) {
         candidates.push(branch);
       }
@@ -928,6 +978,27 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       );
     }
     return candidates[0];
+  };
+
+  const sessionPushedSha = async (
+    branch: string,
+  ): Promise<string | undefined> => {
+    const reflog = await git([
+      "reflog",
+      "show",
+      "--format=%H%x09%gs",
+      `refs/remotes/origin/${branch}`,
+    ]);
+    if (reflog.code !== 0) return undefined;
+    for (const entry of reflog.stdout.trim().split(/\r?\n/)) {
+      const separator = entry.indexOf("\t");
+      if (separator < 0 || entry.slice(separator + 1) !== "update by push") {
+        continue;
+      }
+      const sha = entry.slice(0, separator);
+      return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(sha) ? sha : undefined;
+    }
+    return undefined;
   };
 
   const api: ArmGitHub = {
@@ -1177,6 +1248,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           baseline.sha,
           JSON.stringify(baseline.localBranches),
           JSON.stringify(baseline.remoteBranches),
+          baseline.slug ?? "",
           INTERRUPTED_PR_COMMENT,
         ]);
         if (result.code !== 0) {
@@ -1234,6 +1306,7 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       let pullRequest: number | undefined;
       let pullRequestClosed = false;
       let branchDeleted = false;
+      const pushedSha = await sessionPushedSha(branch);
       const listed = await gh([
         "pr",
         "list",
@@ -1242,32 +1315,35 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         "--state",
         "open",
         "--limit",
-        "1",
+        "100",
         "--json",
-        "number",
+        "number,headRefOid,headRepository",
       ]);
       if (listed.code === 0) {
-        const candidate = parseJson<Array<{ number?: unknown }>>(listed.stdout)
-          ?.[0]?.number;
-        if (typeof candidate === "number") pullRequest = candidate;
-        if (pullRequest !== undefined) {
-          const closed = await gh([
-            "pr",
-            "close",
-            String(pullRequest),
-            "--comment",
-            INTERRUPTED_PR_COMMENT,
-          ]);
-          if (closed.code === 0) {
-            pullRequestClosed = true;
-          } else {
+        const candidates = parseJson<
+          Array<{
+            number?: unknown;
+            headRefOid?: unknown;
+            headRepository?: { nameWithOwner?: unknown };
+          }>
+        >(listed.stdout);
+        if (!candidates) {
+          errors.push(
+            `could not parse open pull requests for ${branch}`,
+          );
+        } else {
+          const owned = candidates.filter(
+            (candidate) =>
+              typeof candidate.number === "number" &&
+              candidate.headRefOid === pushedSha &&
+              candidate.headRepository?.nameWithOwner === baseline.slug,
+          );
+          if (owned.length > 1) {
             errors.push(
-              `could not close pull request ${pullRequest}: ${
-                closed.stderr.trim() ||
-                closed.stdout.trim() ||
-                `gh exited ${closed.code}`
-              }`,
+              `interrupted-work ownership is ambiguous across ${owned.length} pull requests for ${branch}`,
             );
+          } else if (owned.length === 1) {
+            pullRequest = owned[0]!.number as number;
           }
         }
       } else {
@@ -1290,25 +1366,51 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         "origin",
         remoteRef,
       ]);
-      if (remote.code === 0 && remote.stdout.trim()) {
-        const deleted = await git([
-          ...credentials,
-          "push",
-          "origin",
-          `:${remoteRef}`,
-        ]);
-        if (deleted.code === 0) {
-          branchDeleted = true;
+      let safeToClose = false;
+      if (remote.code === 0) {
+        const remoteSha = remote.stdout.trim().split(/\s+/, 1)[0];
+        if (!remoteSha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(remoteSha)) {
+          errors.push(
+            `could not inspect remote branch ${branch}: git ls-remote returned an invalid object ID`,
+          );
+        } else if (!pushedSha) {
+          errors.push(
+            `could not prove ownership of remote branch ${branch}: no session push was recorded`,
+          );
+        } else if (remoteSha !== pushedSha) {
+          errors.push(
+            `remote branch ${branch} changed after this session pushed it; left it and its pull request untouched`,
+          );
+        } else {
+          const deleted = await git([
+            ...credentials,
+            "push",
+            `--force-with-lease=${remoteRef}:${pushedSha}`,
+            "origin",
+            `:${remoteRef}`,
+          ]);
+          if (deleted.code === 0) {
+            branchDeleted = true;
+            safeToClose = true;
+          } else {
+            errors.push(
+              `could not safely delete remote branch ${branch}: ${
+                deleted.stderr.trim() ||
+                deleted.stdout.trim() ||
+                `git exited ${deleted.code}`
+              }`,
+            );
+          }
+        }
+      } else if (remote.code === 2) {
+        if (pushedSha || pullRequest === undefined) {
+          safeToClose = true;
         } else {
           errors.push(
-            `could not delete remote branch ${branch}: ${
-              deleted.stderr.trim() ||
-              deleted.stdout.trim() ||
-              `git exited ${deleted.code}`
-            }`,
+            `could not prove ownership of pull request ${pullRequest}: no session push was recorded`,
           );
         }
-      } else if (remote.code !== 0 && remote.code !== 2) {
+      } else {
         errors.push(
           `could not inspect remote branch ${branch}: ${
             remote.stderr.trim() ||
@@ -1316,6 +1418,27 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
             `git exited ${remote.code}`
           }`,
         );
+      }
+
+      if (safeToClose && pullRequest !== undefined) {
+        const closed = await gh([
+          "pr",
+          "close",
+          String(pullRequest),
+          "--comment",
+          INTERRUPTED_PR_COMMENT,
+        ]);
+        if (closed.code === 0) {
+          pullRequestClosed = true;
+        } else {
+          errors.push(
+            `could not close pull request ${pullRequest}: ${
+              closed.stderr.trim() ||
+              closed.stdout.trim() ||
+              `gh exited ${closed.code}`
+            }`,
+          );
+        }
       }
 
       if (errors.length > 0) {

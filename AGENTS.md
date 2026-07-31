@@ -370,7 +370,12 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   unhooked from every ref), `discardCurrentWork` (on an immediate human stop,
   compare the recorded pre-session local/remote branch snapshot with local
   creation reflogs, then close/delete only the one branch established as
-  session-owned — independent of whether `HEAD` is attached), and
+  session-owned — independent of whether `HEAD` is attached. Its
+  remote-tracking reflog supplies the last object the session itself pushed;
+  cleanup deletes only under an exact `--force-with-lease` for that object and
+  recognizes a PR only when its head repository and SHA match that push, then
+  closes it only after the lease succeeds or the remote ref is already absent),
+  and
   `merge`. Comment list responses expose reaction counts, so identities are
   fetched only for comments with a nonzero count rather than making one extra
   API call per historical comment on every poll. For isolated arms these
@@ -872,7 +877,13 @@ confirmed immediate TUI stop additionally closes any open PR on the
 session-owned interrupted branch and deletes that remote branch before the VM
 loses its checkout and credentials. Pre-existing branches are excluded by the
 recorded baseline snapshot, and a detached `HEAD` does not hide a created local
-branch. A failed GitHub rollback is retained in `cleanup-error.txt` and
+branch. A branch created from the recorded `origin/<default>` is owned, but its
+remote ref is removed only when the remote-tracking reflog proves what object
+this session pushed and an exact force-with-lease still matches it; a
+collaborator-advanced or recreated ref, and its PR, are left untouched. PR
+selection also requires the recorded repository and pushed object, so a
+same-named fork PR is never a cleanup target. A failed GitHub rollback is
+retained in `cleanup-error.txt` and
 `run.json.cleanupError` without preventing VM teardown. A host crash can strand
 named sandboxes after the harness process is gone;
 recovery matches the configured arm prefixes plus `vivarium-greg-*`:
