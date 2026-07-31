@@ -512,9 +512,7 @@ export async function runHarness(
           if (!baseline) return;
           note(arm.name, "discarding interrupted GitHub work");
           try {
-            const outcome = await github(arm).discardCurrentWork(
-              baseline.branch,
-            );
+            const outcome = await github(arm).discardCurrentWork(baseline);
             const removed = [
               outcome.pullRequestClosed && outcome.pullRequest !== undefined
                 ? `closed PR #${outcome.pullRequest}`

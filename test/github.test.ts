@@ -8,7 +8,11 @@ import {
   slugFromRemote,
 } from "../src/harness/github.js";
 import type { ArmConfig } from "../src/harness/config.js";
-import type { CommandResult, CommandRunner } from "../src/harness/github.js";
+import type {
+  Baseline,
+  CommandResult,
+  CommandRunner,
+} from "../src/harness/github.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +23,17 @@ const TOKEN = "ghp_thisisthesecretvalue";
 const arm = (overrides: Partial<ArmConfig> = {}): ArmConfig => ({
   name: "tuatara",
   repo: "/tmp/checkout",
+  ...overrides,
+});
+
+const recordedBaseline = (
+  overrides: Partial<Baseline> = {},
+): Baseline => ({
+  slug: "org/repo",
+  branch: "main",
+  sha: "base1234",
+  localBranches: ["main"],
+  remoteBranches: ["main"],
   ...overrides,
 });
 
@@ -143,8 +158,8 @@ describe("credential handling", () => {
 
   test("isolated baseline sync crosses the sandbox control plane once", async () => {
     const { calls, exec } = recorder({
-      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara vivarium-sync": ok(
-        '{"remote":"https://github.com/org/repo.git","branch":"main","sha":"abc123"}\n',
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash": ok(
+        '{"remote":"https://github.com/org/repo.git","branch":"main","sha":"abc123","localBranches":["main"],"remoteBranches":["main","existing"]}\n',
       ),
     });
 
@@ -161,17 +176,29 @@ describe("credential handling", () => {
       slug: "org/repo",
       branch: "main",
       sha: "abc123",
+      localBranches: ["main"],
+      remoteBranches: ["main", "existing"],
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.args.at(-1)).toBe("vivarium-sync");
+    expect(calls[0]?.args).toContain("vivarium-baseline");
+    expect(calls[0]?.args.some((arg) => arg.includes("vivarium-sync"))).toBe(
+      true,
+    );
+    const scriptIndex = calls[0]?.args.indexOf("-ceu") ?? -1;
+    const syntax = spawnSync("bash", [
+      "-n",
+      "-c",
+      calls[0]?.args[scriptIndex + 1] ?? "",
+    ]);
+    expect(syntax.status).toBe(0);
     expect(JSON.stringify(calls)).not.toContain(TOKEN);
   });
 
   test("isolated baseline sync tolerates output before its final JSON line", async () => {
     const { exec } = recorder({
-      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara vivarium-sync": ok(
-        'Removing generated.tmp\n{"remote":"https://github.com/org/repo.git","branch":"main","sha":"abc123"}\n',
+      "sbx exec /workspace GH_TOKEN=proxy-managed GITHUB_TOKEN=proxy-managed vivarium-tuatara bash": ok(
+        'Removing generated.tmp\n{"remote":"https://github.com/org/repo.git","branch":"main","sha":"abc123","localBranches":["main"],"remoteBranches":["main"]}\n',
       ),
     });
 
@@ -188,6 +215,8 @@ describe("credential handling", () => {
       slug: "org/repo",
       branch: "main",
       sha: "abc123",
+      localBranches: ["main"],
+      remoteBranches: ["main"],
     });
   });
 });
@@ -206,6 +235,8 @@ describe("syncToBaseline", () => {
       slug: "org/repo",
       branch: "trunk",
       sha: "deadbeef",
+      localBranches: [],
+      remoteBranches: [],
     });
     const checkout = calls.find((call) => call.args[0] === "checkout");
     expect(checkout?.args).toEqual([
@@ -804,9 +835,13 @@ describe("headSha", () => {
 });
 
 describe("discarding interrupted work", () => {
-  test("closes the current branch's PR and deletes its remote ref", async () => {
+  test("closes the owned PR and branch even from detached HEAD", async () => {
     const { calls, exec } = recorder({
-      "git rev-parse HEAD": ok("subticket-6-5\n"),
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
       "gh pr list": ok('[{"number":41}]\n'),
       "gh pr close 41": ok("closed\n"),
       "git ls-remote origin refs/heads/subticket-6-5": ok(
@@ -818,7 +853,7 @@ describe("discarding interrupted work", () => {
     const outcome = await armGitHub(
       arm({ ghToken: TOKEN }),
       exec,
-    ).discardCurrentWork!("main");
+    ).discardCurrentWork(recordedBaseline());
 
     expect(outcome).toEqual({
       branch: "subticket-6-5",
@@ -843,27 +878,49 @@ describe("discarding interrupted work", () => {
     );
     expect(deletion?.env?.[GIT_TOKEN_ENV]).toBe(TOKEN);
     expect(calls.flatMap((call) => call.args).join(" ")).not.toContain(TOKEN);
+    expect(calls.some((call) => call.args.includes("rev-parse"))).toBe(false);
   });
 
   test("never touches the recorded baseline branch", async () => {
     const { calls, exec } = recorder({
-      "git rev-parse HEAD": ok("main\n"),
+      "git for-each-ref refs/heads": ok("main\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
     });
 
     expect(
-      await armGitHub(arm(), exec).discardCurrentWork!("main"),
+      await armGitHub(arm(), exec).discardCurrentWork(recordedBaseline()),
     ).toEqual({
-      branch: "main",
       pullRequestClosed: false,
       branchDeleted: false,
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.command).toBe("git");
+    expect(calls).toHaveLength(2);
+  });
+
+  test("never touches a pre-existing non-baseline branch", async () => {
+    const { calls, exec } = recorder({
+      "git for-each-ref refs/heads": ok("main\nexisting-feature\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\nexisting-feature\n"),
+    });
+
+    expect(
+      await armGitHub(arm(), exec).discardCurrentWork(
+        recordedBaseline({ remoteBranches: ["main", "existing-feature"] }),
+      ),
+    ).toEqual({
+      pullRequestClosed: false,
+      branchDeleted: false,
+    });
+    expect(calls.some((call) => call.command === "gh")).toBe(false);
+    expect(calls.some((call) => call.args.includes("push"))).toBe(false);
   });
 
   test("still deletes a pushed branch that has no PR", async () => {
     const { calls, exec } = recorder({
-      "git rev-parse HEAD": ok("subticket-6-5\n"),
+      "git for-each-ref refs/heads": ok("main\nsubticket-6-5\n"),
+      "git for-each-ref refs/remotes/origin": ok("main\n"),
+      "git reflog show refs/heads/subticket-6-5": ok(
+        "base1234\tbranch: Created from HEAD\n",
+      ),
       "gh pr list": ok("[]\n"),
       "git ls-remote origin refs/heads/subticket-6-5": ok(
         `${"a".repeat(40)}\trefs/heads/subticket-6-5\n`,
@@ -871,7 +928,9 @@ describe("discarding interrupted work", () => {
       "git push origin :refs/heads/subticket-6-5": ok("deleted\n"),
     });
 
-    const outcome = await armGitHub(arm(), exec).discardCurrentWork!("main");
+    const outcome = await armGitHub(arm(), exec).discardCurrentWork(
+      recordedBaseline(),
+    );
 
     expect(outcome.pullRequest).toBeUndefined();
     expect(outcome.pullRequestClosed).toBe(false);
@@ -1036,15 +1095,18 @@ describe("the bundled landing reads", () => {
     );
     const github = armGitHub(isolated(), exec);
 
-    expect(await github.discardCurrentWork!("main")).toEqual({
+    expect(await github.discardCurrentWork(recordedBaseline())).toEqual({
       branch: "subticket-6-5",
       pullRequest: 41,
       pullRequestClosed: true,
       branchDeleted: true,
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.args.slice(-2)).toEqual([
+    expect(calls[0]?.args.slice(-5)).toEqual([
       "main",
+      "base1234",
+      '["main"]',
+      '["main"]',
       "Closed by Vivarium: the run was stopped before this subticket landed and will restart from a fresh clone.",
     ]);
     expect(JSON.stringify(calls)).not.toContain(TOKEN);
@@ -1065,7 +1127,9 @@ describe("the bundled landing reads", () => {
     );
     const github = armGitHub(isolated(), exec);
 
-    await expect(github.discardCurrentWork!("main")).rejects.toThrow(
+    await expect(
+      github.discardCurrentWork(recordedBaseline()),
+    ).rejects.toThrow(
       /could not delete remote branch subticket-6-5/,
     );
   });
@@ -1201,7 +1265,16 @@ esac
       join(dir, "git"),
       `#!/usr/bin/env bash
 case "$1" in
-  symbolic-ref) echo subticket-6-5 ;;
+  for-each-ref)
+    case "$*" in
+      *"refs/heads"*) printf '%s\\n' main subticket-6-5 ;;
+      *"refs/remotes/origin"*)
+        echo main
+        if [ "$GH_STUB_MODE" = "preexisting" ]; then echo subticket-6-5; fi
+        ;;
+    esac
+    ;;
+  reflog) printf 'base1234\\tbranch: Created from HEAD\\n' ;;
   ls-remote) printf '%s\\trefs/heads/subticket-6-5\\n' aaaaaaaa ;;
   push) exit 0 ;;
   diff) printf 'STUBDIFF %s\\n' "$2" ;;
@@ -1216,6 +1289,7 @@ esac
   const runScript = (
     scriptAndArgs: string[],
     sha: string,
+    mode = "owned",
   ): Record<string, any> => {
     const dir = stubDir();
     const result = spawnSync("bash", ["-c", ...scriptAndArgs], {
@@ -1223,6 +1297,7 @@ esac
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
         GH_STUB_SHA: sha,
+        GH_STUB_MODE: mode,
       },
       encoding: "utf8",
     });
@@ -1259,7 +1334,7 @@ esac
 
   test("discardCurrentWork closes the PR and deletes the branch", async () => {
     const scriptAndArgs = await captureScript((github) =>
-      github.discardCurrentWork!("main"),
+      github.discardCurrentWork(recordedBaseline()),
     );
     const parsed = runScript(scriptAndArgs, "");
 
@@ -1268,6 +1343,23 @@ esac
       pullRequest: 41,
       pullRequestClosed: true,
       branchDeleted: true,
+      errors: [],
+    });
+  });
+
+  test("discardCurrentWork leaves a pre-existing feature branch untouched", async () => {
+    const scriptAndArgs = await captureScript((github) =>
+      github.discardCurrentWork(recordedBaseline({
+        remoteBranches: ["main", "subticket-6-5"],
+      })),
+    );
+    const parsed = runScript(scriptAndArgs, "", "preexisting");
+
+    expect(parsed).toMatchObject({
+      branch: null,
+      pullRequest: null,
+      pullRequestClosed: false,
+      branchDeleted: false,
       errors: [],
     });
   });

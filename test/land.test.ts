@@ -125,7 +125,13 @@ function fakeGitHub(options: {
     },
     async syncToBaseline() {
       calls.push("sync");
-      return { slug: "org/repo", branch: "main", sha: "abc1234def" };
+      return {
+        slug: "org/repo",
+        branch: "main",
+        sha: "abc1234def",
+        localBranches: ["main"],
+        remoteBranches: ["main"],
+      };
     },
     async currentBranch() {
       return options.branch ?? "subticket-1-1";

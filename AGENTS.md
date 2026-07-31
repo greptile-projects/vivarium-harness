@@ -79,9 +79,10 @@ bun start -- --help              # the full option + env reference
   hours a whole rung can take; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
   everywhere else and does not acquire a second one here. An immediate stop
-  closes each arm's open PR for the interrupted branch and deletes that remote
-  branch before destroying its microVM, so retrying the unchecked subticket
-  starts from the same external baseline too. Stopping live sessions exits 1.
+  closes each arm's open PR for its session-owned interrupted branch and
+  deletes that remote branch before destroying its microVM, so retrying the
+  unchecked subticket starts from the same external baseline too. Stopping
+  live sessions exits 1.
   It runs on the alternate screen and gives the
   terminal back on exit, so the closing summary is what survives. Every mode
   writes one `progress.log` per arm either way, filed beside the record it
@@ -367,9 +368,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   `diff` (the unified diff between two commits, read from the arm's own
   checkout — the local object store still holds commits an amend or squash
   unhooked from every ref), `discardCurrentWork` (on an immediate human stop,
-  close the open PR for the current feature branch and delete its remote ref,
-  guarded by the recorded baseline branch so cleanup can never delete the
-  default branch), and
+  compare the recorded pre-session local/remote branch snapshot with local
+  creation reflogs, then close/delete only the one branch established as
+  session-owned — independent of whether `HEAD` is attached), and
   `merge`. Comment list responses expose reaction counts, so identities are
   fetched only for comments with a nonzero count rather than making one extra
   API call per historical comment on every poll. For isolated arms these
@@ -632,7 +633,9 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   partial / not-found / copy-failed / no-thread-id; `transcriptError` preserves
   the exporter failure without changing the arm's result.
   `recordBaselines` writes the commit each arm started from (they should match;
-  when they do not, that *is* the finding). `recordLanding` writes the arm's
+  when they do not, that *is* the finding) and the local/remote branch refs
+  present before either worker starts, which form the ownership boundary for
+  interrupted cleanup. `recordLanding` writes the arm's
   landing into `run.json` — pull request, every review round with what the
   reviewer said and what the arm answered, the merge — replaces the arm's final
   result (a session that opened no pull request is a failed arm), and
@@ -865,9 +868,11 @@ one PR-sized step, which is what makes that affordable.
 
 Normal failures are already clean: `runHarness` destroys both ephemeral
 environments in `finally`, and the retry starts both arms from new clones. A
-confirmed immediate TUI stop additionally closes any open PR on the interrupted
-branch and deletes that remote branch before the VM loses its checkout and
-credentials. A failed GitHub rollback is retained in `cleanup-error.txt` and
+confirmed immediate TUI stop additionally closes any open PR on the
+session-owned interrupted branch and deletes that remote branch before the VM
+loses its checkout and credentials. Pre-existing branches are excluded by the
+recorded baseline snapshot, and a detached `HEAD` does not hide a created local
+branch. A failed GitHub rollback is retained in `cleanup-error.txt` and
 `run.json.cleanupError` without preventing VM teardown. A host crash can strand
 named sandboxes after the harness process is gone;
 recovery matches the configured arm prefixes plus `vivarium-greg-*`:

@@ -72,7 +72,13 @@ function fakeGitHub(
     },
     async syncToBaseline() {
       state.synced.push(arm.name);
-      return { slug: `org/${arm.name}`, branch: "main", sha: `sha-${arm.name}` };
+      return {
+        slug: `org/${arm.name}`,
+        branch: "main",
+        sha: `sha-${arm.name}`,
+        localBranches: ["main"],
+        remoteBranches: ["main"],
+      };
     },
     async currentBranch() {
       return "subticket-1-1";
@@ -393,8 +399,8 @@ describe("runHarness environment lifecycle", () => {
         }),
         github: (arm) => ({
           ...baseGitHub(arm),
-          async discardCurrentWork(baselineBranch) {
-            lifecycle.push(`discard ${arm.name} from ${baselineBranch}`);
+          async discardCurrentWork(baseline) {
+            lifecycle.push(`discard ${arm.name} from ${baseline.branch}`);
             return {
               branch: `subticket-${arm.name}`,
               pullRequest: arm.name === "tuatara" ? 41 : 42,

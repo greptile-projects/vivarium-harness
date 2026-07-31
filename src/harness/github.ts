@@ -45,6 +45,11 @@ export interface Baseline {
   slug?: string;
   branch: string;
   sha: string;
+  // Branch refs present before the worker starts. Immediate-stop rollback uses
+  // this ownership boundary instead of trusting whichever branch happens to
+  // be checked out after an interrupted session.
+  localBranches: string[];
+  remoteBranches: string[];
 }
 
 export interface PullRequestRef {
@@ -180,12 +185,12 @@ export interface ArmGitHub {
   diff(base: string, head: string): Promise<string>;
   merge(pullRequest: number): Promise<MergeOutcome>;
   // Roll an interrupted, unlanded subticket back to its external baseline.
-  // The caller supplies the recorded baseline branch so a missing or stale
-  // origin/HEAD can never make cleanup delete the repository's default branch.
-  // Implementations close the open PR for the checkout's current branch and
-  // delete that remote branch, while leaving the local checkout for the
-  // environment layer to destroy.
-  discardCurrentWork(baselineBranch: string): Promise<DiscardOutcome>;
+  // The recorded pre-session branch refs and the new branch's creation reflog
+  // establish ownership without trusting the current checkout, which may be
+  // detached or sitting on unrelated work. Implementations close/delete only
+  // that owned branch, while leaving the local checkout for the environment
+  // layer to destroy.
+  discardCurrentWork(baseline: Baseline): Promise<DiscardOutcome>;
   // The two bundled reads, defined only for isolated arms. Docker Sandbox
   // performs credential/template upkeep on every `sbx exec`, so a landing step
   // that makes three or four GitHub calls in sequence pays that fixed cost
@@ -342,6 +347,35 @@ interface ConversationBundle {
   inlineComments?: GhReviewComment[];
   reactions?: BundledReaction[];
 }
+
+// Extend the baked baseline reset with the ownership snapshot needed by
+// immediate-stop rollback. Keeping the wrapper here means an existing sandbox
+// template gains the safety rule immediately; no image rebuild is required.
+const ISOLATED_BASELINE_SCRIPT = String.raw`
+set -euo pipefail
+
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+vivarium-sync >"$scratch/baseline.raw"
+tail -n 1 "$scratch/baseline.raw" >"$scratch/baseline.json"
+jq -e 'type == "object"' "$scratch/baseline.json" >/dev/null
+
+git for-each-ref --format='%(refname:short)' refs/heads |
+  jq -Rsc 'split("\n") | map(select(length > 0))' >"$scratch/local.json"
+git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin |
+  sed '/^HEAD$/d' |
+  jq -Rsc 'split("\n") | map(select(length > 0))' >"$scratch/remote.json"
+
+jq -cn \
+  --slurpfile baseline "$scratch/baseline.json" \
+  --slurpfile local "$scratch/local.json" \
+  --slurpfile remote "$scratch/remote.json" \
+  '$baseline[0] + {
+    localBranches: $local[0],
+    remoteBranches: $remote[0]
+  }'
+`;
 
 // One review poll used to cross the sandbox control plane once for `gh pr
 // view`, once for the origin URL, once for each comment collection, and once
@@ -545,9 +579,12 @@ jq -cn \
 const DISCARD_WORK_SCRIPT = String.raw`
 set -uo pipefail
 
-baseline="$1"
-comment="$2"
-branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+baseline_branch="$1"
+baseline_sha="$2"
+baseline_local="$3"
+baseline_remote="$4"
+comment="$5"
+branch=""
 pull_request=""
 closed="false"
 branch_deleted="false"
@@ -560,7 +597,43 @@ add_error() {
   errors="$errors$1"
 }
 
-if [ -n "$branch" ] && [ "$branch" != "$baseline" ]; then
+git for-each-ref --format='%(refname:short)' refs/heads |
+while IFS= read -r candidate; do
+  [ -n "$candidate" ] || continue
+  [ "$candidate" != "$baseline_branch" ] || continue
+  if printf '%s' "$baseline_local" |
+    jq -e --arg branch "$candidate" 'index($branch) != null' >/dev/null 2>&1; then
+    continue
+  fi
+  if printf '%s' "$baseline_remote" |
+    jq -e --arg branch "$candidate" 'index($branch) != null' >/dev/null 2>&1; then
+    continue
+  fi
+
+  first="$(git reflog show --format='%H%x09%gs' \
+    "refs/heads/$candidate" 2>/dev/null | tail -n 1 || true)"
+  first_sha="$(printf '%s' "$first" | cut -f1)"
+  first_subject="$(printf '%s' "$first" | cut -f2-)"
+  [ "$first_sha" = "$baseline_sha" ] || continue
+  case "$first_subject" in
+    "branch: Created from refs/remotes/"* | "branch: Created from origin/"*)
+      continue
+      ;;
+    "branch: Created from "*) ;;
+    *) continue ;;
+  esac
+  printf '%s\n' "$candidate"
+done >"$scratch/candidates"
+
+candidate_count="$(wc -l <"$scratch/candidates" | tr -d ' ')"
+if [ "$candidate_count" -gt 1 ]; then
+  branches="$(paste -sd, "$scratch/candidates")"
+  add_error "interrupted-work ownership is ambiguous across branches: $branches"
+elif [ "$candidate_count" -eq 1 ]; then
+  branch="$(sed -n '1p' "$scratch/candidates")"
+fi
+
+if [ -n "$branch" ]; then
   if gh pr list --head "$branch" --state open --limit 1 --json number \
     >"$scratch/pr.json" 2>"$scratch/pr.err"; then
     pull_request="$(jq -r '.[0].number // empty' "$scratch/pr.json" 2>/dev/null || true)"
@@ -782,6 +855,81 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     return result.stdout.trim().replace(/^origin\//, "") || "main";
   };
 
+  const branchSnapshot = async (): Promise<{
+    localBranches: string[];
+    remoteBranches: string[];
+  }> => {
+    const [local, remoteBranches] = await Promise.all([
+      git(["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
+      git([
+        "for-each-ref",
+        "--format=%(refname:strip=3)",
+        "refs/remotes/origin",
+      ]),
+    ]);
+    if (local.code !== 0 || remoteBranches.code !== 0) {
+      throw new Error(
+        `could not snapshot branches in ${checkoutLocation}: ${
+          local.stderr.trim() ||
+          remoteBranches.stderr.trim() ||
+          "git for-each-ref failed"
+        }`,
+      );
+    }
+    const lines = (value: string): string[] =>
+      value
+        .trim()
+        .split(/\r?\n/)
+        .filter((branch) => branch.length > 0 && branch !== "HEAD");
+    return {
+      localBranches: lines(local.stdout),
+      remoteBranches: lines(remoteBranches.stdout),
+    };
+  };
+
+  const sessionOwnedBranch = async (
+    baseline: Baseline,
+  ): Promise<string | undefined> => {
+    const snapshot = await branchSnapshot();
+    const candidates: string[] = [];
+    for (const branch of snapshot.localBranches) {
+      if (
+        branch === baseline.branch ||
+        baseline.localBranches.includes(branch) ||
+        baseline.remoteBranches.includes(branch)
+      ) {
+        continue;
+      }
+      const reflog = await git([
+        "reflog",
+        "show",
+        "--format=%H%x09%gs",
+        `refs/heads/${branch}`,
+      ]);
+      if (reflog.code !== 0) continue;
+      const entries = reflog.stdout.trim().split(/\r?\n/);
+      const first = entries.at(-1) ?? "";
+      const separator = first.indexOf("\t");
+      if (separator < 0) continue;
+      const createdSha = first.slice(0, separator);
+      const subject = first.slice(separator + 1);
+      if (
+        createdSha === baseline.sha &&
+        subject.startsWith("branch: Created from ") &&
+        !subject.startsWith("branch: Created from origin/") &&
+        !subject.startsWith("branch: Created from refs/remotes/")
+      ) {
+        candidates.push(branch);
+      }
+    }
+    if (candidates.length > 1) {
+      throw new Error(
+        `interrupted-work ownership is ambiguous across branches: ${candidates.join(",")}`,
+      );
+    }
+    return candidates[0];
+  };
+
   const api: ArmGitHub = {
     async isGitHubCheckout() {
       if (arm.sandboxName) {
@@ -810,7 +958,11 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
     // see its comment.
     async syncToBaseline() {
       if (arm.sandboxName) {
-        const result = await run("vivarium-sync", []);
+        const result = await run("bash", [
+          "-ceu",
+          ISOLATED_BASELINE_SCRIPT,
+          "vivarium-baseline",
+        ]);
         if (result.code !== 0) {
           throw new Error(
             `baseline sync failed in ${checkoutLocation}: ${result.stderr.trim() || result.stdout.trim()}`,
@@ -820,18 +972,38 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
           remote?: string;
           branch?: string;
           sha?: string;
+          localBranches?: unknown;
+          remoteBranches?: unknown;
         }>(result.stdout);
         const slug = baseline?.remote
           ? slugFromRemote(baseline.remote)
           : undefined;
-        if (!baseline?.branch || !baseline.sha || !slug) {
+        if (
+          !baseline?.branch ||
+          !baseline.sha ||
+          !slug ||
+          !Array.isArray(baseline.localBranches) ||
+          !baseline.localBranches.every(
+            (branch): branch is string => typeof branch === "string",
+          ) ||
+          !Array.isArray(baseline.remoteBranches) ||
+          !baseline.remoteBranches.every(
+            (branch): branch is string => typeof branch === "string",
+          )
+        ) {
           const detail =
             result.stdout.trim() || result.stderr.trim() || "empty output";
           throw new Error(
             `baseline sync returned invalid state in ${checkoutLocation}: ${detail}`,
           );
         }
-        return { slug, branch: baseline.branch, sha: baseline.sha };
+        return {
+          slug,
+          branch: baseline.branch,
+          sha: baseline.sha,
+          localBranches: baseline.localBranches,
+          remoteBranches: baseline.remoteBranches,
+        };
       }
 
       const url = await remote();
@@ -889,7 +1061,8 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       }
 
       const head = await git(["rev-parse", "HEAD"]);
-      return { slug, branch, sha: head.stdout.trim() };
+      const snapshot = await branchSnapshot();
+      return { slug, branch, sha: head.stdout.trim(), ...snapshot };
     },
 
     async currentBranch() {
@@ -994,13 +1167,16 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
       return result.stdout;
     },
 
-    async discardCurrentWork(baselineBranch) {
+    async discardCurrentWork(baseline) {
       if (arm.sandboxName) {
         const result = await run("bash", [
           "-c",
           DISCARD_WORK_SCRIPT,
           "vivarium-discard-work",
-          baselineBranch,
+          baseline.branch,
+          baseline.sha,
+          JSON.stringify(baseline.localBranches),
+          JSON.stringify(baseline.remoteBranches),
           INTERRUPTED_PR_COMMENT,
         ]);
         if (result.code !== 0) {
@@ -1046,10 +1222,9 @@ export function armGitHub(arm: ArmConfig, exec: CommandRunner): ArmGitHub {
         };
       }
 
-      const branch = await api.currentBranch();
-      if (!branch || branch === baselineBranch) {
+      const branch = await sessionOwnedBranch(baseline);
+      if (!branch) {
         return {
-          branch,
           pullRequestClosed: false,
           branchDeleted: false,
         };
