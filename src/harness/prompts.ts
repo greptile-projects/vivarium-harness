@@ -165,6 +165,8 @@ Do not default to another sequence of adjacent backend layers such as defining a
 
 Use the existing ladder to avoid merely renaming or extending the most recent milestone's template. Infrastructure and boundary work must name the new end-to-end behavior it unlocks in this milestone rather than treating the boundary itself as the outcome.
 
+Look for opportunities to extend, integrate, or depend on capabilities from earlier milestones, so the product becomes a more connected whole instead of only accumulating adjacent systems. Treat this as a strong consideration, not a constraint: introduce a standalone subsystem when it opens a genuinely valuable new direction toward the North Star.
+
 ## Work Instructions
 Read \`${ladderFile}\` before making any changes, and then, with all context in mind, plan the next milestone towards the North Star. After the task has been planned, ONLY append the new milestone to \`${ladderFile}\`. Do **not** make any other changes, removals, rewrites, or API calls.
 
