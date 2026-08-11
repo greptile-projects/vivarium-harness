@@ -1,7 +1,7 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { findTranscript } from "../harness/artifacts.js";
-import { MAX_MILESTONES, type HarnessConfig } from "../harness/config.js";
+import type { HarnessConfig } from "../harness/config.js";
 import { runHarness, type HarnessRunResult } from "../harness/harness.js";
 import {
   completeSubticket,
@@ -24,11 +24,6 @@ import { planNextMilestone } from "./planner.js";
 // The one shared ladder, mounted into both arm microVMs (or symlinked into
 // local checkouts on the host-only smoke path).
 export const LADDER_PATH = resolve("LADDER.md");
-
-// The runaway guard (defined in config.ts with the other fixed constants) is
-// counted in milestones: a run always finishes the rung it is on and pauses
-// between rungs. Re-running continues from the ladder; --unbounded (Infinity)
-// removes the cap.
 
 // One subticket the loop built this run, tagged with its milestone.
 export interface BuiltSubticket {
@@ -127,16 +122,13 @@ async function preservePlannerSession(
 // subticket stays unchecked and a re-run retries it.
 //
 // When no subtickets are pending, it is Greg's turn to plan the next milestone.
-// The North Star is a direction, not a destination, so the loop pauses after
-// `milestoneLimit` milestones (default 2) for a human to reconfirm, or runs
-// unbounded when passed Infinity. The pause is per rung: a run always finishes
-// the milestone it is building (resuming counts the resumed rung as one), and
-// stops before planning or starting a rung beyond the limit. Everything is
-// resumable: a re-run reads the ladder and continues from the first unchecked
-// box.
+// The North Star is a direction, not a destination, so the loop runs until a
+// stop is requested or work fails. `milestoneLimit` remains injectable for
+// bounded tests; production passes Infinity. Everything is resumable: a
+// re-run reads the ladder and continues from the first unchecked box.
 export async function runGreg(
   base: HarnessConfig,
-  milestoneLimit: number = MAX_MILESTONES,
+  milestoneLimit: number = Infinity,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
 ): Promise<BuiltSubticket[]> {
@@ -148,8 +140,8 @@ export async function runGreg(
   await setupLadder(base, ladderPath, log);
 
   const built: BuiltSubticket[] = [];
-  // Distinct milestones this run has built subtickets under — the unit the
-  // pause counts.
+  // Distinct milestones this run has built subtickets under. Finite limits are
+  // used by tests to verify that a boundary never splits a rung.
   const milestonesTouched = new Set<number>();
 
   for (;;) {
@@ -255,11 +247,11 @@ export async function runGreg(
 // even while earlier ones are still unbuilt (`runGreg`'s "no pending subticket"
 // gate would otherwise stop it after the first). Nothing is checked off, so a
 // later `runGreg` picks up and builds every subticket queued here, oldest
-// first. `milestoneLimit` caps how many milestones get planned this run, same
-// per-rung runaway guard as `runGreg`.
+// first. `milestoneLimit` is an injectable test boundary; production planning
+// is continuous.
 export async function planAhead(
   base: HarnessConfig,
-  milestoneLimit: number = MAX_MILESTONES,
+  milestoneLimit: number = Infinity,
   deps: Partial<GregDeps> = {},
   ladderPath: string = LADDER_PATH,
 ): Promise<PlannedSubticket[]> {

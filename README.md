@@ -79,7 +79,6 @@ from becoming a cross-arm channel.
 
 ```bash
 bun start                     # plan a rung, build its subtickets, repeat
-bun start -- --unbounded      # don't pause every 2 milestones
 bun start -- --plan-only      # plan rungs, build nothing
 bun start -- --no-tui --json  # machine-readable
 bun start -- --help           # every option, plus the env reference

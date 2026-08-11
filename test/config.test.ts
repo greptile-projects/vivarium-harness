@@ -130,14 +130,13 @@ describe("run mode", () => {
     const mode = parseRunMode([], true);
 
     expect(mode.planOnly).toBe(false);
-    expect(mode.unbounded).toBe(false);
+    expect(mode).not.toHaveProperty("unbounded");
   });
 
-  it("allows planning ahead without the milestone cap", () => {
-    const mode = parseRunMode(["--plan-only", "--unbounded"], true);
+  it("allows continuous planning ahead", () => {
+    const mode = parseRunMode(["--plan-only"], true);
 
     expect(mode.planOnly).toBe(true);
-    expect(mode.unbounded).toBe(true);
   });
 
   // The one-ticket escape hatch is gone. A caller still passing the flag is

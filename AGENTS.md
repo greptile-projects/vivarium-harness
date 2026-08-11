@@ -45,8 +45,7 @@ plans the next rung onto `LADDER.md`, both arms build its subtickets, repeat.
 Everything else is an option on that loop, not a separate entrypoint.
 
 ```bash
-bun start                        # climb: plan a rung, build its subtickets, pause after 2 rungs
-bun start -- --unbounded         # same, without the 2-milestone pause
+bun start                        # climb continuously: plan a rung, build its subtickets, repeat
 bun start -- --plan-only         # plan rungs onto the ladder; build nothing
 bun start -- --no-tui --json     # machine-readable, for scripts
 bun start -- --help              # the full option + env reference
@@ -54,15 +53,12 @@ bun start -- --help              # the full option + env reference
 
 - **The climb** — read `LADDER.md`, build the first unchecked
   subticket via `runHarness`, check its box, repeat; when nothing is pending,
-  run a fresh planner session to append the next milestone. Pauses after
-  `MAX_MILESTONES` (2) built milestones — always finishing the rung it is on,
-  never stopping mid-milestone — so a human reconfirms the direction.
+  run a fresh planner session to append the next milestone, continuously.
   Re-running resumes from the first unchecked box — everything is resumable.
-- **`--unbounded`** lifts that cap (the loop then never returns on its own).
 - **`--plan-only`** runs `planAhead` instead: plans milestone after milestone
   onto the ladder without ever invoking the harness, so several rungs can be
-  reviewed before runs are spent on them. Same cap, also liftable with
-  `--unbounded`. A later bare `bun start` builds everything queued this way.
+  reviewed before runs are spent on them. A later bare `bun start` builds
+  everything queued this way.
 - **`--tui` / `--no-tui`** force the live view (default: on when stdout is a
   TTY). The live view is fullscreen and tabbed: an **overview** of every arm, a
   tab **per arm** with its effective model/effort/tier on one line, context
