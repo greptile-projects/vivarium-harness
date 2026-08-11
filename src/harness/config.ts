@@ -7,13 +7,6 @@ import { realpath, stat } from "node:fs/promises";
 export const RESULTS_DIR = "results";
 export const MAX_ATTEMPTS = 3;
 export const SANDBOX_TEMPLATE = "vivarium-arm:latest";
-// Runaway guard for the ladder loop: pause once this many milestones (rungs)
-// have been built (or planned, under --plan-only) so a human reconfirms the
-// direction before more Codex runs are spent. The run always finishes the
-// rung it is on — the pause lands between milestones, never mid-milestone.
-// Lifted by --unbounded. It lives here beside the other fixed experiment
-// constants, and because the usage text quotes it.
-export const MAX_MILESTONES = 2;
 // Default for the activity watchdog: abort a session after this much
 // codex/event silence. Overridable via the IDLE_TIMEOUT_MS env var (0
 // disables) — a hung external tool call otherwise holds a run for the full
@@ -241,7 +234,6 @@ export function parseArgs(
 // testable.
 export interface RunMode {
   planOnly: boolean;
-  unbounded: boolean;
   useTui: boolean;
   json: boolean;
 }
@@ -258,7 +250,6 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
 
   const json = args.includes("--json");
   const planOnly = args.includes("--plan-only");
-  const unbounded = args.includes("--unbounded");
   // --json is for machines; never fight it for the terminal.
   const useTui = args.includes("--tui")
     ? true
@@ -266,7 +257,7 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
       ? false
       : isTty;
 
-  return { planOnly, unbounded, useTui, json };
+  return { planOnly, useTui, json };
 }
 
 export async function validateConfig(
@@ -364,11 +355,10 @@ export async function validateConfig(
 export const usage = `Usage:
   bun start                              climb the ladder: plan the next rung,
                                          then build its subtickets through both
-                                         arms. Pauses after ${MAX_MILESTONES} milestones.
+                                         arms, continuously.
   bun start -- [options]
 
 Options:
-  --unbounded             Do not pause after ${MAX_MILESTONES} milestones (never returns).
   --plan-only             Plan rungs onto the ladder; build nothing. A later
                           \`bun start\` builds everything queued this way.
   --tui / --no-tui        Force the live view on/off (default: on when stdout

@@ -44,7 +44,6 @@ export interface GregSubticketSummary {
 // hang).
 export async function runGregLive(
   base: HarnessConfig,
-  limit: number,
   writeAhead: boolean,
   options: { useTui: boolean },
 ): Promise<GregSubticketSummary[]> {
@@ -221,8 +220,8 @@ export async function runGregLive(
   let halted = true;
   try {
     const subtickets = writeAhead
-      ? await planAhead(base, limit, deps)
-      : await runGreg(base, limit, deps);
+      ? await planAhead(base, Infinity, deps)
+      : await runGreg(base, Infinity, deps);
     halted = false;
     return subtickets;
   } finally {
@@ -230,7 +229,7 @@ export async function runGregLive(
     // error) — anything written while the alternate screen is up is lost.
     if (app) {
       model.finish(
-        halted ? "halted" : writeAhead ? "planned ahead" : "paused",
+        halted ? "halted" : writeAhead ? "planned ahead" : "stopped",
       );
       await app.waitUntilExit();
     }

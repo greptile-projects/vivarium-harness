@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import {
-  MAX_MILESTONES,
   parseArgs,
   parseRunMode,
   usage,
@@ -10,8 +9,8 @@ import { runGregLive } from "./climb.js";
 
 // The single entrypoint, and it runs the experiment itself: Greg plans the
 // next rung onto the ladder and the two arms build its subtickets, on and on.
-// Every flag is an option on that one loop — planning without building,
-// lifting the pause — not a separate command with its own contract.
+// Every flag is an option on that one loop — such as planning without
+// building — not a separate command with its own contract.
 
 async function main(): Promise<void> {
   try {
@@ -25,14 +24,12 @@ async function main(): Promise<void> {
     const { json, useTui, planOnly } = mode;
 
     const base = await validateConfig(parseArgs(argv, process.env));
-    const limit = mode.unbounded ? Infinity : MAX_MILESTONES;
-
     // Every mode writes the same human-readable feed; where each line lands is
     // decided per phase by the climb, beside the record it explains. Nothing
     // is created up front, so a run that never starts leaves nothing behind.
     const logs = `${base.resultsDir}/rung-<NN>/run/<N.M>/<arm>/progress.log`;
 
-    const subtickets = await runGregLive(base, limit, planOnly, { useTui });
+    const subtickets = await runGregLive(base, planOnly, { useTui });
     const milestones = new Set(
       subtickets.map((subticket) => subticket.milestone),
     ).size;
@@ -47,7 +44,7 @@ async function main(): Promise<void> {
       );
     } else {
       process.stdout.write(
-        `\nPaused after ${subtickets.length} subticket(s) across ${milestones} milestone(s). Run \`bun start\` to climb further, or add --unbounded to run without a cap.\n`,
+        `\nStopped after ${subtickets.length} subticket(s) across ${milestones} milestone(s). Run \`bun start\` to resume.\n`,
       );
     }
     process.stdout.write(`progress logs: ${logs}\n`);
