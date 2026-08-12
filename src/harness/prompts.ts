@@ -161,7 +161,7 @@ Plan milestone ${milestoneNumber}, an ambitious coherent capability leap toward 
 ## Standard of Ambition
 Choose the milestone's outcome before decomposing it. The milestone should materially expand what a developer or agent can accomplish with the product and end in a complete, demonstrable workflow through a public surface. Ambition is measured by that product outcome, not by lines of code or by making every subticket large.
 
-Do not default to another sequence of adjacent backend layers such as defining an abstraction, persisting it, hardening it, and finally proving it. Prefer a vertical slice that crosses the layers needed to make a new capability real. A narrow schema, adapter, migration, test, or cleanup subticket is welcome when it is necessary to unlock the ambitious whole; it does not need artificial scope of its own.
+Do not default to another sequence of adjacent backend layers such as defining an abstraction, persisting it, hardening it, and finally proving it. Prefer a vertical slice that crosses the layers needed to make a new capability real. A narrow schema, adapter, migration, test, or cleanup subticket is welcome when it is necessary to unlock the ambitious whole; it does not need artificial scope of its own. Quality work is also a legitimate end in itself: when the ladder's history suggests accumulated complexity, you may devote a subticket to consolidation or simplification, stated as an outcome rather than files, since you cannot see the code.
 
 Use the existing ladder to avoid merely renaming or extending the most recent milestone's template. Infrastructure and boundary work must name the new end-to-end behavior it unlocks in this milestone rather than treating the boundary itself as the outcome.
 
