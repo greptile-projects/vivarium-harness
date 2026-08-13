@@ -454,7 +454,7 @@ cross-layer import is always visible as a `../harness/` in the specifier.
       empty-bodied reviews GitHub wraps around inline replies prove nothing —
       or the reviewer stays silent for the full rolling window, the backstop
       for a pass that posts nothing.
-    - **The reviewer has been silent for `reviewTimeoutMs`** (default 20
+    - **The reviewer has been silent for `reviewTimeoutMs`** (default 25
       minutes), and the round times out. The window is rolling — measured from
       the reviewer's last comment as the harness observed it, or from the start
       of the wait when there has been none — so it bounds total reviewer
