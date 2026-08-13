@@ -154,7 +154,7 @@ experiment is live. It needs a token that can read the private mirror
 
 - **Sequential**: `concurrency: mirror-sync`, `cancel-in-progress: false`. One
   open mirror PR at a time.
-- **Timeout**: polls every 60s, 10-min cap. On timeout → `review-timeout` label,
+- **Timeout**: polls every 60s, 25-min cap. On timeout → `review-timeout` label,
   proceed (sync integrity beats review completeness).
 - **`[codex] ` title marker**: every mirror PR title starts with it — that is
   how Greptile recognizes the PR as agent-authored. It goes on outermost (so a
