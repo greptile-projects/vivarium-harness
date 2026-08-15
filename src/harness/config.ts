@@ -20,7 +20,7 @@ export const IDLE_TIMEOUT_MS = 240_000;
 // per-round allowance. A review that never arrives must not hold the climb:
 // the same trade the review mirror makes — sync integrity beats review
 // completeness — except here it is recorded as a timed-out round.
-export const REVIEW_TIMEOUT_MS = 1_200_000;
+export const REVIEW_TIMEOUT_MS = 1_500_000;
 export const REVIEW_POLL_MS = 30_000;
 // Once reviewer activity appears, wait for one quiet interval before starting
 // a Codex turn. GitHub exposes a single submitted review through multiple
@@ -405,7 +405,7 @@ Optional environment:
                           Defaults to 240000 (4m); 0 disables the watchdog.
   REVIEW_TIMEOUT_MS=<ms>  How long to wait for that review before merging
                           without it, rolling from the reviewer's last
-                          comment. Defaults to ${REVIEW_TIMEOUT_MS} (20m).
+                          comment. Defaults to ${REVIEW_TIMEOUT_MS} (25m).
   REVIEW_ROUNDS=<n>       Review → answer → re-review rounds per pull request.
                           Defaults to ${REVIEW_ROUNDS}.
 
