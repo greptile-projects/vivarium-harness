@@ -5,7 +5,3 @@ results/
 LADDER.md
 *.log
 .claude/
-# analysis output — regenerable, timestamped, and large
-analysis/out/
-analysis/.cache/
-__pycache__/
