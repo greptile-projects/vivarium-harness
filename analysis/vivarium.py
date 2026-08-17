@@ -22,6 +22,7 @@ Repository history comes from read-only ``git`` calls against each arm checkout.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -232,6 +233,11 @@ class PullRequest:
     t_first_findings: list[Finding] = field(default_factory=list)
     t_all_findings: list[Finding] = field(default_factory=list)
 
+    # What the ladder asked for. The ticket is the one input both arms share, so
+    # its size is the experiment's independent variable rather than an outcome.
+    deliverable_words: int | None = None
+    ticket_words: int | None = None
+
     # Komodo, reviewed only in the mirror it cannot see.
     k_score: int | None = None
     k_findings: list[Finding] = field(default_factory=list)
@@ -343,6 +349,19 @@ def load_state(state_backup: Path) -> StateSummary:
             # throw away the verdict the previous round gave on the same code.
             scored = [s for s in round_scores if s is not None]
 
+            # Every ticket carries the same three headings, so the Deliverable —
+            # the part that says what must exist when the subticket is done — can
+            # be measured on its own rather than through the surrounding prose.
+            deliverable_words = ticket_words = None
+            try:
+                ticket = (subticket_dir / "ticket.md").read_text()
+                ticket_words = len(ticket.split())
+                section = re.search(r"^## Deliverable\s*(.*?)(?=^## |\Z)", ticket, re.S | re.M)
+                if section:
+                    deliverable_words = len(section.group(1).split())
+            except OSError:
+                pass
+
             subticket = raw.get("subticket") or {}
             rows.append(
                 PullRequest(
@@ -353,6 +372,8 @@ def load_state(state_backup: Path) -> StateSummary:
                     run_status=raw.get("status"),
                     started_at=raw.get("startedAt"),
                     arms=arms,
+                    deliverable_words=deliverable_words,
+                    ticket_words=ticket_words,
                     t_first=scored[0] if scored else None,
                     t_final_recorded=scored[-1] if scored else None,
                     t_pr_url=(landing.get("pullRequest") or {}).get("url"),
@@ -815,6 +836,45 @@ def block_ratio(
 
 def series_by_pr(snapshots: Sequence[Snapshot], value_of: Callable[[Snapshot], float]) -> tuple[list[int], list[float]]:
     return [s.pr for s in snapshots], [value_of(s) for s in snapshots]
+
+
+def saturating_fit(xs: Sequence[float], ys: Sequence[float]) -> dict:
+    """Least-squares fit of ``y = a - b*exp(-c*x)`` — a curve with a ceiling.
+
+    Used instead of a polynomial because the alternatives assert things the data
+    does not: a quadratic fits marginally better but turns over and predicts
+    negative values just past the observed range, and a log rises without bound.
+    A saturating curve is the cheapest shape that can express "rises, then levels
+    off", which is what the block averages actually do.
+
+    For a fixed ``c`` the model is linear in ``a`` and ``b``, so this grids ``c``
+    and solves the 2x2 normal equations at each step — no solver dependency.
+    """
+    n = len(xs)
+    if n < 3:
+        return {}
+    mean_y = sum(ys) / n
+    sst = sum((y - mean_y) ** 2 for y in ys)
+    best = None
+    for step in range(1, 2001):
+        c = step * 0.0001
+        es = [math.exp(-c * x) for x in xs]
+        # normal equations for y = a*1 + b*(-e)
+        s11, s12, s22 = float(n), -sum(es), sum(e * e for e in es)
+        t1, t2 = sum(ys), -sum(y * e for y, e in zip(ys, es))
+        det = s11 * s22 - s12 * s12
+        if abs(det) < 1e-12:
+            continue
+        a = (t1 * s22 - s12 * t2) / det
+        b = (s11 * t2 - t1 * s12) / det
+        ssr = sum((y - (a - b * e)) ** 2 for y, e in zip(ys, es))
+        r2 = 1 - ssr / sst if sst else 0.0
+        if best is None or r2 > best["r_squared"]:
+            best = {"a": a, "b": b, "c": c, "r_squared": r2, "n": n}
+    if best and best["c"] > 0:
+        best["halfway_at"] = math.log(2) / best["c"]
+        best["ninety_pct_at"] = math.log(10) / best["c"]
+    return best or {}
 
 
 # --------------------------------------------------------------------------

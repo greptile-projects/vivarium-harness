@@ -34,6 +34,7 @@ from pathlib import Path
 import chart_codebase
 import chart_docs
 import chart_findings
+import chart_ladder
 import chart_process
 import chart_review
 import chart_scores
@@ -45,6 +46,7 @@ MODULES = [
     chart_scores,
     chart_review,
     chart_findings,
+    chart_ladder,
     chart_codebase,
     chart_docs,
     chart_process,

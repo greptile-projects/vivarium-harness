@@ -88,6 +88,7 @@ uv run analysis/chart_codebase.py --max-pr 175
 | `chart_scores.py` | the headline confidence figure |
 | `chart_review.py` | score distribution, and what each review round is worth |
 | `chart_findings.py` | findings per thousand lines changed |
+| `chart_ladder.py` | how large the tickets themselves got — the experiment's input |
 | `chart_codebase.py` | codebase size, largest files, code concentration |
 | `chart_docs.py` | markdown growth, `AGENTS.md` growth |
 | `chart_process.py` | churn per pull request, build time per pull request |

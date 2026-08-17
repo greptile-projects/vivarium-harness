@@ -89,6 +89,14 @@ distribution was mostly an artifact of the order the patterns happened to be
 written in. `data/findings.csv` carries every finding's severity and title, which
 is the honest raw material for classifying by hand or by a better method.
 
+## The ladder
+
+| Metric | Definition |
+|---|---|
+| **Deliverable words** | words in the `## Deliverable` section of `ticket.md` — the part naming what must exist when the subticket is done. Both arms receive the identical ticket, so this is an input to the experiment, not an outcome. |
+| **Whole-ticket words** | words in the entire `ticket.md`, Objective + Deliverable + Framing question. In `data/ladder-deliverable-length.csv`. |
+| **Fit** | `y = a − b·e^(−c·PR)`, least squares, gridded on `c`. Chosen over a polynomial because it can express a ceiling; a quadratic scores marginally higher R² but turns over and predicts negative words shortly past the observed range, and a log rises without bound. Coefficients and R² are appended to the chart's CSV. |
+
 ## Repository measurements
 
 Taken with `git grep -I -c ''` at each state on main's **first-parent** timeline

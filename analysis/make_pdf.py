@@ -37,6 +37,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, Num
 import chart_codebase
 import chart_docs
 import chart_findings
+import chart_ladder
 import chart_process
 import chart_review
 import chart_scores
@@ -56,7 +57,7 @@ HEADING = 13
 POINTS = 72.0               # PDF user-space units per inch
 IMAGE_DPI = 200             # resolution of the chart bitmaps placed on the pages
 
-MODULES = [chart_scores, chart_review, chart_findings, chart_codebase, chart_docs, chart_process]
+MODULES = [chart_scores, chart_review, chart_findings, chart_ladder, chart_codebase, chart_docs, chart_process]
 
 # Reading order: the result first, then what it is made of, then the codebase it
 # happened in, then the process cost. A reader who stops after the first two
@@ -64,6 +65,7 @@ MODULES = [chart_scores, chart_review, chart_findings, chart_codebase, chart_doc
 SECTIONS = [
     ("The result", ["scores", "score-distribution", "review-rounds"]),
     ("What the reviewer found", ["findings-per-kloc"]),
+    ("What the ladder asked for", ["ladder-deliverable-length"]),
     ("The codebases", ["codebase-size", "biggest-files", "code-concentration"]),
     ("What they wrote down", ["markdown-growth", "agents-md-growth"]),
     ("What it cost", ["churn", "build-time"]),
