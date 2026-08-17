@@ -87,9 +87,14 @@ def scores_chart(ds: viv.Dataset) -> viz.Chart:
 
         viz.style_axes(bottom, theme, y_grid=False)
         viz.bars(bottom, x, lift, theme.tuatara, width=0.46)
-        viz.value_labels(bottom, theme, x, lift, lambda value: f"+{value:.2f}")
+        viz.value_labels(bottom, theme, x, lift, lambda value: f"{value:+.2f}")
+        # Lift can be negative — a settled score below the first review's — so
+        # the limits come from both extrema and always keep zero in view.
         highest = max((value for value in lift if value is not None), default=1.0)
-        bottom.set_ylim(0, highest * 1.34)
+        lowest = min((value for value in lift if value is not None), default=0.0)
+        low = min(lowest, 0.0) * 1.34
+        high = max(highest, 0.0) * 1.34
+        bottom.set_ylim(low, high if high > low else low + 1.34)
         bottom.set_yticks([])
         bottom.set_xlim(-0.35, len(blocks) - 0.65)
         bottom.set_xticks(x)

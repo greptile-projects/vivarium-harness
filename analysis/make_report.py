@@ -53,6 +53,19 @@ MODULES = [
 ]
 
 
+def defused(cell: object) -> object:
+    """Neutralize spreadsheet formula injection in a CSV cell.
+
+    Titles come from the agents and the reviewer, so a text cell can open with
+    ``=``, ``+``, ``-``, or ``@`` — which spreadsheet imports evaluate as a
+    formula. A leading apostrophe makes the cell inert text; everything that is
+    not a string (numbers, ``None``) passes through untouched.
+    """
+    if isinstance(cell, str) and cell.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + cell
+    return cell
+
+
 def write_pull_request_csv(ds: viv.Dataset, path: Path) -> None:
     """One row per pull request, both arms joined — the raw table everything else
     is aggregated from."""
@@ -75,21 +88,20 @@ def write_pull_request_csv(ds: viv.Dataset, path: Path) -> None:
         )
         for row in ds.rows:
             tuatara, komodo = row.arms["tuatara"], row.arms["komodo"]
-            writer.writerow(
-                [
-                    row.pr, row.subticket, row.milestone, row.title, row.run_status,
-                    row.t_first, row.t_final,
-                    row.t_final_recorded, row.t_final_current_at,
-                    row.t_rounds,
-                    len(row.t_first_findings), len(row.t_all_findings), int(row.t_timed_out),
-                    row.k_score, len(row.k_findings),
-                    tuatara.additions, tuatara.deletions, tuatara.changed_files,
-                    komodo.additions, komodo.deletions, komodo.changed_files,
-                    tuatara.attempts, komodo.attempts,
-                    tuatara.build_ms, komodo.build_ms,
-                    tuatara.land_ms, komodo.land_ms,
-                ]
-            )
+            cells = [
+                row.pr, row.subticket, row.milestone, row.title, row.run_status,
+                row.t_first, row.t_final,
+                row.t_final_recorded, row.t_final_current_at,
+                row.t_rounds,
+                len(row.t_first_findings), len(row.t_all_findings), int(row.t_timed_out),
+                row.k_score, len(row.k_findings),
+                tuatara.additions, tuatara.deletions, tuatara.changed_files,
+                komodo.additions, komodo.deletions, komodo.changed_files,
+                tuatara.attempts, komodo.attempts,
+                tuatara.build_ms, komodo.build_ms,
+                tuatara.land_ms, komodo.land_ms,
+            ]
+            writer.writerow([defused(cell) for cell in cells])
 
 
 def write_findings_csv(ds: viv.Dataset, path: Path) -> None:
@@ -99,11 +111,11 @@ def write_findings_csv(ds: viv.Dataset, path: Path) -> None:
         writer.writerow(["pr", "arm", "scope", "severity", "title"])
         for row in ds.rows:
             for finding in row.t_first_findings:
-                writer.writerow([row.pr, "tuatara", "first-review", finding.severity, finding.title])
+                writer.writerow([row.pr, "tuatara", "first-review", finding.severity, defused(finding.title)])
             for finding in row.t_all_findings:
-                writer.writerow([row.pr, "tuatara", "all-rounds", finding.severity, finding.title])
+                writer.writerow([row.pr, "tuatara", "all-rounds", finding.severity, defused(finding.title)])
             for finding in row.k_findings:
-                writer.writerow([row.pr, "komodo", "mirror-review", finding.severity, finding.title])
+                writer.writerow([row.pr, "komodo", "mirror-review", finding.severity, defused(finding.title)])
 
 
 def open_file(path: Path, log) -> None:

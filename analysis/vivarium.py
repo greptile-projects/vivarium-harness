@@ -238,7 +238,11 @@ class PullRequest:
     deliverable_words: int | None = None
     ticket_words: int | None = None
 
-    # Komodo, reviewed only in the mirror it cannot see.
+    # Komodo, reviewed only in the mirror it cannot see. ``k_pr`` is Komodo's
+    # own pull request number — usually equal to ``pr``, but the two can drift,
+    # and the mirror snapshots *Komodo's* repository, so its provenance names
+    # this number and the mirror join must use it, never ``pr``.
+    k_pr: int = 0
     k_score: int | None = None
     k_findings: list[Finding] = field(default_factory=list)
     k_mirrored: bool = False
@@ -366,6 +370,7 @@ def load_state(state_backup: Path) -> StateSummary:
             rows.append(
                 PullRequest(
                     pr=int(numbers["tuatara"]),
+                    k_pr=int(numbers["komodo"]),
                     subticket=subticket.get("number") or subticket_dir.name,
                     milestone=int(subticket.get("milestone") or _numeric_key(rung.name)[0]),
                     title=subticket.get("title") or "",
@@ -388,7 +393,17 @@ def load_state(state_backup: Path) -> StateSummary:
             )
 
     rows.sort(key=lambda row: row.pr)
-    by_pr = {row.pr: row for row in rows}
+
+    # The mirror snapshots Komodo's repository, so its provenance names Komodo
+    # pull request numbers; joining through ``pr`` (Tuatara's number) would hand
+    # a mismatched pair's mirror review to whichever *other* subticket's Tuatara
+    # PR shares the number. A Komodo number claimed by more than one row is
+    # ambiguous, and an ambiguous join is dropped rather than guessed: a missing
+    # mirror is a visible caveat, a mirror attached to the wrong code is a
+    # silently corrupted comparison.
+    by_komodo_pr: dict[int, PullRequest | None] = {}
+    for row in rows:
+        by_komodo_pr[row.k_pr] = None if row.k_pr in by_komodo_pr else row
 
     mirror_root = results / "mirror"
     if mirror_root.is_dir():
@@ -400,7 +415,7 @@ def load_state(state_backup: Path) -> StateSummary:
             # The mirror PR number tracks the source PR number, but the provenance
             # field is the contract; fall back only when it is absent.
             pr = (raw.get("source") or {}).get("pullRequest") or (raw.get("pullRequest") or {}).get("number")
-            row = by_pr.get(pr)
+            row = by_komodo_pr.get(pr)
             if row is None:
                 continue
             conversation = raw.get("conversation") or []
