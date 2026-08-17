@@ -37,6 +37,7 @@ import chart_findings
 import chart_ladder
 import chart_process
 import chart_review
+import chart_review_time
 import chart_scores
 import make_pdf
 import vivarium as viv
@@ -45,6 +46,7 @@ import viz
 MODULES = [
     chart_scores,
     chart_review,
+    chart_review_time,
     chart_findings,
     chart_ladder,
     chart_codebase,

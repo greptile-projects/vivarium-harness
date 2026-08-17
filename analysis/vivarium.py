@@ -130,6 +130,20 @@ def score_of(notes: Iterable[dict]) -> int | None:
     return None
 
 
+def first_review_ms(start: str | None, notes: Iterable[dict]) -> int | None:
+    """Milliseconds from ``start`` to the reviewer's first comment in ``notes``.
+
+    ``createdAt`` rather than ``updatedAt``: Greptile edits its comments in
+    place, so only the creation stamp says when the review first arrived.
+    """
+    stamps = [
+        note.get("createdAt")
+        for note in notes
+        if note.get("createdAt") and "greptile" in (note.get("author") or "")
+    ]
+    return _millis_between(start, min(stamps)) if stamps else None
+
+
 def _strip_markup(text: str) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = (
@@ -230,6 +244,9 @@ class PullRequest:
     t_round_scores: list[int | None] = field(default_factory=list)
     t_rounds: int = 0
     t_timed_out: bool = False
+    # From the review request (the landing's start) to Greptile's first comment
+    # on the first round — how long the reviewer took on the first draft.
+    t_first_review_ms: int | None = None
     t_first_findings: list[Finding] = field(default_factory=list)
     t_all_findings: list[Finding] = field(default_factory=list)
 
@@ -244,6 +261,10 @@ class PullRequest:
     # this number and the mirror join must use it, never ``pr``.
     k_pr: int = 0
     k_score: int | None = None
+    # From the mirror pull request's creation to Greptile's first comment on it
+    # — the same measurement as ``t_first_review_ms``, taken on the other arm's
+    # only draft.
+    k_review_ms: int | None = None
     k_findings: list[Finding] = field(default_factory=list)
     k_mirrored: bool = False
 
@@ -385,6 +406,9 @@ def load_state(state_backup: Path) -> StateSummary:
                     t_round_scores=round_scores,
                     t_rounds=len(rounds),
                     t_timed_out=any(r.get("timedOut") for r in rounds),
+                    t_first_review_ms=first_review_ms(
+                        landing.get("startedAt"), (rounds[0].get("found") or []) if rounds else []
+                    ),
                     t_first_findings=extract_findings((rounds[0].get("found") or []) if rounds else []),
                     t_all_findings=extract_findings(
                         [note for r in rounds for note in (r.get("found") or [])]
@@ -421,6 +445,7 @@ def load_state(state_backup: Path) -> StateSummary:
             conversation = raw.get("conversation") or []
             row.k_mirrored = True
             row.k_score = score_of(conversation)
+            row.k_review_ms = first_review_ms((raw.get("pullRequest") or {}).get("createdAt"), conversation)
             row.k_findings = extract_findings(conversation)
 
     return StateSummary(

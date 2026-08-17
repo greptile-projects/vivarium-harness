@@ -30,6 +30,7 @@ reason a trajectory exists at all.
 | **Tuatara final (recorded round)** | the last round that carried a score *before* the merge — a snapshot taken mid-exchange. Kept in `data/pull-requests.csv` as `tuatara_final_recorded_round`, and used as the fallback and under `--no-gh`. |
 | **Review lift** | `final − first`, per pull request or per block. It is the review's effect *inside* one pull request. |
 | **Komodo** | the score on Komodo's merged state, from the private mirror. One review, no rounds, and the Komodo agent never sees it. |
+| **First-draft review time** | minutes from the moment the pull request became reviewable to Greptile's first comment on it — the landing's start for Tuatara, the mirror pull request's creation for Komodo. Comment **creation** timestamps, never edits: Greptile edits comments in place, so only `createdAt` says when the review arrived. Tuatara's later rounds are excluded; the first draft is the only state both arms present for review. |
 
 A pull request whose review produced no score is **left out of its block**, never
 counted as zero. Those pull requests are listed in the report.
