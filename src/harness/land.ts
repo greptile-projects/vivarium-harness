@@ -102,7 +102,7 @@ export function reviewerSignedOff(found: ReviewNote[]): boolean {
 }
 
 const GREPTILE_SUMMARY = /<h3>\s*Greptile Summary\s*<\/h3>/i;
-const GREPTILE_CONFIDENCE = /Confidence Score:\s*([1-5])\s*\/\s*5/i;
+const GREPTILE_CONFIDENCE = /Confidence Score:\s*([0-5])\s*\/\s*5/i;
 
 // Read the current score from the newest revision of Greptile's editable
 // summary. The conversation is ordered by comment creation, not edit time, so

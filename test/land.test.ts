@@ -804,9 +804,9 @@ describe("the rounds after the first", () => {
     expect(record.status).toBe("merged");
   });
 
-  it("requests another pass instead of settling below 5/5", async () => {
+  it("requests another pass instead of settling at 0/5", async () => {
     const low = summary(
-      2,
+      0,
       "2026-07-24T00:00:01Z",
       "the focused checks pass but confidence remains low",
     );
@@ -838,7 +838,7 @@ describe("the rounds after the first", () => {
     expect(prompts).toHaveLength(2);
     expect(record.reviewRounds).toHaveLength(2);
     expect(record.reviewRounds.map((round) => round.confidenceScore)).toEqual([
-      2, 5,
+      0, 5,
     ]);
     expect(record.reviewRounds[0]?.settled).toBeUndefined();
     expect(record.reviewRounds[1]?.settled).toBe(true);
