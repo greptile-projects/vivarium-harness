@@ -17,10 +17,13 @@ affect.
 
 from __future__ import annotations
 
+import matplotlib.colors as mcolors
+
 import vivarium as viv
 import viz
 
 TOP_FILES = 10
+GROWTH_FILES = 5
 PATH_WIDTH = 42
 
 
@@ -215,7 +218,122 @@ def concentration_chart(ds: viv.Dataset) -> viz.Chart | None:
     )
 
 
-CHARTS = [codebase_size_chart, biggest_files_chart, concentration_chart]
+def _blend(foreground: str, background: str, strength: float) -> tuple[float, float, float]:
+    fg = mcolors.to_rgb(foreground)
+    bg = mcolors.to_rgb(background)
+    return tuple(bg[index] + (fg[index] - bg[index]) * strength for index in range(3))
+
+
+def largest_file_growth_chart(ds: viv.Dataset, *, kind: str, label: str) -> viz.Chart | None:
+    """Trace today's largest files back through every merged repository state."""
+    if not ds.has_git:
+        return None
+
+    by_file = "code_by_file" if kind == "code" else "md_by_file"
+    selected: dict[str, list[str]] = {}
+    histories: dict[str, dict[str, list[int]]] = {}
+    rows: list[list[object]] = []
+    for arm in viv.ARMS:
+        timeline = ds.repos[arm]
+        latest = getattr(timeline.snapshots[-1], by_file)
+        paths = [path for path, _ in sorted(latest.items(), key=lambda item: -item[1])[:GROWTH_FILES]]
+        selected[arm] = paths
+        histories[arm] = {
+            path: [getattr(snapshot, by_file).get(path, 0) for snapshot in timeline.snapshots]
+            for path in paths
+        }
+        for path in paths:
+            rows.extend(
+                [arm, snapshot.pr, path, lines]
+                for snapshot, lines in zip(timeline.snapshots, histories[arm][path])
+            )
+
+    last_pr = max(timeline.snapshots[-1].pr for timeline in ds.repos.values())
+    ceiling = max(lines for arm in viv.ARMS for values in histories[arm].values() for lines in values)
+    dash_styles = ["-", (0, (7, 3)), (0, (2, 2)), (0, (9, 2, 2, 2)), (0, (1, 2))]
+    strengths = [1.0, 0.84, 0.70, 0.58, 0.47]
+
+    def render(theme: viz.Theme):
+        fig, axes = viz.new_canvas(
+            theme,
+            width=10.0,
+            height=9.0,
+            title=f"How the largest {label} files grew",
+            subtitle=(
+                f"five largest {label} files in each arm at pull request {last_pr}, "
+                "traced through every merged state"
+            ),
+            rows=2,
+            row_gap=0.95,
+            right=3.35,
+            bottom=0.65,
+        )
+        for ax, arm in zip(axes, viv.ARMS):
+            timeline = ds.repos[arm]
+            xs = [snapshot.pr for snapshot in timeline.snapshots]
+            ends = []
+            viz.style_axes(ax, theme)
+            for index, path in enumerate(selected[arm]):
+                values = histories[arm][path]
+                color = _blend(theme.arm(arm), theme.surface, strengths[index])
+                ax.plot(
+                    xs,
+                    values,
+                    color=color,
+                    linewidth=viz.LINE_WIDTH,
+                    linestyle=dash_styles[index],
+                    solid_capstyle="round",
+                    solid_joinstyle="round",
+                )
+                ends.append((float(values[-1]), f"{values[-1]:,.0f}", shorten_path(path, 27)))
+            ax.set_xlim(1, last_pr)
+            ax.set_ylim(0, ceiling * 1.04)
+            ax.yaxis.set_major_formatter(
+                lambda value, _: f"{value / 1000:.0f}k" if value >= 1000 else f"{value:.0f}"
+            )
+            ax.annotate(
+                viv.ARM_LABEL[arm],
+                xy=(0, 1),
+                xycoords="axes fraction",
+                xytext=(0, 10),
+                textcoords="offset points",
+                fontsize=11.5,
+                fontweight="bold",
+                color=theme.ink2,
+            )
+            viz.end_labels(ax, theme, ends, x=1.0)
+        axes[-1].set_xlabel("Pull request", fontsize=11, color=theme.ink2, labelpad=10)
+        return fig
+
+    return viz.Chart(
+        slug=f"largest-{kind}-files-growth",
+        title=f"How the largest {label} files grew",
+        subtitle=f"five largest current {label} files in each arm",
+        note=(
+            f"Files are selected by their size at pull request {last_pr}, then measured at every earlier merged "
+            "state. The panels share one y-scale; a zero means the file did not exist yet."
+        ),
+        columns=["arm", "pr", "path", "lines"],
+        rows=rows,
+        render=render,
+    )
+
+
+def largest_markdown_file_growth_chart(ds: viv.Dataset) -> viz.Chart | None:
+    return largest_file_growth_chart(ds, kind="markdown", label="Markdown")
+
+
+def largest_code_file_growth_chart(ds: viv.Dataset) -> viz.Chart | None:
+    return largest_file_growth_chart(ds, kind="code", label="code")
+
+
+CHARTS = [
+    codebase_size_chart,
+    biggest_files_chart,
+    largest_markdown_file_growth_chart,
+    largest_code_file_growth_chart,
+    concentration_chart,
+]
 
 if __name__ == "__main__":
     viz.standalone_main(__doc__ or "", CHARTS)

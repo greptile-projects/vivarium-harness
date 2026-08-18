@@ -363,6 +363,38 @@ def bars(
         ax.add_patch(PathPatch(path, facecolor=color, edgecolor="none", zorder=zorder))
 
 
+def category_ticks(ax: plt.Axes, labels: Sequence[str], *, min_gap_points: float = 8.0) -> None:
+    """One tick per category, with labels thinned until none collide.
+
+    Thirteen block-range labels no longer fit this page width side by side, and a
+    label that touches its neighbour reads as one string of digits. Measured on
+    the rendered text rather than estimated: the smallest stride at which every
+    kept pair clears ``min_gap_points`` wins, and the dropped labels leave their
+    ticks in place so the kept ones stay under their own blocks. Thinning, not
+    rotation or a smaller font: the axis stays horizontal and legible, and every
+    block's label is still in the chart's CSV.
+    """
+    x = list(range(len(labels)))
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    widths = [text.get_window_extent(renderer).width for text in ax.get_xticklabels()]
+    centres = [ax.transData.transform((value, 0))[0] for value in x]
+    gap = min_gap_points * fig.dpi / 72
+    stride = 1
+    while stride < len(labels):
+        kept = list(range(0, len(labels), stride))
+        if all(
+            (centres[b] - widths[b] / 2) - (centres[a] + widths[a] / 2) >= gap
+            for a, b in zip(kept, kept[1:])
+        ):
+            break
+        stride += 1
+    ax.set_xticklabels([label if index % stride == 0 else "" for index, label in enumerate(labels)])
+
+
 def end_labels(
     ax: plt.Axes,
     theme: Theme,
@@ -644,8 +676,7 @@ def line_over_blocks(
         line(ax, x, values, color, theme, dashed=dashed)
     ax.set_ylim(bottom=0)
     ax.set_xlim(-0.35, len(labels) - 0.65)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
+    category_ticks(ax, labels)
     ax.yaxis.set_major_formatter(lambda value, _: y_fmt(value))
     ax.set_xlabel(x_title, fontsize=11, color=theme.ink2, labelpad=10)
 
@@ -709,8 +740,7 @@ def grouped_columns(
     highest = max((value for _, _, values in series for value in values if value is not None), default=1.0)
     ax.set_ylim(0, highest * (1.18 if value_fmt else 1.06))
     ax.set_xlim(-0.6, len(labels) - 0.4)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
+    category_ticks(ax, labels)
     ax.yaxis.set_major_formatter(lambda value, _: y_fmt(value))
     if x_title:
         ax.set_xlabel(x_title, fontsize=11, color=theme.ink2, labelpad=10)

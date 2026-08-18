@@ -568,7 +568,7 @@ def fetch_current_scores(
 # repository history
 # --------------------------------------------------------------------------
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 # Generated, not written. A 110k-line lockfile would be the loudest thing in
 # every size chart and would say nothing about either arm.
@@ -669,6 +669,7 @@ class Snapshot:
     files: int
     code_files: int
     md_files: int
+    code_by_file: dict[str, int]
     md_by_file: dict[str, int]
     largest_code: int
     top10_share: float
@@ -687,6 +688,7 @@ class Timeline:
 def _summarise(sha: str, pr: int, ts: int, counts: dict[str, int]) -> Snapshot:
     totals = dict(total=0, code=0, test=0, markdown=0, config=0, other=0)
     files = code_files = md_files = 0
+    code_by_file: dict[str, int] = {}
     md_by_file: dict[str, int] = {}
     code_sizes: list[int] = []
     for path, lines in counts.items():
@@ -699,6 +701,7 @@ def _summarise(sha: str, pr: int, ts: int, counts: dict[str, int]) -> Snapshot:
             totals["code"] += lines
             code_files += 1
             code_sizes.append(lines)
+            code_by_file[path] = lines
             if _TEST.search(path):
                 totals["test"] += lines
         elif kind == "markdown":
@@ -718,6 +721,7 @@ def _summarise(sha: str, pr: int, ts: int, counts: dict[str, int]) -> Snapshot:
         files=files,
         code_files=code_files,
         md_files=md_files,
+        code_by_file=code_by_file,
         md_by_file=md_by_file,
         largest_code=code_sizes[0] if code_sizes else 0,
         top10_share=(top_ten / totals["code"]) if totals["code"] else 0.0,

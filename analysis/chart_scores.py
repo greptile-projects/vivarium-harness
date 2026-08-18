@@ -97,8 +97,7 @@ def scores_chart(ds: viv.Dataset) -> viz.Chart:
         bottom.set_ylim(low, high if high > low else low + 1.34)
         bottom.set_yticks([])
         bottom.set_xlim(-0.35, len(blocks) - 0.65)
-        bottom.set_xticks(x)
-        bottom.set_xticklabels(labels)
+        viz.category_ticks(bottom, labels)
         bottom.set_xlabel("Pull request block", fontsize=11, color=theme.ink2, labelpad=10)
         bottom.annotate(
             "review lift within a pull request (final − first)",
