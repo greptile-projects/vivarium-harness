@@ -25,6 +25,7 @@ import {
   tabsFor,
   type Tab,
 } from "./tabs.js";
+import type { HarnessUpdateResult } from "../../update.js";
 
 // Rows the chrome costs, counted against the terminal's height: the top pad,
 // the title and subtitle with its trailing blank, the tab strip, the rule with
@@ -82,6 +83,7 @@ export function LiveApp({
   model,
   resultsDir,
   onStopAfterSubticket,
+  onUpdateAndRestart,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
@@ -89,6 +91,7 @@ export function LiveApp({
   model: LiveModel;
   resultsDir?: string;
   onStopAfterSubticket?: () => boolean;
+  onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -98,7 +101,12 @@ export function LiveApp({
   // question instead of unmounting. Quitting stops the run, so the second key
   // is the whole safety.
   const [confirming, setConfirming] = useState(false);
-  const [stopScheduled, setStopScheduled] = useState(false);
+  const [scheduledAction, setScheduledAction] = useState<
+    "stop" | "restart" | undefined
+  >();
+  const [updatePopup, setUpdatePopup] = useState<
+    { state: "pulling" | "done" | "failed"; message: string } | undefined
+  >();
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
@@ -142,19 +150,48 @@ export function LiveApp({
 
   useInput(
     (input, key) => {
+      if (updatePopup) {
+        if (updatePopup.state !== "pulling") setUpdatePopup(undefined);
+        return;
+      }
       // The question owns every key while it is up: navigating away from it
       // would leave a run half-quit, and a stray keystroke must not be the
       // thing that answers it. `S` is the climb-only graceful path: keep the
       // view up, finish the subticket in flight, and let the loop return at
-      // its next step boundary.
+      // its next step boundary. `R` pulls immediately, then uses that same
+      // boundary to restart under the newly checked-out harness.
       if (confirming) {
         if (input === "y" || input === "Y") exit();
         else if ((input === "s" || input === "S") && onStopAfterSubticket) {
           const scheduled = onStopAfterSubticket();
-          if (scheduled) setStopScheduled(true);
+          if (scheduled) setScheduledAction("stop");
           setConfirming(false);
-        }
-        else setConfirming(false);
+        } else if (
+          (input === "r" || input === "R") &&
+          onUpdateAndRestart
+        ) {
+          setConfirming(false);
+          setUpdatePopup({
+            state: "pulling",
+            message: "pulling harness update…",
+          });
+          void onUpdateAndRestart()
+            .then((result) => {
+              setUpdatePopup({
+                state: result.ok ? "done" : "failed",
+                message: result.message,
+              });
+              setScheduledAction(result.ok ? "restart" : "stop");
+            })
+            .catch((error) => {
+              setUpdatePopup({
+                state: "failed",
+                message: `harness pull failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              });
+            });
+        } else setConfirming(false);
         return;
       }
       if (key.tab) {
@@ -271,7 +308,27 @@ export function LiveApp({
       </Box>
 
       <Box flexDirection="column" flexGrow={1}>
-        {pane}
+        {updatePopup ? (
+          <Box
+            borderStyle="round"
+            borderColor={
+              updatePopup.state === "failed"
+                ? "red"
+                : updatePopup.state === "done"
+                  ? "green"
+                  : "yellow"
+            }
+            paddingX={2}
+            alignSelf="center"
+            marginTop={Math.max(0, Math.floor(body / 3))}
+          >
+            <Text bold wrap="truncate-end">
+              {updatePopup.message}
+            </Text>
+          </Box>
+        ) : (
+          pane
+        )}
       </Box>
 
       {/* One row, always. The path is the first thing to go when the terminal
@@ -281,13 +338,19 @@ export function LiveApp({
       <Box>
         {confirming ? (
           <Text color="yellow" bold wrap="truncate-end">
-            {confirmQuitPrompt(arms, onStopAfterSubticket !== undefined)}
+            {confirmQuitPrompt(
+              arms,
+              onStopAfterSubticket !== undefined,
+              onUpdateAndRestart !== undefined,
+            )}
           </Text>
         ) : (
           <>
             <Text dimColor wrap="truncate-end">
-              {stopScheduled
-                ? "stop scheduled after current subticket · q quit now"
+              {scheduledAction === "restart"
+                ? "updated · restart scheduled after current task · q quit now"
+                : scheduledAction === "stop"
+                  ? "stop scheduled after current task · q quit now"
                 : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
             </Text>
             <Box flexGrow={1} />
@@ -325,6 +388,7 @@ export function mountLive(
     resultsDir?: string;
     onExit?: () => void;
     onStopAfterSubticket?: () => boolean;
+    onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
   },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
@@ -333,6 +397,7 @@ export function mountLive(
       model={model}
       resultsDir={options.resultsDir}
       onStopAfterSubticket={options.onStopAfterSubticket}
+      onUpdateAndRestart={options.onUpdateAndRestart}
     />,
     { exitOnCtrlC: true },
   );

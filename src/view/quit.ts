@@ -42,11 +42,14 @@ function describe(running: ArmState[]): { count: string; names: string } {
 export function confirmQuitPrompt(
   arms: ArmState[],
   canStopAfterSubticket = false,
+  canUpdateAndRestart = false,
 ): string {
   const running = stillRunning(arms);
   const { count, names } = describe(running);
   return `stop ${count} (${names}) and quit?  y / n${
-    canStopAfterSubticket ? " / S after subticket" : ""
+    canStopAfterSubticket ? " / S after task" : ""
+  }${
+    canUpdateAndRestart ? " / R pull + restart after task" : ""
   }`;
 }
 

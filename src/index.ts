@@ -6,6 +6,7 @@ import {
   validateConfig,
 } from "./harness/config.js";
 import { runGregLive } from "./climb.js";
+import { runReplacementHarness } from "./update.js";
 
 // The single entrypoint, and it runs the experiment itself: Greg plans the
 // next rung onto the ladder and the two arms build its subtickets, on and on.
@@ -29,10 +30,18 @@ async function main(): Promise<void> {
     // is created up front, so a run that never starts leaves nothing behind.
     const logs = `${base.resultsDir}/rung-<NN>/run/<N.M>/<arm>/progress.log`;
 
-    const subtickets = await runGregLive(base, planOnly, { useTui });
+    const { subtickets, restartRequested } = await runGregLive(base, planOnly, {
+      useTui,
+    });
     const milestones = new Set(
       subtickets.map((subticket) => subticket.milestone),
     ).size;
+
+    if (restartRequested) {
+      process.stdout.write("\nRestarting with the updated harness…\n");
+      process.exitCode = await runReplacementHarness();
+      return;
+    }
 
     if (json) {
       process.stdout.write(

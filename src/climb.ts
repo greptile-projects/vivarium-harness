@@ -27,6 +27,7 @@ import {
   plannerLogPath,
   readClimbState,
 } from "./harness/state.js";
+import { pullHarnessUpdate } from "./update.js";
 
 // What the entrypoint needs for its closing summary — common to built and
 // planned.
@@ -34,6 +35,11 @@ export interface GregSubticketSummary {
   number: string;
   milestone: number;
   title: string;
+}
+
+export interface GregLiveResult {
+  subtickets: GregSubticketSummary[];
+  restartRequested: boolean;
 }
 
 // Wire one Greg run (the build loop, or write-ahead planning) to a live view:
@@ -46,7 +52,7 @@ export async function runGregLive(
   base: HarnessConfig,
   writeAhead: boolean,
   options: { useTui: boolean },
-): Promise<GregSubticketSummary[]> {
+): Promise<GregLiveResult> {
   const { useTui } = options;
   const model = new LiveModel("greg tile", "starting…");
 
@@ -119,6 +125,8 @@ export async function runGregLive(
   // nothing to finish.
   let currentStep: string | undefined;
   let stopRequested = false;
+  let restartRequested = false;
+  let updatePromise: ReturnType<typeof pullHarnessUpdate> | undefined;
 
   // The planner's own Codex session, surfaced as a "greg" tab.
   const plannerRunner: AttemptRunner = (params) =>
@@ -214,6 +222,35 @@ export async function runGregLive(
           sinks.note(message);
           return true;
         },
+        onUpdateAndRestart: async () => {
+          if (updatePromise || currentStep === undefined) {
+            return {
+              ok: false,
+              message: updatePromise
+                ? "harness update is already in progress"
+                : "no task is running yet",
+            };
+          }
+          // Reserve the boundary before starting the pull. If the current task
+          // ends unusually quickly, the loop waits here instead of launching
+          // another task under the old process while the update is in flight.
+          stopRequested = true;
+          const message = `pulling harness update; restart requested after ${currentStep}`;
+          model.note(message);
+          sinks.note(message);
+          updatePromise = pullHarnessUpdate();
+          const pulled = await updatePromise;
+          restartRequested = pulled.ok;
+          const result = pulled.ok
+            ? pulled
+            : {
+                ...pulled,
+                message: `${pulled.message} · stopping after current task`,
+              };
+          model.note(result.message);
+          sinks.note(result.message);
+          return result;
+        },
       })
     : undefined;
 
@@ -222,8 +259,9 @@ export async function runGregLive(
     const subtickets = writeAhead
       ? await planAhead(base, Infinity, deps)
       : await runGreg(base, Infinity, deps);
+    await updatePromise;
     halted = false;
-    return subtickets;
+    return { subtickets, restartRequested };
   } finally {
     // Hand the terminal back before the entrypoint prints its summary (or the
     // error) — anything written while the alternate screen is up is lost.

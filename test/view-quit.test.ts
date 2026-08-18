@@ -128,8 +128,18 @@ describe("needsQuitConfirm", () => {
   it("offers a subticket-boundary stop only when the climb supports it", () => {
     const arms = [arm("tuatara", "working")];
 
-    expect(confirmQuitPrompt(arms)).not.toContain("S after subticket");
-    expect(confirmQuitPrompt(arms, true)).toContain("y / n / S after subticket");
+    expect(confirmQuitPrompt(arms)).not.toContain("S after task");
+    expect(confirmQuitPrompt(arms, true)).toContain("y / n / S after task");
+  });
+
+  it("offers an immediate pull with a boundary restart when supported", () => {
+    const prompt = confirmQuitPrompt(
+      [arm("tuatara", "working")],
+      true,
+      true,
+    );
+
+    expect(prompt).toContain("R pull + restart after task");
   });
 });
 

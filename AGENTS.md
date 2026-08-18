@@ -70,7 +70,9 @@ bun start -- --help              # the full option + env reference
   collapse into the shared run duration. `q` quits — and quitting **stops the
   run**. The in-view confirmation offers `y` to stop immediately, `n` to keep
   watching, and, during a climb, `S` to finish the subticket in flight (or the
-  milestone being planned) and stop cleanly before the next step — the merge
+  milestone being planned) and stop cleanly before the next step, or `R` to
+  pull a harness hotfix immediately, show the result in the TUI, and restart
+  the process at that same boundary — the merge
   barrier makes that boundary safe, and it arrives in minutes rather than the
   hours a whole rung can take; once everything has settled the view is a report and closes
   without asking. Ctrl-C stops the run without asking — it has one meaning
