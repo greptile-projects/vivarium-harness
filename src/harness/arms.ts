@@ -10,6 +10,7 @@
 export type ArmPhase =
   | "preparing"
   | "building"
+  | "landing"
   | "waiting for review"
   | "answering review"
   // Done with its own work, idle at the merge barrier until the other arm is

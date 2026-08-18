@@ -394,9 +394,19 @@ export async function runHarness(
           onEvent,
           signal,
           environment?.captureTranscript,
-        );
+        ).then((result) => {
+          // Each arm reaches the build barrier independently. Mark an early
+          // finisher immediately so its displayed duration does not charge it
+          // for a slower peer's remaining build time.
+          phase(arm.name, "waiting on peer");
+          return result;
+        });
       }),
     );
+
+    // Both builds have reached the barrier, so their clocks resume together
+    // for pull-request discovery and the reversible landing phase.
+    for (const arm of runtimeConfig.arms) phase(arm.name, "landing");
 
     // BARRIER. Landing is the only irreversible thing the harness does, and it
     // is per-arm, so without a gate here one arm can permanently merge a rung

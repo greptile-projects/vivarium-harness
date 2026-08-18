@@ -249,6 +249,8 @@ describe("runHarness landing", () => {
     expect(tuatara).toEqual([
       "preparing",
       "building",
+      "waiting on peer",
+      "landing",
       "waiting for review",
       "answering review",
       "waiting on peer",
@@ -259,7 +261,69 @@ describe("runHarness landing", () => {
     // which is most of the subticket, and used to read as "building".
     expect(
       phases.filter(([arm]) => arm === "komodo").map(([, phase]) => phase),
-    ).toEqual(["preparing", "building", "waiting on peer", "merging"]);
+    ).toEqual([
+      "preparing",
+      "building",
+      "waiting on peer",
+      "landing",
+      "waiting on peer",
+      "merging",
+    ]);
+  });
+
+  it("stops an early finisher's clock at the build barrier", async () => {
+    const config = await makeConfig();
+    const state = { synced: [] as string[], merged: [] as string[] };
+    const phases: Array<[string, string]> = [];
+    let releaseTuatara!: () => void;
+    const tuataraBuild = new Promise<void>((resolve) => {
+      releaseTuatara = resolve;
+    });
+    let komodoReachedBarrier!: () => void;
+    const komodoBarrier = new Promise<void>((resolve) => {
+      komodoReachedBarrier = resolve;
+    });
+
+    const run = runHarness(
+      config,
+      {
+        onArmPhase: (arm, phase) => {
+          phases.push([arm, phase]);
+          if (arm === "komodo" && phase === "waiting on peer") {
+            komodoReachedBarrier();
+          }
+        },
+      },
+      undefined,
+      {
+        runner: async (params) => {
+          if (params.arm === "tuatara") await tuataraBuild;
+          return {
+            isError: false,
+            output: `done\n\nPR: ${urlFor(params.arm)}`,
+            threadId: `thread-${params.arm}`,
+            timedOut: false,
+          };
+        },
+        github: fakeGitHub(state, { withReview: true }),
+        wait: async () => {},
+        now: () => 0,
+      },
+    );
+
+    await komodoBarrier;
+    expect(phases).toContainEqual(["komodo", "waiting on peer"]);
+    expect(phases).not.toContainEqual(["komodo", "landing"]);
+
+    releaseTuatara();
+    await run;
+
+    const komodo = phases
+      .filter(([arm]) => arm === "komodo")
+      .map(([, phase]) => phase);
+    expect(komodo.indexOf("waiting on peer")).toBeLessThan(
+      komodo.indexOf("landing"),
+    );
   });
 
   it("holds both arms back when one of them fails to build", async () => {
