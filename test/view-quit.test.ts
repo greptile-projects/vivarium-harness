@@ -6,8 +6,10 @@ import {
   onViewClosed,
   popupKey,
   quitNotice,
+  quitNowPopup,
   stillRunning,
   stopAfterTaskPopup,
+  updateRestartPopup,
 } from "../src/view/quit.js";
 import type { ArmState } from "../src/view/store.js";
 
@@ -200,6 +202,31 @@ describe("onViewClosed", () => {
   });
 });
 
+describe("quitNowPopup", () => {
+  // Same rule as the question behind it: name the sessions, do not count them.
+  it("names the sessions it would stop", () => {
+    const popup = quitNowPopup([
+      arm("tuatara", "working"),
+      arm("komodo", "starting"),
+      arm("greg", "done"),
+    ]);
+
+    expect(popup.message).toContain("2 sessions");
+    expect(popup.message).toContain("tuatara");
+    expect(popup.message).toContain("komodo");
+    expect(popup.message).not.toContain("greg");
+  });
+});
+
+describe("updateRestartPopup", () => {
+  it("names the boundary it would restart at", () => {
+    expect(updateRestartPopup("subticket 45.6").message).toContain(
+      "subticket 45.6",
+    );
+    expect(updateRestartPopup(undefined).message).toContain("y / n");
+  });
+});
+
 describe("stopAfterTaskPopup", () => {
   it("names the step it would finish before stopping", () => {
     expect(stopAfterTaskPopup("subticket 45.6").message).toContain(
@@ -221,21 +248,28 @@ describe("stopAfterTaskPopup", () => {
 });
 
 describe("popupKey", () => {
-  // The regression this exists for: `S` used to schedule a stop on the
-  // keystroke itself, so a stray `q`/`s` pair arriving from a reattached
-  // terminal ended a climb. Only `y` may accept.
-  it("accepts a confirm on y alone", () => {
-    const popup = stopAfterTaskPopup("subticket 45.6");
+  // The regression this exists for: every answer to the quit question used to
+  // act on the keystroke itself, so a stray `q`/`s` pair arriving from a
+  // reattached terminal ended a climb. Whichever of the three was chosen, only
+  // `y` may accept.
+  const confirms = [
+    quitNowPopup([arm("tuatara", "working")]),
+    stopAfterTaskPopup("subticket 45.6"),
+    updateRestartPopup("subticket 45.6"),
+  ];
 
-    expect(popupKey(popup, "y")).toBe("accept");
-    expect(popupKey(popup, "Y")).toBe("accept");
+  it("accepts a confirm on y alone", () => {
+    for (const popup of confirms) {
+      expect(popupKey(popup, "y")).toBe("accept");
+      expect(popupKey(popup, "Y")).toBe("accept");
+    }
   });
 
   it("cancels a confirm on every other key", () => {
-    const popup = stopAfterTaskPopup("subticket 45.6");
-
-    for (const key of ["n", "s", "S", "q", "r", "", "1", "\u001b"]) {
-      expect(popupKey(popup, key)).toBe("dismiss");
+    for (const popup of confirms) {
+      for (const key of ["n", "s", "S", "q", "r", "R", "", "1", "\u001b"]) {
+        expect(popupKey(popup, key)).toBe("dismiss");
+      }
     }
   });
 

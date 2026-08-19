@@ -75,11 +75,15 @@ bun start -- --help              # the full option + env reference
   the process at that same boundary — the merge
   barrier makes that boundary safe, and it arrives in minutes rather than the
   hours a whole rung can take; once everything has settled the view is a report and closes
-  without asking. `S` and `R` both open the same box over the panes: `R` reports
-  the pull there, and `S` asks there — naming the step it would finish — with
-  only `y` scheduling the stop. A keystroke that ends a climb must not sit one
-  key behind `q`, because a `q`/`s` pair arriving from a reattached terminal is
-  indistinguishable from a human's. Ctrl-C stops the run without asking — it has
+  without asking. **Every answer that does something asks once more**, in a box
+  over the panes naming what it is about to do — `y` the sessions it would stop,
+  `S` the step it would finish first, `R` the boundary it would restart at — and
+  only a second `y` there acts. `n` is free, because putting the question away
+  costs nothing. Two stray keys can land together: a `q`/`s` pair arriving ten
+  seconds after an SSH reattach once stopped a climb nobody meant to stop, and
+  nothing in the record could say whether a human or the terminal replaying key
+  bytes had pressed it. Three, the last inside a box that named the
+  consequence, is not something a reattaching terminal produces. Ctrl-C stops the run without asking — it has
   one meaning everywhere else and does not acquire a second one here. An immediate stop
   closes each arm's open PR for its session-owned interrupted branch and
   deletes that remote branch before destroying its microVM, so retrying the
@@ -765,11 +769,13 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   `quit.ts` owns what closing the
   view means — quitting stops the run. `needsQuitConfirm`/`confirmQuitPrompt`
   drive the in-view `y / n` question while sessions are still working, and
-  `stopAfterTaskPopup`/`popupKey` own the box standing over the panes — the
-  pull's progress, or `S`'s own confirmation. Those two kinds default opposite
-  ways on purpose: a notice reports something that already happened and any key
-  dismisses it, while a confirm takes only `y`, so no stray keystroke can be the
-  thing that says yes, and
+  `quitNowPopup`/`stopAfterTaskPopup`/`updateRestartPopup`/`popupKey` own the
+  box standing over the panes — one confirmation per consequential answer, plus
+  the pull's own progress. Those two popup kinds default opposite ways on
+  purpose: a notice reports something that already happened and any key
+  dismisses it (a pull still in flight swallows keys, so its result is never
+  hidden before it arrives), while a confirm takes only `y`, so no stray
+  keystroke can be the thing that says yes, and
   `onViewClosed` is the shared hook both modes hand to `mountLive`: it decides
   from the **model**, not the keypress, so the ordinary end-of-run unmount
   stays silent and aborts nothing, while an early quit names what it stopped

@@ -102,22 +102,48 @@ export function onViewClosed(
 // the whole point of this file's second safety: a *notice* reports something
 // that already happened and any key dismisses it, while a *confirm* stands
 // between a key and its consequence and only `y` gets through.
+export type ConfirmAction = "quit-now" | "stop-after-task" | "update-restart";
+
 export type Popup =
   | { kind: "notice"; state: "pulling" | "done" | "failed"; message: string }
-  | { kind: "confirm"; action: "stop-after-task"; message: string };
+  | { kind: "confirm"; action: ConfirmAction; message: string };
 
-// `S` used to schedule the stop on the keystroke itself — one key behind `q`,
-// with no second question. That is one key too few for something that ends a
-// climb: on 2026-08-18 a `q`/`s` pair reached the view seconds after an SSH
-// reattach and stopped a run nobody meant to stop, and the log could not say
-// whether it was a human or the terminal replaying key bytes. So the graceful
-// stop now asks in the same box the pull already uses, and names the step it
-// would finish first — the run keeps going until `y`.
+// Every answer to the quit question that *does* something asks again here —
+// `y`, `S` and `R`, but not `n`, which only puts the question away. The keys
+// used to act on the keystroke itself, one key behind `q`: on 2026-08-18 a
+// `q`/`s` pair reached the view ten seconds after an SSH reattach and stopped a
+// climb nobody meant to stop, and nothing in the record could say whether a
+// human or the terminal replaying key bytes had pressed it. Two stray keys can
+// land together; three, the last of them `y` inside a box naming what it is
+// about to do, is not a thing a reattaching terminal produces.
+//
+// Each popup names its own consequence rather than sharing one "are you sure?",
+// for the reason `confirmQuitPrompt` names the arms: the human has to be able to
+// tell which of the three they are answering.
+export function quitNowPopup(arms: ArmState[]): Popup {
+  const { count, names } = describe(stillRunning(arms));
+  return {
+    kind: "confirm",
+    action: "quit-now",
+    message: `stop ${count} (${names}) now and quit?  y / n`,
+  };
+}
+
 export function stopAfterTaskPopup(step?: string): Popup {
   return {
     kind: "confirm",
     action: "stop-after-task",
     message: `finish ${step ?? "the task in flight"} and stop the climb?  y / n`,
+  };
+}
+
+export function updateRestartPopup(step?: string): Popup {
+  return {
+    kind: "confirm",
+    action: "update-restart",
+    message: `pull the harness and restart after ${
+      step ?? "the task in flight"
+    }?  y / n`,
   };
 }
 

@@ -6,7 +6,9 @@ import {
   confirmQuitPrompt,
   needsQuitConfirm,
   popupKey,
+  quitNowPopup,
   stopAfterTaskPopup,
+  updateRestartPopup,
   type Popup,
 } from "../quit.js";
 import { stripLogTimestamp, truncate } from "./format.js";
@@ -115,8 +117,8 @@ export function LiveApp({
   const [scheduledAction, setScheduledAction] = useState<
     "stop" | "restart" | undefined
   >();
-  // The box over the panes: the pull's progress, or the question `S` now asks
-  // before it schedules anything.
+  // The box over the panes: the second question every consequential answer to
+  // the quit prompt now asks, and afterwards the pull's own progress.
   const [popup, setPopup] = useState<Popup | undefined>();
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
@@ -136,6 +138,36 @@ export function LiveApp({
     const id = setTimeout(() => exit(), 400);
     return () => clearTimeout(id);
   }, [model.finished]);
+
+  // The pull, once its confirmation has been answered: the box stays up and
+  // becomes the progress notice, so the human who asked for it sees what came
+  // back rather than the panes returning as if nothing happened.
+  const startUpdate = () => {
+    if (!onUpdateAndRestart) return;
+    setPopup({
+      kind: "notice",
+      state: "pulling",
+      message: "pulling harness update…",
+    });
+    void onUpdateAndRestart()
+      .then((result) => {
+        setPopup({
+          kind: "notice",
+          state: result.ok ? "done" : "failed",
+          message: result.message,
+        });
+        setScheduledAction(result.ok ? "restart" : "stop");
+      })
+      .catch((error) => {
+        setPopup({
+          kind: "notice",
+          state: "failed",
+          message: `harness pull failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      });
+  };
 
   const tabs = tabsFor(model);
   const selected = resolveSelected(tabs, selectedId);
@@ -165,52 +197,32 @@ export function LiveApp({
         const answer = popupKey(popup, input);
         if (answer === "ignore") return;
         setPopup(undefined);
-        if (answer === "accept" && popup.kind === "confirm") {
+        if (answer !== "accept" || popup.kind !== "confirm") return;
+        if (popup.action === "quit-now") exit();
+        else if (popup.action === "stop-after-task") {
           if (onStopAfterSubticket?.()) setScheduledAction("stop");
-        }
+        } else startUpdate();
         return;
       }
       // The question owns every key while it is up: navigating away from it
       // would leave a run half-quit, and a stray keystroke must not be the
-      // thing that answers it. `S` is the climb-only graceful path: finish the
-      // subticket in flight and let the loop return at its next step boundary.
-      // It does not schedule that on this keystroke — it opens the same box the
-      // pull uses and asks, because a stop is not cheaper to trigger by
-      // accident than a quit. `R` pulls immediately, then uses that same
-      // boundary to restart under the newly checked-out harness.
+      // thing that answers it. `y` stops every session now, `S` is the
+      // climb-only graceful path (finish the subticket in flight, let the loop
+      // return at its next step boundary), and `R` pulls a harness hotfix and
+      // restarts at that same boundary. None of the three acts on this
+      // keystroke: each opens the box that names what it would do and waits for
+      // one more `y`. Only `n` — and every other key — is free, because putting
+      // the question away costs nothing.
       if (confirming) {
-        if (input === "y" || input === "Y") exit();
-        else if ((input === "s" || input === "S") && onStopAfterSubticket) {
+        if (input === "y" || input === "Y") {
+          setConfirming(false);
+          setPopup(quitNowPopup(model.live.snapshot()));
+        } else if ((input === "s" || input === "S") && onStopAfterSubticket) {
           setConfirming(false);
           setPopup(stopAfterTaskPopup(currentTask?.()));
-        } else if (
-          (input === "r" || input === "R") &&
-          onUpdateAndRestart
-        ) {
+        } else if ((input === "r" || input === "R") && onUpdateAndRestart) {
           setConfirming(false);
-          setPopup({
-            kind: "notice",
-            state: "pulling",
-            message: "pulling harness update…",
-          });
-          void onUpdateAndRestart()
-            .then((result) => {
-              setPopup({
-                kind: "notice",
-                state: result.ok ? "done" : "failed",
-                message: result.message,
-              });
-              setScheduledAction(result.ok ? "restart" : "stop");
-            })
-            .catch((error) => {
-              setPopup({
-                kind: "notice",
-                state: "failed",
-                message: `harness pull failed: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              });
-            });
+          setPopup(updateRestartPopup(currentTask?.()));
         } else setConfirming(false);
         return;
       }
