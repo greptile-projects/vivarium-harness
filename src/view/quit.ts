@@ -97,3 +97,41 @@ export function onViewClosed(
   process.stdout.write(`${notice}\n`);
   controller.abort(new Error("the live view was quit"));
 }
+
+// The box the view holds up over the panes. Two kinds, and the difference is
+// the whole point of this file's second safety: a *notice* reports something
+// that already happened and any key dismisses it, while a *confirm* stands
+// between a key and its consequence and only `y` gets through.
+export type Popup =
+  | { kind: "notice"; state: "pulling" | "done" | "failed"; message: string }
+  | { kind: "confirm"; action: "stop-after-task"; message: string };
+
+// `S` used to schedule the stop on the keystroke itself — one key behind `q`,
+// with no second question. That is one key too few for something that ends a
+// climb: on 2026-08-18 a `q`/`s` pair reached the view seconds after an SSH
+// reattach and stopped a run nobody meant to stop, and the log could not say
+// whether it was a human or the terminal replaying key bytes. So the graceful
+// stop now asks in the same box the pull already uses, and names the step it
+// would finish first — the run keeps going until `y`.
+export function stopAfterTaskPopup(step?: string): Popup {
+  return {
+    kind: "confirm",
+    action: "stop-after-task",
+    message: `finish ${step ?? "the task in flight"} and stop the climb?  y / n`,
+  };
+}
+
+// What a key means while a popup is up, and the reason the two kinds have
+// opposite defaults. A pull in flight ignores everything (there is nothing to
+// answer yet, and dismissing it would hide the result). A finished notice takes
+// any key. A confirm takes only `y`: every other key cancels, so a stray
+// keystroke can never be the thing that says yes.
+export function popupKey(
+  popup: Popup,
+  input: string,
+): "accept" | "dismiss" | "ignore" {
+  if (popup.kind === "confirm") {
+    return input === "y" || input === "Y" ? "accept" : "dismiss";
+  }
+  return popup.state === "pulling" ? "ignore" : "dismiss";
+}

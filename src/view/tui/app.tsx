@@ -2,7 +2,13 @@ import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
 import { armsForDisplay } from "../../harness/arms.js";
 import type { LiveModel } from "../model.js";
-import { confirmQuitPrompt, needsQuitConfirm } from "../quit.js";
+import {
+  confirmQuitPrompt,
+  needsQuitConfirm,
+  popupKey,
+  stopAfterTaskPopup,
+  type Popup,
+} from "../quit.js";
 import { stripLogTimestamp, truncate } from "./format.js";
 import {
   enterFullscreen,
@@ -84,6 +90,7 @@ export function LiveApp({
   resultsDir,
   onStopAfterSubticket,
   onUpdateAndRestart,
+  currentTask,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
@@ -92,6 +99,10 @@ export function LiveApp({
   resultsDir?: string;
   onStopAfterSubticket?: () => boolean;
   onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
+  // What the loop is on right now — "subticket 45.6", "planning milestone 46".
+  // Read at keypress time rather than held in state: the view asks the same
+  // question minutes apart and the step underneath it moves on.
+  currentTask?: () => string | undefined;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -104,9 +115,9 @@ export function LiveApp({
   const [scheduledAction, setScheduledAction] = useState<
     "stop" | "restart" | undefined
   >();
-  const [updatePopup, setUpdatePopup] = useState<
-    { state: "pulling" | "done" | "failed"; message: string } | undefined
-  >();
+  // The box over the panes: the pull's progress, or the question `S` now asks
+  // before it schedules anything.
+  const [popup, setPopup] = useState<Popup | undefined>();
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
@@ -150,41 +161,50 @@ export function LiveApp({
 
   useInput(
     (input, key) => {
-      if (updatePopup) {
-        if (updatePopup.state !== "pulling") setUpdatePopup(undefined);
+      if (popup) {
+        const answer = popupKey(popup, input);
+        if (answer === "ignore") return;
+        setPopup(undefined);
+        if (answer === "accept" && popup.kind === "confirm") {
+          if (onStopAfterSubticket?.()) setScheduledAction("stop");
+        }
         return;
       }
       // The question owns every key while it is up: navigating away from it
       // would leave a run half-quit, and a stray keystroke must not be the
-      // thing that answers it. `S` is the climb-only graceful path: keep the
-      // view up, finish the subticket in flight, and let the loop return at
-      // its next step boundary. `R` pulls immediately, then uses that same
+      // thing that answers it. `S` is the climb-only graceful path: finish the
+      // subticket in flight and let the loop return at its next step boundary.
+      // It does not schedule that on this keystroke — it opens the same box the
+      // pull uses and asks, because a stop is not cheaper to trigger by
+      // accident than a quit. `R` pulls immediately, then uses that same
       // boundary to restart under the newly checked-out harness.
       if (confirming) {
         if (input === "y" || input === "Y") exit();
         else if ((input === "s" || input === "S") && onStopAfterSubticket) {
-          const scheduled = onStopAfterSubticket();
-          if (scheduled) setScheduledAction("stop");
           setConfirming(false);
+          setPopup(stopAfterTaskPopup(currentTask?.()));
         } else if (
           (input === "r" || input === "R") &&
           onUpdateAndRestart
         ) {
           setConfirming(false);
-          setUpdatePopup({
+          setPopup({
+            kind: "notice",
             state: "pulling",
             message: "pulling harness update…",
           });
           void onUpdateAndRestart()
             .then((result) => {
-              setUpdatePopup({
+              setPopup({
+                kind: "notice",
                 state: result.ok ? "done" : "failed",
                 message: result.message,
               });
               setScheduledAction(result.ok ? "restart" : "stop");
             })
             .catch((error) => {
-              setUpdatePopup({
+              setPopup({
+                kind: "notice",
                 state: "failed",
                 message: `harness pull failed: ${
                   error instanceof Error ? error.message : String(error)
@@ -308,22 +328,24 @@ export function LiveApp({
       </Box>
 
       <Box flexDirection="column" flexGrow={1}>
-        {updatePopup ? (
+        {popup ? (
           <Box
             borderStyle="round"
             borderColor={
-              updatePopup.state === "failed"
-                ? "red"
-                : updatePopup.state === "done"
-                  ? "green"
-                  : "yellow"
+              popup.kind === "confirm"
+                ? "yellow"
+                : popup.state === "failed"
+                  ? "red"
+                  : popup.state === "done"
+                    ? "green"
+                    : "yellow"
             }
             paddingX={2}
             alignSelf="center"
             marginTop={Math.max(0, Math.floor(body / 3))}
           >
             <Text bold wrap="truncate-end">
-              {updatePopup.message}
+              {popup.message}
             </Text>
           </Box>
         ) : (
@@ -389,6 +411,7 @@ export function mountLive(
     onExit?: () => void;
     onStopAfterSubticket?: () => boolean;
     onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
+    currentTask?: () => string | undefined;
   },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
@@ -398,6 +421,7 @@ export function mountLive(
       resultsDir={options.resultsDir}
       onStopAfterSubticket={options.onStopAfterSubticket}
       onUpdateAndRestart={options.onUpdateAndRestart}
+      currentTask={options.currentTask}
     />,
     { exitOnCtrlC: true },
   );

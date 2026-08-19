@@ -212,6 +212,9 @@ export async function runGregLive(
             // it and returns the exact rung plan/progress.log path.
             feedPath: armLog?.("<arm>"),
           }),
+        // What the view names in its confirmation, asked at the keypress so a
+        // question opened an hour into a rung still names the right step.
+        currentTask: () => currentStep,
         onStopAfterSubticket: () => {
           if (stopRequested || currentStep === undefined) {
             return false;

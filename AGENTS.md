@@ -75,8 +75,12 @@ bun start -- --help              # the full option + env reference
   the process at that same boundary — the merge
   barrier makes that boundary safe, and it arrives in minutes rather than the
   hours a whole rung can take; once everything has settled the view is a report and closes
-  without asking. Ctrl-C stops the run without asking — it has one meaning
-  everywhere else and does not acquire a second one here. An immediate stop
+  without asking. `S` and `R` both open the same box over the panes: `R` reports
+  the pull there, and `S` asks there — naming the step it would finish — with
+  only `y` scheduling the stop. A keystroke that ends a climb must not sit one
+  key behind `q`, because a `q`/`s` pair arriving from a reattached terminal is
+  indistinguishable from a human's. Ctrl-C stops the run without asking — it has
+  one meaning everywhere else and does not acquire a second one here. An immediate stop
   closes each arm's open PR for its session-owned interrupted branch and
   deletes that remote branch before destroying its microVM, so retrying the
   unchecked subticket starts from the same external baseline too. Stopping
@@ -761,6 +765,11 @@ cross-layer import is always visible as a `../harness/` in the specifier.
   `quit.ts` owns what closing the
   view means — quitting stops the run. `needsQuitConfirm`/`confirmQuitPrompt`
   drive the in-view `y / n` question while sessions are still working, and
+  `stopAfterTaskPopup`/`popupKey` own the box standing over the panes — the
+  pull's progress, or `S`'s own confirmation. Those two kinds default opposite
+  ways on purpose: a notice reports something that already happened and any key
+  dismisses it, while a confirm takes only `y`, so no stray keystroke can be the
+  thing that says yes, and
   `onViewClosed` is the shared hook both modes hand to `mountLive`: it decides
   from the **model**, not the keypress, so the ordinary end-of-run unmount
   stays silent and aborts nothing, while an early quit names what it stopped

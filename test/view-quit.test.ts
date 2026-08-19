@@ -4,8 +4,10 @@ import {
   confirmQuitPrompt,
   needsQuitConfirm,
   onViewClosed,
+  popupKey,
   quitNotice,
   stillRunning,
+  stopAfterTaskPopup,
 } from "../src/view/quit.js";
 import type { ArmState } from "../src/view/store.js";
 
@@ -195,5 +197,65 @@ describe("onViewClosed", () => {
 
     expect(written).toEqual([]);
     expect(controller.signal.aborted).toBe(false);
+  });
+});
+
+describe("stopAfterTaskPopup", () => {
+  it("names the step it would finish before stopping", () => {
+    expect(stopAfterTaskPopup("subticket 45.6").message).toContain(
+      "subticket 45.6",
+    );
+    expect(stopAfterTaskPopup("planning milestone 46").message).toContain(
+      "planning milestone 46",
+    );
+  });
+
+  // Between phases there is no step to name; the question still has to be
+  // answerable rather than name a stale subticket.
+  it("still asks when no step is known", () => {
+    const popup = stopAfterTaskPopup(undefined);
+
+    expect(popup.kind).toBe("confirm");
+    expect(popup.message).toContain("y / n");
+  });
+});
+
+describe("popupKey", () => {
+  // The regression this exists for: `S` used to schedule a stop on the
+  // keystroke itself, so a stray `q`/`s` pair arriving from a reattached
+  // terminal ended a climb. Only `y` may accept.
+  it("accepts a confirm on y alone", () => {
+    const popup = stopAfterTaskPopup("subticket 45.6");
+
+    expect(popupKey(popup, "y")).toBe("accept");
+    expect(popupKey(popup, "Y")).toBe("accept");
+  });
+
+  it("cancels a confirm on every other key", () => {
+    const popup = stopAfterTaskPopup("subticket 45.6");
+
+    for (const key of ["n", "s", "S", "q", "r", "", "1", "\u001b"]) {
+      expect(popupKey(popup, key)).toBe("dismiss");
+    }
+  });
+
+  // A pull in flight has nothing to answer yet, and dismissing it would hide
+  // the result the human pressed R for.
+  it("swallows keys while a pull is still running", () => {
+    expect(
+      popupKey(
+        { kind: "notice", state: "pulling", message: "pulling…" },
+        "y",
+      ),
+    ).toBe("ignore");
+  });
+
+  it("dismisses a finished notice on any key", () => {
+    expect(
+      popupKey({ kind: "notice", state: "done", message: "updated" }, "z"),
+    ).toBe("dismiss");
+    expect(
+      popupKey({ kind: "notice", state: "failed", message: "failed" }, "y"),
+    ).toBe("dismiss");
   });
 });

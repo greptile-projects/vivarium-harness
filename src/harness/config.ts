@@ -370,8 +370,8 @@ Options:
 
 In the live view: tab / arrows switch tabs, 1-9 jump straight to one, up/down
 scroll the ladder and log tabs (g returns to live), q opens quit controls. During
-a task, S stops after it finishes and R pulls the harness immediately then
-restarts at that same safe boundary.
+a task, S stops after it finishes — asking y / n first — and R pulls the
+harness immediately then restarts at that same safe boundary.
 
 Quitting stops the run. If sessions are still working, q asks first (y / n) and
 names what would be torn down; y stops every one of them and exits 1, and any
