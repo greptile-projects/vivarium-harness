@@ -4,8 +4,12 @@ import {
   confirmQuitPrompt,
   needsQuitConfirm,
   onViewClosed,
+  popupKey,
   quitNotice,
+  quitNowPopup,
   stillRunning,
+  stopAfterTaskPopup,
+  updateRestartPopup,
 } from "../src/view/quit.js";
 import type { ArmState } from "../src/view/store.js";
 
@@ -195,5 +199,97 @@ describe("onViewClosed", () => {
 
     expect(written).toEqual([]);
     expect(controller.signal.aborted).toBe(false);
+  });
+});
+
+describe("quitNowPopup", () => {
+  // Same rule as the question behind it: name the sessions, do not count them.
+  it("names the sessions it would stop", () => {
+    const popup = quitNowPopup([
+      arm("tuatara", "working"),
+      arm("komodo", "starting"),
+      arm("greg", "done"),
+    ]);
+
+    expect(popup.message).toContain("2 sessions");
+    expect(popup.message).toContain("tuatara");
+    expect(popup.message).toContain("komodo");
+    expect(popup.message).not.toContain("greg");
+  });
+});
+
+describe("updateRestartPopup", () => {
+  it("names the boundary it would restart at", () => {
+    expect(updateRestartPopup("subticket 45.6").message).toContain(
+      "subticket 45.6",
+    );
+    expect(updateRestartPopup(undefined).message).toContain("y / n");
+  });
+});
+
+describe("stopAfterTaskPopup", () => {
+  it("names the step it would finish before stopping", () => {
+    expect(stopAfterTaskPopup("subticket 45.6").message).toContain(
+      "subticket 45.6",
+    );
+    expect(stopAfterTaskPopup("planning milestone 46").message).toContain(
+      "planning milestone 46",
+    );
+  });
+
+  // Between phases there is no step to name; the question still has to be
+  // answerable rather than name a stale subticket.
+  it("still asks when no step is known", () => {
+    const popup = stopAfterTaskPopup(undefined);
+
+    expect(popup.kind).toBe("confirm");
+    expect(popup.message).toContain("y / n");
+  });
+});
+
+describe("popupKey", () => {
+  // The regression this exists for: every answer to the quit question used to
+  // act on the keystroke itself, so a stray `q`/`s` pair arriving from a
+  // reattached terminal ended a climb. Whichever of the three was chosen, only
+  // `y` may accept.
+  const confirms = [
+    quitNowPopup([arm("tuatara", "working")]),
+    stopAfterTaskPopup("subticket 45.6"),
+    updateRestartPopup("subticket 45.6"),
+  ];
+
+  it("accepts a confirm on y alone", () => {
+    for (const popup of confirms) {
+      expect(popupKey(popup, "y")).toBe("accept");
+      expect(popupKey(popup, "Y")).toBe("accept");
+    }
+  });
+
+  it("cancels a confirm on every other key", () => {
+    for (const popup of confirms) {
+      for (const key of ["n", "s", "S", "q", "r", "R", "", "1", "\u001b"]) {
+        expect(popupKey(popup, key)).toBe("dismiss");
+      }
+    }
+  });
+
+  // A pull in flight has nothing to answer yet, and dismissing it would hide
+  // the result the human pressed R for.
+  it("swallows keys while a pull is still running", () => {
+    expect(
+      popupKey(
+        { kind: "notice", state: "pulling", message: "pulling…" },
+        "y",
+      ),
+    ).toBe("ignore");
+  });
+
+  it("dismisses a finished notice on any key", () => {
+    expect(
+      popupKey({ kind: "notice", state: "done", message: "updated" }, "z"),
+    ).toBe("dismiss");
+    expect(
+      popupKey({ kind: "notice", state: "failed", message: "failed" }, "y"),
+    ).toBe("dismiss");
   });
 });

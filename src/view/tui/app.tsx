@@ -2,7 +2,16 @@ import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
 import { armsForDisplay } from "../../harness/arms.js";
 import type { LiveModel } from "../model.js";
-import { confirmQuitPrompt, needsQuitConfirm } from "../quit.js";
+import {
+  confirmQuitPrompt,
+  needsQuitConfirm,
+  popupKey,
+  quitNowPopup,
+  stopAfterTaskPopup,
+  updateRestartPopup,
+  type Popup,
+} from "../quit.js";
+import { FAST_LABEL, fastChevrons, fastModePopup } from "../fast.js";
 import { stripLogTimestamp, truncate } from "./format.js";
 import {
   enterFullscreen,
@@ -84,6 +93,9 @@ export function LiveApp({
   resultsDir,
   onStopAfterSubticket,
   onUpdateAndRestart,
+  fastMode,
+  onToggleFastMode,
+  currentTask,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
   initialTab = "overview",
@@ -92,6 +104,14 @@ export function LiveApp({
   resultsDir?: string;
   onStopAfterSubticket?: () => boolean;
   onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
+  // The fast-tier switch, read at render so the badge tracks the setting live,
+  // and the toggle that flips it for tasks started from now on.
+  fastMode?: () => boolean;
+  onToggleFastMode?: () => void;
+  // What the loop is on right now — "subticket 45.6", "planning milestone 46".
+  // Read at keypress time rather than held in state: the view asks the same
+  // question minutes apart and the step underneath it moves on.
+  currentTask?: () => string | undefined;
   initialTab?: string;
 }) {
   const [frame, tick] = useReducer((n: number) => n + 1, 0);
@@ -104,9 +124,9 @@ export function LiveApp({
   const [scheduledAction, setScheduledAction] = useState<
     "stop" | "restart" | undefined
   >();
-  const [updatePopup, setUpdatePopup] = useState<
-    { state: "pulling" | "done" | "failed"; message: string } | undefined
-  >();
+  // The box over the panes: the second question every consequential answer to
+  // the quit prompt now asks, and afterwards the pull's own progress.
+  const [popup, setPopup] = useState<Popup | undefined>();
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
@@ -125,6 +145,36 @@ export function LiveApp({
     const id = setTimeout(() => exit(), 400);
     return () => clearTimeout(id);
   }, [model.finished]);
+
+  // The pull, once its confirmation has been answered: the box stays up and
+  // becomes the progress notice, so the human who asked for it sees what came
+  // back rather than the panes returning as if nothing happened.
+  const startUpdate = () => {
+    if (!onUpdateAndRestart) return;
+    setPopup({
+      kind: "notice",
+      state: "pulling",
+      message: "pulling harness update…",
+    });
+    void onUpdateAndRestart()
+      .then((result) => {
+        setPopup({
+          kind: "notice",
+          state: result.ok ? "done" : "failed",
+          message: result.message,
+        });
+        setScheduledAction(result.ok ? "restart" : "stop");
+      })
+      .catch((error) => {
+        setPopup({
+          kind: "notice",
+          state: "failed",
+          message: `harness pull failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      });
+  };
 
   const tabs = tabsFor(model);
   const selected = resolveSelected(tabs, selectedId);
@@ -150,47 +200,37 @@ export function LiveApp({
 
   useInput(
     (input, key) => {
-      if (updatePopup) {
-        if (updatePopup.state !== "pulling") setUpdatePopup(undefined);
+      if (popup) {
+        const answer = popupKey(popup, input);
+        if (answer === "ignore") return;
+        setPopup(undefined);
+        if (answer !== "accept" || popup.kind !== "confirm") return;
+        if (popup.action === "quit-now") exit();
+        else if (popup.action === "stop-after-task") {
+          if (onStopAfterSubticket?.()) setScheduledAction("stop");
+        } else if (popup.action === "fast-mode") onToggleFastMode?.();
+        else startUpdate();
         return;
       }
       // The question owns every key while it is up: navigating away from it
       // would leave a run half-quit, and a stray keystroke must not be the
-      // thing that answers it. `S` is the climb-only graceful path: keep the
-      // view up, finish the subticket in flight, and let the loop return at
-      // its next step boundary. `R` pulls immediately, then uses that same
-      // boundary to restart under the newly checked-out harness.
+      // thing that answers it. `y` stops every session now, `S` is the
+      // climb-only graceful path (finish the subticket in flight, let the loop
+      // return at its next step boundary), and `R` pulls a harness hotfix and
+      // restarts at that same boundary. None of the three acts on this
+      // keystroke: each opens the box that names what it would do and waits for
+      // one more `y`. Only `n` — and every other key — is free, because putting
+      // the question away costs nothing.
       if (confirming) {
-        if (input === "y" || input === "Y") exit();
-        else if ((input === "s" || input === "S") && onStopAfterSubticket) {
-          const scheduled = onStopAfterSubticket();
-          if (scheduled) setScheduledAction("stop");
+        if (input === "y" || input === "Y") {
           setConfirming(false);
-        } else if (
-          (input === "r" || input === "R") &&
-          onUpdateAndRestart
-        ) {
+          setPopup(quitNowPopup(model.live.snapshot()));
+        } else if ((input === "s" || input === "S") && onStopAfterSubticket) {
           setConfirming(false);
-          setUpdatePopup({
-            state: "pulling",
-            message: "pulling harness update…",
-          });
-          void onUpdateAndRestart()
-            .then((result) => {
-              setUpdatePopup({
-                state: result.ok ? "done" : "failed",
-                message: result.message,
-              });
-              setScheduledAction(result.ok ? "restart" : "stop");
-            })
-            .catch((error) => {
-              setUpdatePopup({
-                state: "failed",
-                message: `harness pull failed: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              });
-            });
+          setPopup(stopAfterTaskPopup(currentTask?.()));
+        } else if ((input === "r" || input === "R") && onUpdateAndRestart) {
+          setConfirming(false);
+          setPopup(updateRestartPopup(currentTask?.()));
         } else setConfirming(false);
         return;
       }
@@ -208,6 +248,13 @@ export function LiveApp({
       if (digit) {
         setSelectedId(digit);
         setAnchor(null);
+        return;
+      }
+      // The fast-tier switch. `f` never acts on its own keystroke: it opens
+      // the box naming the change, and only a `y` there flips it — the same
+      // two-key rule as every other consequential answer in this view.
+      if ((input === "f" || input === "F") && onToggleFastMode && fastMode) {
+        setPopup(fastModePopup(!fastMode()));
         return;
       }
       // Scrolling only means anything on the two list panes; elsewhere the
@@ -296,6 +343,26 @@ export function LiveApp({
       <Box>
         <Text bold>{model.title}</Text>
         <Box flexGrow={1} />
+        {fastMode?.() ? (
+          // The fast badge: a chevron wave whose lit glyph walks forward on
+          // the same frame tick as the spinners, so "fast" reads as motion.
+          <Text>
+            {fastChevrons(frame).map((chevron, index) => (
+              <Text
+                key={index}
+                color="magenta"
+                bold={chevron.lit}
+                dimColor={!chevron.lit}
+              >
+                {chevron.glyph}
+              </Text>
+            ))}
+            <Text color="magenta" bold>
+              {` ${FAST_LABEL}`}
+            </Text>
+            <Text>{"   "}</Text>
+          </Text>
+        ) : null}
         <Text color={summaryColor}>{summary}</Text>
       </Box>
       <Box marginBottom={1}>
@@ -308,22 +375,24 @@ export function LiveApp({
       </Box>
 
       <Box flexDirection="column" flexGrow={1}>
-        {updatePopup ? (
+        {popup ? (
           <Box
             borderStyle="round"
             borderColor={
-              updatePopup.state === "failed"
-                ? "red"
-                : updatePopup.state === "done"
-                  ? "green"
-                  : "yellow"
+              popup.kind === "confirm"
+                ? "yellow"
+                : popup.state === "failed"
+                  ? "red"
+                  : popup.state === "done"
+                    ? "green"
+                    : "yellow"
             }
             paddingX={2}
             alignSelf="center"
             marginTop={Math.max(0, Math.floor(body / 3))}
           >
             <Text bold wrap="truncate-end">
-              {updatePopup.message}
+              {popup.message}
             </Text>
           </Box>
         ) : (
@@ -351,7 +420,7 @@ export function LiveApp({
                 ? "updated · restart scheduled after current task · q quit now"
                 : scheduledAction === "stop"
                   ? "stop scheduled after current task · q quit now"
-                : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
+                : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""}${onToggleFastMode ? " · f fast" : ""} · q quit`}
             </Text>
             <Box flexGrow={1} />
             {resultsDir && columns >= 100 ? (
@@ -389,6 +458,9 @@ export function mountLive(
     onExit?: () => void;
     onStopAfterSubticket?: () => boolean;
     onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
+    fastMode?: () => boolean;
+    onToggleFastMode?: () => void;
+    currentTask?: () => string | undefined;
   },
 ): { waitUntilExit: () => Promise<void> } {
   const restore = enterFullscreen(process.stdout);
@@ -398,6 +470,9 @@ export function mountLive(
       resultsDir={options.resultsDir}
       onStopAfterSubticket={options.onStopAfterSubticket}
       onUpdateAndRestart={options.onUpdateAndRestart}
+      fastMode={options.fastMode}
+      onToggleFastMode={options.onToggleFastMode}
+      currentTask={options.currentTask}
     />,
     { exitOnCtrlC: true },
   );

@@ -369,13 +369,17 @@ Options:
   --help                  This message.
 
 In the live view: tab / arrows switch tabs, 1-9 jump straight to one, up/down
-scroll the ladder and log tabs (g returns to live), q opens quit controls. During
-a task, S stops after it finishes and R pulls the harness immediately then
-restarts at that same safe boundary.
+scroll the ladder and log tabs (g returns to live), q opens quit controls. f
+toggles Codex's fast tier for tasks started from then on — asking y / n first,
+and showing an animated "fast" badge in the header while it is on. During
+a task, S stops after it finishes — asking y / n first — and R pulls the
+harness immediately then restarts at that same safe boundary.
 
 Quitting stops the run. If sessions are still working, q asks first (y / n) and
-names what would be torn down; y stops every one of them and exits 1, and any
-other key goes back to watching. Ctrl-C stops the run without asking.
+names what would be torn down; y, S and R then each confirm once more in a box
+naming what they are about to do, and only a second y there acts. Any other key
+goes back to watching. Stopping live sessions exits 1. Ctrl-C stops the run
+without asking.
 
 Exit code is 1 whenever an arm exhausts its retries or the run throws.
 
@@ -400,7 +404,9 @@ Optional environment:
                           and a host arm runs workspace-write.
   CODEX_FAST_MODE=<bool>  Use Codex's fast service tier for Greg and both
                           arms. Defaults to false. Fast mode consumes credits
-                          faster and only applies to supported models.
+                          faster and only applies to supported models. The
+                          live view's f key flips this without a restart,
+                          from the next task on.
   CODEX_HOME=<path>       Defaults to ~/.codex; used by Greg and host smoke
                           sessions. Arm transcripts are copied from microVMs.
   IDLE_TIMEOUT_MS=<ms>    Abort a session after this much event silence.
