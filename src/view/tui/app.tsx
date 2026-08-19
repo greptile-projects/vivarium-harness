@@ -11,6 +11,7 @@ import {
   updateRestartPopup,
   type Popup,
 } from "../quit.js";
+import { FAST_LABEL, fastChevrons, fastModePopup } from "../fast.js";
 import { stripLogTimestamp, truncate } from "./format.js";
 import {
   enterFullscreen,
@@ -92,6 +93,8 @@ export function LiveApp({
   resultsDir,
   onStopAfterSubticket,
   onUpdateAndRestart,
+  fastMode,
+  onToggleFastMode,
   currentTask,
   // Which tab opens first. Only set by tests/previews, which have no TTY to
   // press a key on.
@@ -101,6 +104,10 @@ export function LiveApp({
   resultsDir?: string;
   onStopAfterSubticket?: () => boolean;
   onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
+  // The fast-tier switch, read at render so the badge tracks the setting live,
+  // and the toggle that flips it for tasks started from now on.
+  fastMode?: () => boolean;
+  onToggleFastMode?: () => void;
   // What the loop is on right now — "subticket 45.6", "planning milestone 46".
   // Read at keypress time rather than held in state: the view asks the same
   // question minutes apart and the step underneath it moves on.
@@ -201,7 +208,8 @@ export function LiveApp({
         if (popup.action === "quit-now") exit();
         else if (popup.action === "stop-after-task") {
           if (onStopAfterSubticket?.()) setScheduledAction("stop");
-        } else startUpdate();
+        } else if (popup.action === "fast-mode") onToggleFastMode?.();
+        else startUpdate();
         return;
       }
       // The question owns every key while it is up: navigating away from it
@@ -240,6 +248,13 @@ export function LiveApp({
       if (digit) {
         setSelectedId(digit);
         setAnchor(null);
+        return;
+      }
+      // The fast-tier switch. `f` never acts on its own keystroke: it opens
+      // the box naming the change, and only a `y` there flips it — the same
+      // two-key rule as every other consequential answer in this view.
+      if ((input === "f" || input === "F") && onToggleFastMode && fastMode) {
+        setPopup(fastModePopup(!fastMode()));
         return;
       }
       // Scrolling only means anything on the two list panes; elsewhere the
@@ -328,6 +343,26 @@ export function LiveApp({
       <Box>
         <Text bold>{model.title}</Text>
         <Box flexGrow={1} />
+        {fastMode?.() ? (
+          // The fast badge: a chevron wave whose lit glyph walks forward on
+          // the same frame tick as the spinners, so "fast" reads as motion.
+          <Text>
+            {fastChevrons(frame).map((chevron, index) => (
+              <Text
+                key={index}
+                color="magenta"
+                bold={chevron.lit}
+                dimColor={!chevron.lit}
+              >
+                {chevron.glyph}
+              </Text>
+            ))}
+            <Text color="magenta" bold>
+              {` ${FAST_LABEL}`}
+            </Text>
+            <Text>{"   "}</Text>
+          </Text>
+        ) : null}
         <Text color={summaryColor}>{summary}</Text>
       </Box>
       <Box marginBottom={1}>
@@ -385,7 +420,7 @@ export function LiveApp({
                 ? "updated · restart scheduled after current task · q quit now"
                 : scheduledAction === "stop"
                   ? "stop scheduled after current task · q quit now"
-                : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""} · q quit`}
+                : `↹ tab · 1-${tabs.length} jump${scrollable ? " · ↑↓ scroll · g live" : ""}${onToggleFastMode ? " · f fast" : ""} · q quit`}
             </Text>
             <Box flexGrow={1} />
             {resultsDir && columns >= 100 ? (
@@ -423,6 +458,8 @@ export function mountLive(
     onExit?: () => void;
     onStopAfterSubticket?: () => boolean;
     onUpdateAndRestart?: () => Promise<HarnessUpdateResult>;
+    fastMode?: () => boolean;
+    onToggleFastMode?: () => void;
     currentTask?: () => string | undefined;
   },
 ): { waitUntilExit: () => Promise<void> } {
@@ -433,6 +470,8 @@ export function mountLive(
       resultsDir={options.resultsDir}
       onStopAfterSubticket={options.onStopAfterSubticket}
       onUpdateAndRestart={options.onUpdateAndRestart}
+      fastMode={options.fastMode}
+      onToggleFastMode={options.onToggleFastMode}
       currentTask={options.currentTask}
     />,
     { exitOnCtrlC: true },

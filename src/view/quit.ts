@@ -102,7 +102,14 @@ export function onViewClosed(
 // the whole point of this file's second safety: a *notice* reports something
 // that already happened and any key dismisses it, while a *confirm* stands
 // between a key and its consequence and only `y` gets through.
-export type ConfirmAction = "quit-now" | "stop-after-task" | "update-restart";
+// The machinery is shared beyond quitting — the fast-tier switch
+// (src/view/fast.ts) confirms through the same box for the same
+// stray-keystroke reason.
+export type ConfirmAction =
+  | "quit-now"
+  | "stop-after-task"
+  | "update-restart"
+  | "fast-mode";
 
 export type Popup =
   | { kind: "notice"; state: "pulling" | "done" | "failed"; message: string }

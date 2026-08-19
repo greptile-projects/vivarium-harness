@@ -65,7 +65,12 @@ bun start -- --help              # the full option + env reference
   meter, recent activity and answer, the
   **climb** (every rung built, with both arms' pull requests, the rung in
   flight, and the next few), and the raw **log**. `↹`/`←→` or `1`-`9` switch tabs, `↑↓`
-  scroll the list tabs. Each arm's duration excludes time spent idle at the
+  scroll the list tabs. `f` flips Codex's fast service tier live — for Greg and
+  both arms together, taking effect at the next task boundary (the next
+  subticket or planning turn), so the A/B inputs never diverge and no in-flight
+  thread changes tier under its session; while on, the header carries an
+  animated `▸▸▸ fast` badge, and the flip is noted into the climb log so the
+  record says when the tier changed. Each arm's duration excludes time spent idle at the
   merge barrier waiting only for its peer, so the two A/B timings do not
   collapse into the shared run duration. `q` quits — and quitting **stops the
   run**. The in-view confirmation offers `y` to stop immediately, `n` to keep

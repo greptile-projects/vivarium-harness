@@ -127,6 +127,13 @@ export async function runGregLive(
   let stopRequested = false;
   let restartRequested = false;
   let updatePromise: ReturnType<typeof pullHarnessUpdate> | undefined;
+  // The live fast-tier switch, seeded from CODEX_FAST_MODE and flipped by `f`
+  // in the view. Spread over each task's config as it is assembled below, so a
+  // flip takes effect at the next task boundary — the next subticket, or the
+  // next planning turn — for both arms and Greg together. A task already in
+  // flight keeps the tier it started with: its config was assembled when it
+  // began, and its threads keep their creation tier anyway.
+  let fastMode = base.fastMode === true;
 
   // The planner's own Codex session, surfaced as a "greg" tab.
   const plannerRunner: AttemptRunner = (params) =>
@@ -147,7 +154,7 @@ export async function runGregLive(
       model.live.phase("greg", "planning");
       try {
         const threadId = await planNextMilestone(
-          config,
+          { ...config, fastMode },
           ladderPath,
           ladder,
           milestoneNumber,
@@ -184,7 +191,11 @@ export async function runGregLive(
         `building · ${description}`,
         config.arms.map((arm) => arm.name),
       );
-      const run = await runHarness(config, sinks, controller.signal);
+      const run = await runHarness(
+        { ...config, fastMode },
+        sinks,
+        controller.signal,
+      );
       // The box is checked now, so the highlight moves to the next rung.
       await refreshLadder();
       return run;
@@ -215,6 +226,17 @@ export async function runGregLive(
         // What the view names in its confirmation, asked at the keypress so a
         // question opened an hour into a rung still names the right step.
         currentTask: () => currentStep,
+        fastMode: () => fastMode,
+        onToggleFastMode: () => {
+          fastMode = !fastMode;
+          // Into the durable climb log too: the tier is an input to every
+          // session, so the record has to say when it changed mid-experiment.
+          const message = `codex fast tier ${
+            fastMode ? "on" : "off"
+          } — takes effect at the next task`;
+          model.note(message);
+          sinks.note(message);
+        },
         onStopAfterSubticket: () => {
           if (stopRequested || currentStep === undefined) {
             return false;
