@@ -84,6 +84,10 @@ bun start -- --no-tui --json  # machine-readable
 bun start -- --help           # every option, plus the env reference
 ```
 
+at startup the harness fetches and runs the shared bootstrap diagnostics from
+`VIVARIUM_BOOTSTRAP_URL`, or the repository default when unset, before loading
+local configuration.
+
 there's a fullscreen live view when stdout is a terminal: a tab per running
 session with its effective model configuration (`gpt-5.6-sol high fast`), its
 context meter, what it's been doing and its answer, plus greg's ladder and the
