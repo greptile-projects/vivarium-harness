@@ -139,6 +139,12 @@ describe("run mode", () => {
     expect(mode.planOnly).toBe(true);
   });
 
+  it("accepts a diagnostic command for local run debugging", () => {
+    expect(parseRunMode(["--diagnose=git status --short"], false).diagnose).toBe(
+      "git status --short",
+    );
+  });
+
   // The one-ticket escape hatch is gone. A caller still passing the flag is
   // asking for a run mode that no longer exists — refuse loudly rather than
   // climbing the ladder under them.

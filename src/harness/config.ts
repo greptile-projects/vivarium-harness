@@ -236,6 +236,7 @@ export interface RunMode {
   planOnly: boolean;
   useTui: boolean;
   json: boolean;
+  diagnose?: string;
 }
 
 export function parseRunMode(args: string[], isTty: boolean): RunMode {
@@ -250,6 +251,9 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
 
   const json = args.includes("--json");
   const planOnly = args.includes("--plan-only");
+  const diagnose = args
+    .find((arg) => arg.startsWith("--diagnose="))
+    ?.slice("--diagnose=".length);
   // --json is for machines; never fight it for the terminal.
   const useTui = args.includes("--tui")
     ? true
@@ -257,7 +261,7 @@ export function parseRunMode(args: string[], isTty: boolean): RunMode {
       ? false
       : isTty;
 
-  return { planOnly, useTui, json };
+  return { planOnly, useTui, json, diagnose };
 }
 
 export async function validateConfig(

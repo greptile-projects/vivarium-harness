@@ -22,7 +22,19 @@ async function main(): Promise<void> {
     }
 
     const mode = parseRunMode(argv, Boolean(process.stdout.isTTY));
-    const { json, useTui, planOnly } = mode;
+    const { json, useTui, planOnly, diagnose } = mode;
+
+    if (diagnose !== undefined) {
+      const child = Bun.spawn(["bash", "-lc", diagnose], {
+        cwd: process.cwd(),
+        env: process.env,
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      process.exitCode = await child.exited;
+      return;
+    }
 
     const base = await validateConfig(parseArgs(argv, process.env));
     // Every mode writes the same human-readable feed; where each line lands is

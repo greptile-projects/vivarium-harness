@@ -81,6 +81,7 @@ from becoming a cross-arm channel.
 bun start                     # plan a rung, build its subtickets, repeat
 bun start -- --plan-only      # plan rungs, build nothing
 bun start -- --no-tui --json  # machine-readable
+bun start -- --diagnose="git status --short"  # run a quick local diagnostic
 bun start -- --help           # every option, plus the env reference
 ```
 
